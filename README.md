@@ -42,7 +42,7 @@ Evaluate
 
 The important property is that the workflow is explicit and configurable.
 
-A graph-based model is a leading design direction for representing these workflows because it can naturally express sequencing, branching, repetition, and routing while remaining inspectable and reusable. The concrete graph syntax and runtime model are intentionally not defined yet.
+The first runtime executes JSON graphs with `agent` and `action` nodes, sequential flow, structured result handoff, and `if` routing. It runs once from the CLI; loops and concurrent execution are outside this release.
 
 ## AI resources as constraints
 
@@ -148,3 +148,38 @@ With appropriate intelligence and policy layered on top, ProjectWeave should mak
 - Keep the core small, understandable, and extensible.
 
 See [Issue #1](https://github.com/takahirox/projectweave/issues/1) for the full vision and design discussion.
+
+
+## Run the first runtime
+
+Requires Python 3.11+ on Linux or macOS. No Python runtime dependencies.
+Use `python3 -m projectweave` from this checkout, or install with
+`python3 -m pip install .` to use the `projectweave` command.
+
+```sh
+python3 -m projectweave validate --graph examples/dispatch.json
+python3 -m unittest discover -s tests -v
+```
+
+For a live Run, configure the project, resource amounts, and executor paths in
+[examples/dispatch.json](examples/dispatch.json),
+[examples/project.json](examples/project.json), and
+[examples/resources.json](examples/resources.json), then run:
+
+```sh
+projectweave run --graph examples/dispatch.json \
+  --project examples/project.json --resources examples/resources.json > run.json
+```
+
+The example selects the highest-priority eligible open Issue, checks primary
+executor capacity, uses an instruction-driven command executor or GitWeave,
+and comments the structured outcome on the Issue. The primary executor starts
+with zero capacity, so only the GitWeave path needs configuring initially.
+Supply a wrapper implementing the JSON contract to enable the primary path.
+The runtime never changes provider in response to an executor failure.
+
+See the [minimal runtime design](docs/runtime.md) and
+[CLI and executor guide](docs/usage.md) for graph fields, authentication,
+resource guarantees, status updates, and failure behavior. Tests use deterministic
+external CLI doubles; no live GitHub mutation or AI execution was used to verify
+this implementation.
