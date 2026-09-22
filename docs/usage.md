@@ -57,11 +57,12 @@ pointers into the Run context. No templating or shell evaluation occurs.
 Agent instructions describe project-level thinking such as evaluation, planning,
 or review. The runtime simply delivers them to the executor. A command wrapper
 must honor the instruction; a GitWeave graph must make use of the supplied request.
-There are no specialized planner/reviewer node kinds. Both execution kinds accept
-`config.failure_comment: true`: if executor launch, output, or accounting fails,
-attempt one diagnostic Issue comment before stopping. The original failure stays
-primary; a failed diagnostic write appears in `details.diagnostic_failure`.
-No Status is changed by diagnostic comments. This option is off by default.
+There are no specialized planner/reviewer node kinds. Execution nodes accept no
+configuration options; omit `config` or use an empty object. Executor Runtime
+Failures are preserved in the Run receipt and stop the Run without automatic
+GitHub mutations. A valid executor Result is retained in failure details if
+accounting fails. GitHub writeback is an explicit graph action. Failure routing
+is not supported, so downstream actions do not run after a Runtime Failure.
 
 `resources.config.requires` tests whether an entire allocation can be admitted
 without charging it. Actual execution checks again and charges before launching.

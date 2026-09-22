@@ -9,10 +9,10 @@ name = Path(sys.argv[0]).name
 request = json.load(sys.stdin) if name in ("gh", "worker") else None
 with open(os.environ["FAKE_LOG"], "a") as log:
     log.write(json.dumps({"command": name, "argv": sys.argv[1:], "request": request}) + "\n")
+if name in ("gitweave", "worker") and mode == "executor_failure":
+    print("usage limit reached", file=sys.stderr)
+    sys.exit(1)
 if name == "gitweave":
-    if mode == "executor_failure":
-        print("usage limit reached", file=sys.stderr)
-        sys.exit(1)
     print(json.dumps({"run_id": "GW", "status": "completed", "repository": "/repo", "run_ref": "refs/gitweave/GW/run",
                       "notes_ref": "refs/notes/gitweave/GW", "outputs": [
                           {"commit": "abc123", "message": "Task rejected", "data": {"approved": False}}]}))

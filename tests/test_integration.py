@@ -84,13 +84,23 @@ class CLITests(unittest.TestCase):
         self.assertEqual(record["results"]["gitweave"]["data"]["status"], "resource_exhausted")
         self.assertTrue(all(c["command"] == "gh" for c in calls))
 
-    def test_executor_failure_is_diagnostic_not_task_outcome(self):
-        code, record, calls = self.run_cli("executor_failure")
-        self.assertEqual(code, 1)
-        self.assertEqual(record["failure"]["kind"], "transport")
-        self.assertEqual(record["resources"]["gitweave"]["charged"], 1)
-        self.assertEqual(len([c for c in calls if c["command"] == "gitweave"]), 1)
-        self.assertIn("diagnostic_references", record["failure"]["details"])
+    def test_executor_failure_stops_without_github_mutation(self):
+        for node, command in (("gitweave", "gitweave"), ("primary", "worker")):
+            with self.subTest(node=node):
+                self.resources["primary"]["available"] = int(node == "primary")
+                if self.log.exists():
+                    self.log.unlink()
+                code, record, calls = self.run_cli("executor_failure")
+                self.assertEqual(code, 1)
+                self.assertEqual(record["status"], "failed")
+                self.assertEqual(record["failure"]["kind"], "transport")
+                self.assertEqual(record["failure"]["node"], node)
+                self.assertEqual(record["resources"][node]["charged"], 1)
+                self.assertEqual(len([c for c in calls if c["command"] == command]), 1)
+                self.assertNotIn(node, record["results"])
+                self.assertNotIn("update", record["results"])
+                self.assertFalse(any(c["command"] == "gh" and
+                                     c["request"]["query"].startswith("mutation") for c in calls))
 
     def test_partial_writeback_preserves_result(self):
         self.graph["nodes"]["update"]["config"] = {"status": "Done"}

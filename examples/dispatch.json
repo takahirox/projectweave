@@ -37,9 +37,6 @@
       },
       "inputs": {
         "task": "/results/select/data/task"
-      },
-      "config": {
-        "failure_comment": true
       }
     },
     "gitweave": {
@@ -57,9 +54,6 @@
       },
       "inputs": {
         "task": "/results/select/data/task"
-      },
-      "config": {
-        "failure_comment": true
       }
     },
     "update": {
