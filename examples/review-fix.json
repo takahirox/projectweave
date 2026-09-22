@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "max_steps": 100,
+  "nodes": {
+    "load": {
+      "kind": "action",
+      "action": "load"
+    },
+    "select": {
+      "kind": "action",
+      "action": "select",
+      "inputs": {
+        "items": "/results/load/data/items"
+      }
+    },
+    "review": {
+      "kind": "agent",
+      "instruction": "Review the task and return data.approved as a boolean.",
+      "executor": {
+        "type": "command",
+        "argv": [
+          "/path/to/review-wrapper"
+        ]
+      },
+      "requires": {
+        "ai": 1
+      },
+      "inputs": {
+        "task": "/results/select/data/task",
+        "context": "/last"
+      }
+    },
+    "fix": {
+      "kind": "agent",
+      "instruction": "Fix the issues identified by the review.",
+      "executor": {
+        "type": "command",
+        "argv": [
+          "/path/to/fix-wrapper"
+        ]
+      },
+      "requires": {
+        "ai": 1
+      },
+      "inputs": {
+        "task": "/results/select/data/task",
+        "context": "/last"
+      }
+    }
+  },
+  "flow": [
+    "load",
+    "select",
+    {
+      "if": {
+        "path": "/results/select/data/task",
+        "equals": null,
+        "then": [],
+        "else": [
+          {
+            "loop": {
+              "flow": [
+                "review",
+                {
+                  "if": {
+                    "path": "/results/review/data/approved",
+                    "equals": false,
+                    "then": [
+                      "fix"
+                    ],
+                    "else": []
+                  }
+                }
+              ],
+              "while": {
+                "path": "/results/review/data/approved",
+                "equals": false
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

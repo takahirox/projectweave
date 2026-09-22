@@ -58,15 +58,28 @@ class Runtime:
                                           node.get("config", {}).get("status"))
         return deepcopy(node["config"])
 
+    def activate(self, name):
+        self.active = name
+        self.steps += 1
+        require(self.steps <= self.graph.get("max_steps", 100), "Run step limit exceeded", "limit")
+
     def flow(self, entries):
         for entry in entries:
-            self.active = entry if isinstance(entry, str) else "if"
-            self.steps += 1
-            require(self.steps <= self.graph.get("max_steps", 100), "Run step limit exceeded", "limit")
+            self.activate(entry if isinstance(entry, str) else next(iter(entry)))
             if isinstance(entry, dict):
-                spec = entry["if"]
-                branch = "then" if equal(pointer(self.context, spec["path"]), spec["equals"]) else "else"
-                self.flow(spec[branch])
+                if "if" in entry:
+                    spec = entry["if"]
+                    branch = "then" if equal(pointer(self.context, spec["path"]), spec["equals"]) else "else"
+                    self.flow(spec[branch])
+                else:
+                    spec = entry["loop"]
+                    while True:
+                        self.activate("loop")
+                        self.flow(spec["flow"])
+                        self.active = "loop"
+                        condition = spec["while"]
+                        if not equal(pointer(self.context, condition["path"]), condition["equals"]):
+                            break
                 continue
             node = self.graph["nodes"][entry]
             inputs = {key: deepcopy(pointer(self.context, path)) for key, path in node.get("inputs", {}).items()}

@@ -8,7 +8,8 @@ project write access for Status updates, and Issue comment permission for
 writeback. The runtime targets github.com, including user and organization
 Projects v2; classic Projects and enterprise hosts are not supported.
 
-Copy the three files in `examples/`, replace the project owner/number, and adjust
+Copy `examples/dispatch.json`, `examples/project.json`, and
+`examples/resources.json`, replace the project owner/number, and adjust
 Priority and Status names to the actual single-select field values. Values are
 case-sensitive. Optional `eligible_statuses` is an additional filter; remove it
 to select by open Issue plus ready label alone. Unknown or absent Priority values
@@ -77,6 +78,46 @@ outcome warrants it. A GitWeave task verdict can be selected at
 The runtime does not equate GitWeave completion with task approval. The shipped
 example comments outcomes without choosing a Status policy. PR URLs can be
 returned in Result references and will appear in the Issue comment.
+
+## Review/fix loop
+
+[examples/review-fix.json](../examples/review-fix.json) selects a task and uses
+this body, skipping the loop when no eligible task exists:
+
+```json
+{
+  "loop": {
+    "flow": [
+      "review",
+      {"if": {
+        "path": "/results/review/data/approved",
+        "equals": false,
+        "then": ["fix"],
+        "else": []
+      }}
+    ],
+    "while": {"path": "/results/review/data/approved", "equals": false}
+  }
+}
+```
+
+The first review always runs; fixes run only after rejection. The loop checks
+the named review result after the conditional fix, so a fix cannot overwrite the
+approval being tested through `last`. A rejection leads to another review; an
+approval exits without a fix. Configure both wrapper paths and an `ai` resource
+envelope before live use. Review must return a boolean `data.approved`; wrappers
+receive the selected task and the preceding result as context. This example
+performs no writeback.
+
+Validate without invoking wrappers:
+`python3 -m projectweave validate --graph examples/review-fix.json`.
+The body must be nonempty. Each loop entry consumes one step, each iteration
+start (including the first) consumes another, and body nodes/controls consume
+their usual steps. All nested controls share `max_steps`; no body executes after
+the limit is exhausted. State and resource balances carry forward, with latest
+per-node results and all completed invocations in events. Missing condition data
+(including an exhausted review allocation that returns no `approved` field) or
+any body Runtime Failure stops the Run without retries or continuation.
 
 ## Command executor contract
 

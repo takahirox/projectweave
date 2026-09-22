@@ -9,9 +9,29 @@ receipt, not a second project state store.
 Version 1 graphs contain `nodes`, a nonempty `flow`, and optional `max_steps`
 (default 100). Flow entries are node IDs or
 `{"if":{"path":"/results/select/data/task","equals":null,"then":[],"else":[]}}`.
-Branches may be empty. No expressions, cycles, loops, concurrency or retries.
-Every node/control activation counts against max_steps. All declarations and
-both branches are validated before any external operation.
+Branches may be empty. An explicit post-condition loop has the form
+`{"loop":{"flow":["review"],"while":{"path":"/results/review/data/approved","equals":false}}}`.
+The nonempty body runs once before `while` is evaluated, then repeats while it
+matches. Conditions reuse `if`'s RFC 6901 pointers and type-sensitive equality.
+Results, `last`, and remaining/charged resources carry forward across iterations;
+`results[node_id]` holds the latest result and `events` retains every completed
+invocation. Missing condition data or any body Runtime Failure stops the Run.
+There is no retry, continue, or resume behavior.
+
+Every node/control activation counts against `max_steps`. A loop consumes one
+step on entry **plus one at each iteration start, including the first**, in
+addition to all body node/control activations. Condition evaluation adds no step.
+For example, a loop running one node twice consumes five steps: entry, start,
+node, start, node. Every activation checks the shared Run budget before executing;
+no body or node executes after the budget is exhausted. As with existing node
+limits, the denied activation is included in receipt `steps` (`max_steps + 1`)
+and produces a `limit` Runtime Failure. Iterations with only empty branches still
+consume steps and are bounded.
+
+All declarations, both conditional branches, and loop bodies/condition pointers
+are validated before any external operation, including unreachable flows.
+Combined `if`/`loop` nesting is limited to 32 levels. No expressions, arbitrary
+graph cycles, concurrency, map/fan-out, or retries are supported.
 
 Only two node kinds exist. `agent` delegates an instruction to an executor;
 `action` invokes a runtime operation: `load`, `select`, `resources`, `execute`,
