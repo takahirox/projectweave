@@ -119,19 +119,33 @@ For example:
 {"message":"Needs revision","data":{"approved":false},"references":[],"usage":{"api":0.7}}
 ```
 
-Reported usage uses the declared resource unit and is required for each resource
-in reported mode. Usage is optional in reservation mode, where the allocation
-is the charge; supplied usage still cannot exceed it. Units need not be universal:
-use one GitWeave Run, one request, tokens, or USD as appropriate. For exact
-fractional accounting, use integer units such as microdollars. The runtime uses
-JSON numbers, not a monetary ledger. GitWeave supports reservation mode only
-because aggregate usage is absent from its public CLI response.
+Reported usage uses the declared resource unit and is required for every reserved
+resource in `reported` mode. All required reports must be valid before any
+settlement. Each is settled once with `available += reserved - reported` and
+`charged += reported - reserved`. In the example above, reserving 2 and reporting
+0.7 leaves 9.3 available and 0.7 charged. Reporting 12 instead leaves -2 available
+and 12 charged without a Runtime Failure; later executions requiring `api` cannot
+launch. Admission reserves all `requires` atomically or launches nothing.
+
+Usage is optional in `reservation` mode and never adjusts the reserved charge,
+even when reported above the reservation. Unreserved usage is ignored for
+settlement, whether or not the resource appears in the envelope. All supplied
+usage still undergoes common Result validation: an object mapping nonblank
+resource names to finite, nonnegative numbers (not booleans). Missing required
+reports, invalid Results, or executor Runtime Failures stop the Run and retain
+all reservations without partial settlement or inferred refunds.
+
+Units need not be universal: use one GitWeave Run, one request, tokens, or USD as
+appropriate. For exact fractional accounting, use integer units such as
+microdollars. The runtime uses JSON numbers, not a monetary ledger. GitWeave
+supports reservation mode only because aggregate usage is absent from its public
+CLI response.
 
 A wrapper can enforce native budgets when its provider offers them. ProjectWeave
-itself cannot prove native consumption or stop an unreported overrun. It fails on
-invalid usage, retains reservations on failures, records known overruns, and
-performs no allowance discovery or reset. Graph/resource configuration is trusted.
-The supplied envelope must account for all providers an executor can actually use.
+reflects reported consumption and constrains subsequent admission; it cannot
+prove native consumption or enforce an in-flight spending limit. It performs no
+allowance discovery or reset. Graph/resource configuration is trusted and must
+declare the resources an executor may consume in `requires`.
 
 ## Failures and operational limits
 

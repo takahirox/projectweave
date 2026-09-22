@@ -99,17 +99,17 @@ class RuntimeTests(unittest.TestCase):
                     backend.writeback.assert_not_called()
 
     def test_accounting_and_invalid_output(self):
-        output = result("Completed task", {"approved": False}, ["artifact"], {"ai": 2})
-        for value, kind, charged in ((output, "accounting", 2), ({"message": "oops"}, "result", 1)):
+        output = result("Completed task", {"approved": False}, ["artifact"])
+        for value, kind, charged in ((output, "accounting", 1), ({"message": "oops"}, "result", 1)):
             with self.subTest(kind=kind):
-                record, backend, execute = self.run_graph(executor=Mock(return_value=value))
+                record, backend, execute = self.run_graph(env=envelope(mode="reported"), executor=Mock(return_value=value))
                 self.assertEqual(record["status"], "failed")
                 self.assertEqual(record["failure"]["kind"], kind)
                 self.assertEqual(record["failure"]["node"], "work")
                 self.assertEqual(list(record["results"]), ["load", "select"])
                 self.assertEqual(record["resources"]["ai"]["charged"], charged)
                 if kind == "accounting":
-                    self.assertEqual(record["failure"]["details"], {"usage": {"ai": 2}, "result": output})
+                    self.assertEqual(record["failure"]["details"], {"usage": {}, "result": output})
                 execute.assert_called_once()
                 backend.writeback.assert_not_called()
 
@@ -140,17 +140,81 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(record["results"]["inspect"]["data"]["available"])
 
     def test_atomic_multi_resource_admission(self):
-        resources = Resources(envelope())
-        self.assertFalse(resources.reserve({"ai": 1, "missing": 1}))
-        self.assertEqual(resources.state["ai"]["available"], 2)
+        for second in ({}, {"other": {"unit": "tokens", "available": 0, "accounting": "reported"}}):
+            with self.subTest(second=second):
+                env = {**envelope(), **second}
+                g = graph()
+                g["nodes"]["work"]["requires"]["other"] = 1
+                record, _, execute = self.run_graph(g, env=env)
+                execute.assert_not_called()
+                self.assertEqual(record["results"]["work"]["data"]["status"], "resource_exhausted")
+                self.assertEqual(record["resources"], Resources(env).state)
 
-    def test_no_hidden_refund_on_failure(self):
-        resources = Resources(envelope())
-        resources.reserve({"ai": 1})
-        with self.assertRaises(Failure):
-            resources.settle({"ai": 1}, {"ai": 3})
-        self.assertEqual(resources.state["ai"]["charged"], 3)
-        self.assertEqual(resources.state["ai"]["available"], -1)
+    def test_mixed_settlement_and_subsequent_admission(self):
+        for reported, calls, available, charged in ((0, 2, 2, 0), (.25, 2, 1.5, .5),
+                                                    (1, 2, 0, 2), (3, 1, -1, 3)):
+            with self.subTest(reported=reported):
+                g = graph()
+                g["nodes"]["work"]["requires"]["fixed"] = 1
+                g["flow"] = ["load", "select", "work", "work"]
+                env = {**envelope(mode="reported"),
+                       "fixed": {"unit": "calls", "available": 4, "accounting": "reservation"}}
+                output = result(usage={"ai": reported, "fixed": 99})
+                record, _, execute = self.run_graph(g, env, Mock(return_value=output))
+                self.assertEqual(record["status"], "completed")
+                self.assertEqual(execute.call_count, calls)
+                self.assertEqual(record["resources"]["ai"]["available"], available)
+                self.assertEqual(record["resources"]["ai"]["charged"], charged)
+                self.assertEqual(record["resources"]["fixed"]["available"], 4 - calls)
+                self.assertEqual(record["resources"]["fixed"]["charged"], calls)
+                if reported == 3:
+                    self.assertEqual(record["last"]["data"]["status"], "resource_exhausted")
+                    self.assertEqual(record["events"][2]["result"], output)
+
+    def test_mixed_failure_retains_every_reservation(self):
+        env = {**envelope(mode="reported"),
+               "other": {"unit": "tokens", "available": 4, "accounting": "reported"},
+               "fixed": {"unit": "calls", "available": 2, "accounting": "reservation"}}
+        allocation = {"ai": 1, "other": 2, "fixed": 1}
+        reserved = Resources(env)
+        self.assertTrue(reserved.reserve(allocation))
+        for first in (.25, 3):
+            for invalid in (None, -1, True, "1", float("nan"), float("inf")):
+                with self.subTest(first=first, invalid=invalid):
+                    usage = {"ai": first, "fixed": 99}
+                    if invalid is not None:
+                        usage["other"] = invalid
+                    # Direct settlement must also validate all reports before mutation.
+                    resources = Resources(env)
+                    resources.reserve(allocation)
+                    with self.assertRaises(Failure):
+                        resources.settle(allocation, usage)
+                    self.assertEqual(resources.state, reserved.state)
+                    g = graph()
+                    g["nodes"]["work"]["requires"] = allocation
+                    output = result(usage=usage)
+                    record, backend, execute = self.run_graph(g, env, Mock(return_value=output))
+                    self.assertEqual(record["failure"]["kind"], "accounting" if invalid is None else "result")
+                    self.assertEqual(record["resources"], reserved.state)
+                    execute.assert_called_once()
+                    backend.writeback.assert_not_called()
+        for kind in ("launch", "timeout", "transport", "executor"):
+            with self.subTest(failure=kind):
+                g = graph()
+                g["nodes"]["work"]["requires"] = allocation
+                record, backend, execute = self.run_graph(g, env, Mock(side_effect=Failure(kind, "stopped")))
+                self.assertEqual(record["failure"]["kind"], kind)
+                self.assertEqual(record["resources"], reserved.state)
+                execute.assert_called_once()
+                backend.writeback.assert_not_called()
+
+    def test_reservation_ignores_valid_usage(self):
+        for usage in ({}, {"ai": 0}, {"ai": .25}, {"ai": 1}, {"ai": 99}):
+            with self.subTest(usage=usage):
+                record, _, _ = self.run_graph(executor=Mock(return_value=result(usage=usage)))
+                self.assertEqual(record["status"], "completed")
+                self.assertEqual(record["resources"]["ai"]["available"], 1)
+                self.assertEqual(record["resources"]["ai"]["charged"], 1)
 
     def test_validation_rejects_unselected_invalid_node(self):
         for change in (lambda g: g["nodes"]["work"].update(kind="planner"),
@@ -194,10 +258,28 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(record["last"]["data"]["status"], "resource_exhausted")
         self.assertEqual(len([e for e in record["events"] if e["node"] == "work"]), 2)
 
-    def test_undeclared_usage_stops_run(self):
-        record, backend, _ = self.run_graph(executor=Mock(return_value=result(usage={"other": 1})))
-        self.assertEqual(record["failure"]["kind"], "accounting")
-        backend.writeback.assert_not_called()
+    def test_unreserved_usage_ignored_but_result_validation_preserved(self):
+        for mode in ("reservation", "reported"):
+            for usage in ({"ai": .25, "other": 99, "unknown": 99},
+                          {"ai": .25, "other": -1}, {"ai": .25, "unknown": True},
+                          {"ai": -1}, {"": 1}, [1], None):
+                with self.subTest(mode=mode, usage=usage):
+                    env = {**envelope(mode=mode),
+                           "other": {"unit": "tokens", "available": 2, "accounting": "reported"}}
+                    output = result()
+                    output["usage"] = usage
+                    record, backend, _ = self.run_graph(env=env, executor=Mock(return_value=output))
+                    valid = isinstance(usage, dict) and usage.get("unknown") == 99
+                    self.assertEqual(record["status"], "completed" if valid else "failed")
+                    self.assertEqual(record["resources"]["other"], Resources(env).state["other"])
+                    charge = .25 if valid and mode == "reported" else 1
+                    self.assertEqual(record["resources"]["ai"]["charged"], charge)
+                    self.assertEqual(record["resources"]["ai"]["available"], 2 - charge)
+                    if valid:
+                        self.assertEqual(record["results"]["work"], output)
+                    else:
+                        self.assertEqual(record["failure"]["kind"], "result")
+                        backend.writeback.assert_not_called()
 
     def test_gitweave_reported_usage_rejected_before_launch(self):
         g = graph()

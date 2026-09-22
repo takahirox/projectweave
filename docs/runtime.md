@@ -37,14 +37,26 @@ or `reported`. Units are operator-defined (invocations, tokens, USD, etc.). Ever
 agent/execute node requires a nonempty `requires` map of positive amounts. All
 amounts are checked atomically and reserved before launch. Insufficient or absent
 resources produce an ordinary `resource_exhausted` result without launching.
-Reservation mode charges the full allocation, including failed launches; reported
-mode refunds the unused allocation only after a valid usage report. Missing
-reported usage, undeclared resource usage, or usage above reservation fails closed;
-the allocation stays charged and any known overrun is also charged. Executors
-receive the allocation and remaining envelope. This bounds admission, not actual
-provider spending: an uncooperative executor can overrun, so strict in-flight
-limits require provider-side controls. No discovery, resets, purchases, or
-provider switching. Accounting is scoped to one Run, not concurrent processes.
+`reservation` keeps the full reserved amount charged, regardless of supplied usage.
+`reported` first requires valid usage for every reserved reported resource, then
+settles each once with `available += reserved - reported` and
+`charged += reported - reserved`. Usage above the reservation uses the same
+formula and is not a Runtime Failure. Available balances may become negative;
+later executions requiring that resource are refused by the admission check.
+
+Usage for unreserved resources is ignored for settlement, including resources
+outside the envelope. Common Result validation still requires all usage entries
+to have nonblank names and finite, nonnegative numbers. Configuration is
+responsible for declaring resources an executor may consume in `requires`.
+Missing or invalid required usage, invalid Results, and executor Runtime Failures
+stop the Run and keep every reservation charged. No partial settlement or inferred
+refunds occur, even when another resource has a valid report or an overrun.
+
+Executors receive the allocation and remaining envelope. This reflects reported
+consumption and constrains subsequent admission; it does not guarantee an
+in-flight consumption limit. Strict spending limits require executor/provider
+controls. No discovery, resets, purchases, or provider switching. Accounting is
+scoped to one Run, not concurrent processes or a billing ledger.
 
 ## GitHub mapping
 
