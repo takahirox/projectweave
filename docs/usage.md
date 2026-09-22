@@ -29,20 +29,25 @@ Init creates four ordinary JSON files under the checkout root's `.projectweave/`
 
 | File | Purpose / human input |
 | --- | --- |
-| `project.json` | Project owner/type/number, repository scope, ready label, empty priority order |
+| `project.json` | Project owner/type/number, repository scope, ready label, standard Priority order `P0`, `P1`, `P2` |
 | `resources.json` | `gitweave.available` starts at **0**; explicitly set capacity to at least 1 before execution |
 | `graph.json` | Load, select an eligible Issue from this repository, check capacity, execute GitWeave, comment the result |
 | `gitweave.json` | One implementation agent; explicitly replace `CONFIGURE_PROVIDER` and `CONFIGURE_MODEL`, review the instruction and optional effort/permission settings |
 
-The default graph ignores Priority and has no Status filter or update, so **no
-Project fields are required, verified, created, or repaired**. Existing fields of
-any type/options are left alone. The only label it verifies/creates is
-`projectweave-ready`; an existing label is reused without changing its color or
-description (incompatible letter casing is reported). Init never selects Issues,
-adds Project items, assigns priorities, runs AI, installs tools, changes auth, or
-pushes. Selection at Run time uses open, nonarchived Project Issues with the ready
-label and matching repository. An empty `priority_order` leaves the existing
-oldest-Issue/tie-break ordering in effect; init does not assign a priority policy.
+The default workflow retains the standard Priority order **P0, P1, P2**.
+Init reads every page of Project fields before deciding Priority is missing. It
+reuses a `Priority` single-select field containing each required option name
+exactly once (additional options and any display order are allowed), or creates
+that field with P0/P1/P2 options when absent. An incompatible type, missing or
+ambiguous required options, or ambiguous field name is reported without repair.
+No Status filter or update is needed: Status fields and policy are left unchanged.
+The only label init verifies/creates is `projectweave-ready`; an existing label is
+reused without changing its color or description (incompatible casing is reported).
+Init never selects Issues, adds Project items, assigns priorities, runs AI,
+installs tools, changes auth, or pushes. Selection at Run time uses open,
+nonarchived Project Issues with the ready label and matching repository, ranked
+by P0/P1/P2, then oldest Issue and existing tie-breakers. Unknown or unset Priority
+values sort below those three; setting an Issue priority remains a human choice.
 The optional `repository` project setting scopes selection; configurations that
 omit it retain the original all-repositories selection behavior.
 
@@ -60,9 +65,19 @@ or provenance publication access. Remaining configuration blockers are listed in
 `missing`; access/operational checks are listed in `human_actions`, even after the
 model and capacity are configured. Init requires working `git`, `gh` and GitWeave
 commands, `gh` authentication, repository read access and Project read access.
-Explicit Project creation needs Project write access; label creation needs
+Project or missing Priority field creation needs Project write access; label creation needs
 repository permission to manage labels. Failure reports give the current check
-and a concrete recovery action. No authentication scopes are changed automatically.
+and a concrete recovery action. A field read failure stops creation; after a field
+creation failure (including a lost response), rerun init to inspect all fields and
+reuse any compatible field already created. Saved files and Project identity are
+retained for recovery. No authentication scopes are changed automatically.
+
+Existing files are never overwritten, including scaffolds from an earlier version
+with `priority_order: []`. Init reports those as incompatible; manually set
+`priority_order` to `["P0", "P1", "P2"]` in `project.json`, then rerun. Init does
+not migrate files or change existing field types/options. The field mutation uses
+GitHub's [Projects GraphQL contract](https://docs.github.com/en/graphql/reference/projects#createprojectv2fieldinput)
+with explicit single-select option names, neutral colors and empty descriptions.
 
 After reviewing/editing the files and installing/authenticating your chosen
 provider yourself, follow the printed commands. For example:

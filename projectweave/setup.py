@@ -13,7 +13,41 @@ from .graph import validate
 from .resources import Resources
 
 LABEL = "projectweave-ready"
+PRIORITIES = ["P0", "P1", "P2"]
 FILES = ("project.json", "resources.json", "graph.json", "gitweave.json")
+
+
+def ensure_priority(backend, report):
+    pending = "Verified Priority single-select field with P0/P1/P2 options"
+    report["missing"].append(pending)
+    # Exhaust pagination before deciding a field is absent (or unambiguous).
+    fields = list(backend.pages(backend.resolve(), "ProjectV2", "fields",
+        "__typename ... on ProjectV2FieldCommon { name dataType } "
+        "... on ProjectV2SingleSelectField { options { name } }"))
+    matches = [field for field in fields if field["name"] == "Priority"]
+    if matches:
+        require(len(matches) == 1, "Incompatible Priority fields: name is ambiguous; review manually")
+        field = matches[0]
+        require(field["__typename"] == "ProjectV2SingleSelectField" and field["dataType"] == "SINGLE_SELECT",
+                "Incompatible Priority field: expected SINGLE_SELECT; existing field left unchanged")
+        names = [option["name"] for option in field["options"]]
+        require(all(names.count(name) == 1 for name in PRIORITIES),
+                "Incompatible Priority options: require P0, P1, P2 exactly once each; existing options left unchanged")
+        report["existing"].append("Priority field (P0/P1/P2)")
+    else:
+        response = backend.query("""mutation($input:CreateProjectV2FieldInput!) {
+          createProjectV2Field(input:$input) { projectV2Field {
+            ... on ProjectV2SingleSelectField { id name options { name } }
+          } } }""", {"input": {"projectId": backend.resolve(), "name": "Priority",
+            "dataType": "SINGLE_SELECT", "singleSelectOptions": [
+                {"name": name, "color": "GRAY", "description": ""} for name in PRIORITIES]}})
+        field = response["createProjectV2Field"]["projectV2Field"]
+        require(text(field["id"]) and field["name"] == "Priority"
+                and [option["name"] for option in field["options"]] == PRIORITIES,
+                "Unexpected Priority creation response; rerun to inspect existing fields")
+        report["created"].append("Priority field (P0/P1/P2)")
+    report["missing"].remove(pending)
+    report["fields"] = "Priority verified; Status unchanged (no filter or update)"
 
 
 def add_init_arguments(parser):
@@ -114,9 +148,9 @@ def initialize(args):
         require(number is not None or text(args.create_project),
                 "Choose --project-number NUMBER or explicitly --create-project TITLE; no Project is auto-selected")
         project = {"owner": owner, "owner_type": saved["owner_type"] if saved else "user",
-                   "number": number or 1, "repository": args.repo, "label": LABEL, "priority_order": []}
+                   "number": number or 1, "repository": args.repo, "label": LABEL, "priority_order": PRIORITIES}
         if saved is not None:
-            require(equal(saved, project), "Incompatible project.json; default setup uses repository + label only, no Status/Priority policy")
+            require(equal(saved, project), "Incompatible project.json; default setup uses Priority order P0/P1/P2 and no Status policy; review manually")
             report["existing"].append(str(directory / "project.json"))
         values = {}
         for name, template in expected.items():
@@ -189,7 +223,10 @@ def initialize(args):
                      "--description", "Explicitly eligible for ProjectWeave"], None, 120)
             report["created"].append(f"label {LABEL}")
             report["missing"].remove(f"Confirmed label {LABEL} (rerun to check after an uncertain creation)")
-        report["fields"] = "None required; Status and Priority are neither checked nor modified"
+        operation = ("Check Project field read access and write access for missing Priority creation; "
+                     "review incompatible fields manually. Rerun init to read all fields and reuse any "
+                     "Priority field created before a failure; existing fields are never repaired")
+        ensure_priority(backend, report)
         report["initialized"] = True
         q = shlex.quote
         report["next_commands"] = [

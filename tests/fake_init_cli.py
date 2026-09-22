@@ -67,6 +67,31 @@ if args[:3] == ["api", "--hostname", "github.com"]:
         emit({"type": state.get("owner_type", "Organization"), "node_id": "OWNER"})
 if request:
     query = request["query"]
+    if "fields(first:" in query:
+        assert "... on ProjectV2FieldCommon { name dataType }" in query
+        cursor = request["variables"]["cursor"]
+        if mode == "field_read" or (mode == "field_page" and cursor):
+            fail("field read denied")
+        # Priority is deliberately on the final page. Status is unrelated.
+        fields = state.get("fields", []) if cursor else state.get("first_fields", [
+            {"__typename": "ProjectV2Field", "name": "Status", "dataType": "TEXT"}])
+        emit({"data": {"node": {"fields": {"nodes": fields,
+            "pageInfo": {"hasNextPage": cursor is None, "endCursor": "last" if cursor is None else None}}}}})
+    if "createProjectV2Field(" in query:
+        assert query.startswith("mutation($input:CreateProjectV2FieldInput!)")
+        assert request["variables"] == {"input": {"projectId": "P", "name": "Priority",
+            "dataType": "SINGLE_SELECT", "singleSelectOptions": [
+                {"name": n, "color": "GRAY", "description": ""} for n in ("P0", "P1", "P2")]}}
+        assert not any(f["name"] == "Priority" for f in state.get("fields", [])), "duplicate field"
+        if mode == "field_write":
+            fail("field write denied")
+        field = {"__typename": "ProjectV2SingleSelectField", "id": "F", "name": "Priority",
+                 "dataType": "SINGLE_SELECT", "options": [{"name": n} for n in ("P0", "P1", "P2")]}
+        state.setdefault("fields", []).append(field)
+        state_file.write_text(json.dumps(state))
+        if mode == "field_lost":
+            fail("response lost")
+        emit({"data": {"createProjectV2Field": {"projectV2Field": field}}})
     if "projectV2(number:" in query:
         if mode == "project":
             emit({"errors": [{"message": "Project inaccessible"}]})
