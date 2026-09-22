@@ -9,10 +9,13 @@ PAGE = "pageInfo { hasNextPage endCursor }"
 
 def validate_project(config):
     keys(config, {"owner", "number", "owner_type", "label", "priority_field", "status_field",
-                  "priority_order", "eligible_statuses"}, {"owner", "number", "owner_type"})
+                  "priority_order", "eligible_statuses", "repository"}, {"owner", "number", "owner_type"})
     require(text(config["owner"]) and re.fullmatch(r"[A-Za-z0-9_-]+", config["owner"]), "Invalid project owner")
     require(type(config["number"]) is int and config["number"] > 0, "Invalid project number")
     require(config["owner_type"] in ("user", "organization"), "Invalid owner_type")
+    if "repository" in config:
+        require(text(config["repository"]) and re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", config["repository"])
+                and config["repository"].split("/")[1] not in (".", ".."), "Invalid repository")
     for field in ("label", "priority_field", "status_field"):
         require(field not in config or text(config[field]), f"Invalid {field}")
     for field in ("priority_order", "eligible_statuses"):
@@ -103,6 +106,8 @@ class GitHub:
         ranks = {name: i for i, name in enumerate(priorities)}
         try:
             eligible = [t for t in tasks if t["state"] == "OPEN"
+                        and ("repository" not in self.config or
+                             t["repository"].lower() == self.config["repository"].lower())
                         and self.config.get("label", "projectweave-ready") in t["labels"]
                         and ("eligible_statuses" not in self.config or t["status"] in self.config["eligible_statuses"])]
             return min(eligible, key=lambda t: (ranks.get(t["priority"], len(ranks)),
