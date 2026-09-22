@@ -1,4 +1,4 @@
-"""Run-local admission and conservative reservation accounting."""
+"""Run-local admission, reservation, and reported settlement."""
 from copy import deepcopy
 from .contracts import Failure, keys, require, text, number
 
@@ -24,22 +24,14 @@ class Resources:
         return True
 
     def settle(self, allocation, usage):
-        errors = []
-        for key, amount in usage.items():
-            if key not in allocation:
-                errors.append(f"Undeclared usage: {key}")
-            if key in self.state and amount > allocation.get(key, 0):
-                extra = amount - allocation.get(key, 0)
-                self.state[key]["available"] -= extra
-                self.state[key]["charged"] += extra
-                errors.append(f"Usage exceeds allocation: {key}")
+        # Validate every required report before changing any resource balance.
         for key in allocation:
-            if self.state[key]["accounting"] == "reported" and key not in usage:
-                errors.append(f"Missing reported usage: {key}")
-        if errors:
-            raise Failure("accounting", "; ".join(errors), {"usage": usage})
+            if self.state[key]["accounting"] == "reported":
+                if key not in usage:
+                    raise Failure("accounting", f"Missing reported usage: {key}", {"usage": usage})
+                if not number(usage[key]):
+                    raise Failure("accounting", f"Invalid reported usage: {key}", {"usage": usage})
         for key, amount in allocation.items():
             if self.state[key]["accounting"] == "reported":
-                refund = amount - usage[key]
-                self.state[key]["available"] += refund
-                self.state[key]["charged"] -= refund
+                self.state[key]["available"] += amount - usage[key]
+                self.state[key]["charged"] += usage[key] - amount
