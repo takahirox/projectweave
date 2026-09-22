@@ -41,13 +41,6 @@ class Runtime:
             except Failure as exc:
                 if output is not None:
                     exc.details["result"] = output
-                if node.get("config", {}).get("failure_comment", False):
-                    diagnostic = result("Executor Runtime Failure", {"failure": exc.record()})
-                    try:
-                        posted = self.backend.writeback(inputs["task"], diagnostic, self.context["run_id"])
-                        exc.details["diagnostic_references"] = posted["references"]
-                    except Failure as secondary:
-                        exc.details["diagnostic_failure"] = secondary.record()
                 raise
             return output
         if action == "load":

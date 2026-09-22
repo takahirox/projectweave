@@ -47,9 +47,7 @@ def validate(graph):
             require(isinstance(cost, dict) and cost and all(text(k) and number(v, True)
                     for k, v in cost.items()), "requires must contain positive resource allocations")
             require("task" in inputs, "Execution requires a task input")
-            keys(cfg, {"failure_comment"})
-            require("failure_comment" not in cfg or type(cfg["failure_comment"]) is bool,
-                    "failure_comment must be boolean")
+            keys(cfg, set())
         else:
             require("executor" not in node and "requires" not in node, "Nonexecution node cannot allocate")
             action = node["action"]

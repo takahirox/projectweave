@@ -76,18 +76,42 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(record["resources"]["ai"]["charged"], 1)
         backend.writeback.assert_not_called()
 
-    def test_failure_diagnostic(self):
-        g = graph()
-        g["nodes"]["work"]["config"] = {"failure_comment": True}
-        record, backend, _ = self.run_graph(g, executor=Mock(side_effect=Failure("launch", "missing")))
-        self.assertEqual(record["failure"]["details"]["diagnostic_references"], ["comment"])
-        self.assertEqual(backend.writeback.call_args.args[1]["data"]["failure"]["kind"], "launch")
+    def test_execution_failures_stop_without_writeback(self):
+        for kind in ("agent", "action"):
+            for failure_kind in ("launch", "timeout", "transport", "executor"):
+                with self.subTest(kind=kind, failure=failure_kind):
+                    g = graph()
+                    if kind == "action":
+                        g["nodes"]["work"].update(kind="action", action="execute")
+                        del g["nodes"]["work"]["instruction"]
+                    failure = Failure(failure_kind, "executor stopped", {"stderr": "details"})
+                    execute = Mock(side_effect=failure)
+                    record, backend, _ = self.run_graph(g, executor=execute)
+                    self.assertEqual(record["status"], "failed")
+                    self.assertEqual(record["failure"], {**failure.record(), "node": "work"})
+                    self.assertEqual(list(record["results"]), ["load", "select"])
+                    self.assertEqual([e["node"] for e in record["events"]], ["load", "select"])
+                    self.assertEqual(record["last"], record["results"]["select"])
+                    self.assertEqual(record["steps"], 4)
+                    self.assertEqual(record["resources"]["ai"]["charged"], 1)
+                    self.assertEqual(record["resources"]["ai"]["available"], 1)
+                    execute.assert_called_once()
+                    backend.writeback.assert_not_called()
 
     def test_accounting_and_invalid_output(self):
-        for output, kind in ((result(usage={"ai": 2}), "accounting"), ({"message": "oops"}, "result")):
-            record, backend, _ = self.run_graph(executor=Mock(return_value=output))
-            self.assertEqual(record["failure"]["kind"], kind)
-            backend.writeback.assert_not_called()
+        output = result("Completed task", {"approved": False}, ["artifact"], {"ai": 2})
+        for value, kind, charged in ((output, "accounting", 2), ({"message": "oops"}, "result", 1)):
+            with self.subTest(kind=kind):
+                record, backend, execute = self.run_graph(executor=Mock(return_value=value))
+                self.assertEqual(record["status"], "failed")
+                self.assertEqual(record["failure"]["kind"], kind)
+                self.assertEqual(record["failure"]["node"], "work")
+                self.assertEqual(list(record["results"]), ["load", "select"])
+                self.assertEqual(record["resources"]["ai"]["charged"], charged)
+                if kind == "accounting":
+                    self.assertEqual(record["failure"]["details"], {"usage": {"ai": 2}, "result": output})
+                execute.assert_called_once()
+                backend.writeback.assert_not_called()
 
     def test_reported_refund_and_missing_report(self):
         record, _, _ = self.run_graph(env=envelope(mode="reported"), executor=Mock(return_value=result(usage={"ai": .25})))
@@ -183,17 +207,28 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(record["resources"]["ai"]["charged"], 0)
         execute.assert_not_called()
 
-    def test_diagnostic_write_failure_keeps_primary_failure(self):
+    def test_execution_config_rejects_removed_option_before_io(self):
+        for kind in ("agent", "action"):
+            for value in (True, False):
+                with self.subTest(kind=kind, value=value):
+                    g = graph()
+                    if kind == "action":
+                        g["nodes"]["work"].update(kind="action", action="execute")
+                        del g["nodes"]["work"]["instruction"]
+                    g["nodes"]["work"]["config"] = {"failure_comment": value}
+                    backend, execute = Mock(), Mock()
+                    with self.assertRaises(Failure) as caught:
+                        Runtime(g, PROJECT, envelope(), backend, execute)
+                    self.assertEqual(caught.exception.kind, "validation")
+                    self.assertEqual(backend.mock_calls, [])
+                    execute.assert_not_called()
+
+    def test_execution_accepts_empty_config(self):
         g = graph()
-        g["nodes"]["work"]["config"] = {"failure_comment": True}
-        backend = Mock()
-        backend.load.return_value = [TASK]
-        backend.select.return_value = TASK
-        backend.writeback.side_effect = Failure("writeback", "denied")
-        record = Runtime(g, PROJECT, envelope(), backend,
-                         Mock(side_effect=Failure("transport", "executor stopped"))).run()
-        self.assertEqual(record["failure"]["kind"], "transport")
-        self.assertEqual(record["failure"]["details"]["diagnostic_failure"]["kind"], "writeback")
+        g["nodes"]["work"]["config"] = {}
+        record, _, execute = self.run_graph(g)
+        self.assertEqual(record["status"], "completed")
+        execute.assert_called_once()
 
     def test_deterministic_final_tiebreak_and_missing_priority(self):
         backend = GitHub(PROJECT)

@@ -25,7 +25,10 @@ usage maps resource names to nonnegative numbers. Results are retained by node I
 Task outcomes (including rejection) belong in data, never process exit codes.
 Missing paths, invalid output, launch, timeout, transport, accounting, and
 writeback errors are separate Runtime Failures and terminate the Run. No hidden
-fallback or automatic retry. The receipt retains completed results and resources.
+fallback or automatic retry. Executor failures never trigger automatic GitHub
+writeback. The receipt retains failure details, completed results, and resources;
+a valid executor Result is included in failure details if accounting fails.
+Failure routing is not supported; subsequent graph operations are not executed.
 
 ## Resources
 
