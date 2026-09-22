@@ -162,7 +162,21 @@ python3 -m projectweave validate --graph examples/review-fix.json
 python3 -m unittest discover -s tests -v
 ```
 
-For a live Run, configure the project, resource amounts, and executor paths in
+For first-time setup in a target checkout, select an existing GitHub Project:
+
+```sh
+projectweave init --repo owner/repo --project-number 7
+```
+
+Or explicitly create one with `--create-project "First Run"`; use
+`--project-owner LOGIN` for a different user/organization owner. Init writes
+human-editable files in `.projectweave/` without overwriting existing files.
+Capacity starts at zero and provider/model configuration remains a human action.
+Follow the printed steps to add a chosen Issue to the Project, label it ready,
+and run. See [initialization and recovery](docs/usage.md#initialize-a-repository)
+for prerequisites, compatibility rules, and live Run limitations.
+
+For manual setup, configure the project, resource amounts, and executor paths in
 [examples/dispatch.json](examples/dispatch.json),
 [examples/project.json](examples/project.json), and
 [examples/resources.json](examples/resources.json), then run:

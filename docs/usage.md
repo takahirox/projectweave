@@ -1,6 +1,116 @@
 # CLI and executor guide
 
-## Setup and one Run
+## Initialize a repository
+
+Install ProjectWeave, Git, `gh`, and GitWeave on PATH first. From a checkout with
+an `origin` on github.com and at least one commit, explicitly select a Project:
+
+```sh
+projectweave init --repo owner/repo --project-number 7
+```
+
+Or explicitly create one (no discovery or automatic creation):
+
+```sh
+projectweave init --repo owner/repo --project-owner my-team --create-project "First Run"
+```
+
+`--project-number` and `--create-project TITLE` are mutually exclusive.
+`--project-owner` defaults to the saved configuration's owner, then the repository
+owner. GitHub determines whether that login is a user or organization; both
+Projects v2 owner types work. An existing `.projectweave/project.json` is reused,
+including when rerunning with `--create-project`. Conflicting explicit selections
+fail. No candidate is chosen when selection is missing. Enterprise hosts and
+local-only origins are unsupported. The checkout's `origin` must match `--repo`
+(case-insensitively; HTTPS and GitHub SSH forms are accepted), and HEAD must resolve
+to a commit, before any file or GitHub mutation.
+
+Init creates four ordinary JSON files under the checkout root's `.projectweave/`:
+
+| File | Purpose / human input |
+| --- | --- |
+| `project.json` | Project owner/type/number, repository scope, ready label, empty priority order |
+| `resources.json` | `gitweave.available` starts at **0**; explicitly set capacity to at least 1 before execution |
+| `graph.json` | Load, select an eligible Issue from this repository, check capacity, execute GitWeave, comment the result |
+| `gitweave.json` | One implementation agent; explicitly replace `CONFIGURE_PROVIDER` and `CONFIGURE_MODEL`, review the instruction and optional effort/permission settings |
+
+The default graph ignores Priority and has no Status filter or update, so **no
+Project fields are required, verified, created, or repaired**. Existing fields of
+any type/options are left alone. The only label it verifies/creates is
+`projectweave-ready`; an existing label is reused without changing its color or
+description (incompatible letter casing is reported). Init never selects Issues,
+adds Project items, assigns priorities, runs AI, installs tools, changes auth, or
+pushes. Selection at Run time uses open, nonarchived Project Issues with the ready
+label and matching repository. An empty `priority_order` leaves the existing
+oldest-Issue/tie-break ordering in effect; init does not assign a priority policy.
+The optional `repository` project setting scopes selection; configurations that
+omit it retain the original all-repositories selection behavior.
+
+Both graphs receive static validation, including the public `gitweave validate`
+command, which runs no agents. Provider/model placeholders are deliberate:
+GitWeave's static validator accepts them, but its runtime rejects the unconfigured
+provider. Omitting the model would allow native defaults, so replace **both**
+placeholders explicitly. Static validity is not live execution readiness.
+
+Init prints JSON with `initialized`, `ready`, `created`, `existing`, `missing`,
+`failure`, `human_actions`, and `next_commands`. Exit 0 means mechanical setup
+completed; exit 2 means incomplete setup. `ready` stays false: shallow checks cannot
+certify provider credentials, Issue comment permission, future Issue eligibility,
+or provenance publication access. Remaining configuration blockers are listed in
+`missing`; access/operational checks are listed in `human_actions`, even after the
+model and capacity are configured. Init requires working `git`, `gh` and GitWeave
+commands, `gh` authentication, repository read access and Project read access.
+Explicit Project creation needs Project write access; label creation needs
+repository permission to manage labels. Failure reports give the current check
+and a concrete recovery action. No authentication scopes are changed automatically.
+
+After reviewing/editing the files and installing/authenticating your chosen
+provider yourself, follow the printed commands. For example:
+
+```sh
+# From the target checkout; replace 7, owner/repo, and 123 with your choices.
+gitweave validate --graph .projectweave/gitweave.json
+projectweave validate --graph .projectweave/graph.json
+ISSUE_NUMBER=123
+GH_HOST=github.com gh project item-add 7 --owner owner --url "https://github.com/owner/repo/issues/$ISSUE_NUMBER"
+gh issue edit "$ISSUE_NUMBER" --repo github.com/owner/repo --add-label projectweave-ready
+projectweave run --graph .projectweave/graph.json \
+  --project .projectweave/project.json --resources .projectweave/resources.json
+```
+
+Adding an Issue to the Project requires Project write access. Labeling alone does
+not add it. Init does neither operation. Capacity is a per-Run reservation count,
+not a token/dollar budget, and is reloaded each Run. With zero capacity or no
+eligible Issue, this graph neither launches GitWeave nor posts a comment.
+It does not remove the ready label or close the Issue afterward; remove the label
+manually when appropriate to avoid selecting it again.
+
+The executor targets the verified checkout using absolute repo/graph paths, and
+runs from its **HEAD commit**, not uncommitted edits. Review and commit intended
+repository changes before running. A moved checkout needs manually updated paths;
+init reports the old scaffold as incompatible. GitWeave retains work as commits
+and may automatically push provenance refs/notes to origin during a live Run.
+The default graph contains no PR publication or merge action. Review your Git
+identity, permissions and provenance destination before executing; init neither
+runs a probe agent nor promises live Run success.
+
+Rerun `projectweave init --repo owner/repo` to reuse saved Project selection.
+Files are never overwritten; missing files are generated. The small compatibility
+check accepts this fixed scaffold with edited resource capacity and GitWeave
+provider/model/instruction plus optional `effort`, `sandbox`, `permission_mode`.
+Other graph or policy edits are reported as incompatible with this initializer,
+not repaired or treated as invalid for the runtime. Continue managing a customized
+setup manually. Symlinked setup files/directories are rejected.
+
+Partial failures leave ordinary files and GitHub state in place, with completed
+pieces in the report. The Project identity is saved first, before label creation,
+so a rerun can reuse it. There is no rollback, retry loop or setup database. If
+Project creation succeeds remotely but its response or local save fails, inspect
+`GH_HOST=github.com gh project list --owner OWNER` and rerun with `--project-number NUMBER` before
+considering another creation. A lost label response is recovered by checking for
+the label on rerun. Avoid concurrent init invocations.
+
+## Manual setup and one Run
 
 Install Python 3.11+, GitHub CLI (`gh`), and the chosen executor. Authenticate `gh`
 with access to the project and its Issues: project read access for loading,
@@ -211,3 +321,9 @@ No live executor or GitHub mutation is part of this suite. It verifies the publi
 contracts against fixtures, not installed GitWeave behavior, actual permissions,
 provider accounting, or network behavior. Real GitWeave execution can consume AI
 allowance and publish provenance; live validation remains an operator action.
+
+Init tests use strict external-command fixtures for Git/GitHub/GitWeave, including
+first use, reruns, incompatible files, failures and partial recovery. To additionally
+validate the generated template with a local GitWeave checkout's public CLI, run
+`GITWEAVE_SOURCE=/path/to/gitweave python3 -m unittest discover -s tests -v`.
+This optional check is static and performs no AI execution or GitHub mutation.
