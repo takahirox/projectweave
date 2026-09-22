@@ -1,4 +1,4 @@
-"""Static validation; only sequence and conditional flow."""
+"""Static validation of sequence, conditional, and structured loop flow."""
 from .contracts import keys, require, number, text, valid_pointer, check_result
 
 
@@ -68,18 +68,27 @@ def validate(graph):
                     require("items" in inputs, "select needs items input")
 
     def flow(entries, depth=0):
-        require(depth <= 32, "Conditional nesting exceeds 32")
+        require(depth <= 32, "Control nesting exceeds 32")
         require(isinstance(entries, list), "flow must be an array")
         for entry in entries:
             if isinstance(entry, str):
                 require(entry in graph["nodes"], f"Unknown node: {entry}")
             else:
-                keys(entry, {"if"}, {"if"})
-                spec = entry["if"]
-                keys(spec, {"path", "equals", "then", "else"}, {"path", "equals", "then", "else"})
-                require(valid_pointer(spec["path"]), "Invalid condition pointer")
-                flow(spec["then"], depth + 1)
-                flow(spec["else"], depth + 1)
+                keys(entry, {"if", "loop"})
+                require(len(entry) == 1, "Expected one control: if or loop")
+                if "if" in entry:
+                    spec = entry["if"]
+                    keys(spec, {"path", "equals", "then", "else"}, {"path", "equals", "then", "else"})
+                    require(valid_pointer(spec["path"]), "Invalid condition pointer")
+                    flow(spec["then"], depth + 1)
+                    flow(spec["else"], depth + 1)
+                else:
+                    spec = entry["loop"]
+                    keys(spec, {"flow", "while"}, {"flow", "while"})
+                    keys(spec["while"], {"path", "equals"}, {"path", "equals"})
+                    require(valid_pointer(spec["while"]["path"]), "Invalid condition pointer")
+                    flow(spec["flow"], depth + 1)
+                    require(bool(spec["flow"]), "loop flow must be nonempty")
     flow(graph["flow"])
     require(bool(graph["flow"]), "flow must be nonempty")
     return graph

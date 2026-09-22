@@ -42,7 +42,7 @@ Evaluate
 
 The important property is that the workflow is explicit and configurable.
 
-The first runtime executes JSON graphs with `agent` and `action` nodes, sequential flow, structured result handoff, and `if` routing. It runs once from the CLI; loops and concurrent execution are outside this release.
+The runtime executes JSON graphs with `agent` and `action` nodes, sequential flow, structured result handoff, `if` routing, and explicit post-condition `loop` control bounded by `max_steps`. It runs once from the CLI; concurrent execution is outside this release.
 
 ## AI resources as constraints
 
@@ -158,6 +158,7 @@ Use `python3 -m projectweave` from this checkout, or install with
 
 ```sh
 python3 -m projectweave validate --graph examples/dispatch.json
+python3 -m projectweave validate --graph examples/review-fix.json
 python3 -m unittest discover -s tests -v
 ```
 
