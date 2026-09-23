@@ -314,6 +314,20 @@ class InitTests(unittest.TestCase):
         self.assertEqual(self.read("project.json"), project)
         self.assertEqual(self.mutations(calls), [])
 
+    def test_second_field_lost_creation_recovers_without_duplicate(self):
+        priority = {"__typename": "ProjectV2SingleSelectField", "name": "Priority", "dataType": "SINGLE_SELECT",
+                    "options": [{"name": n} for n in ("P0", "P1", "P2")]}
+        self.state.write_text(json.dumps({"projects": 0, "fields": [priority]}))
+        code, report, calls = self.invoke("--project-number", "7", mode="field_lost")
+        self.assertEqual(code, 2, report)
+        self.assertTrue(any("AI execution" in entry for entry in report["missing"]))
+        self.assertEqual(len(self.mutations(calls)), 1)
+        code, report, calls = self.invoke()
+        self.assertEqual(code, 0, report)
+        self.assertEqual(self.mutations(calls), [])
+        self.assertIn("AI execution field (Ready/Not ready)", report["existing"])
+        self.assertEqual([f["name"] for f in json.loads(self.state.read_text())["fields"]], ["Priority", "AI execution"])
+
     def test_incompatible_ai_execution_field_never_repaired(self):
         for kind, datatype, options in (("ProjectV2Field", "TEXT", []),
                 ("ProjectV2SingleSelectField", "SINGLE_SELECT", ["Ready"]),
