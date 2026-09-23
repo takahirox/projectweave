@@ -42,11 +42,13 @@ def validate(graph):
             require("instruction" not in node, "instruction is only valid for agents")
         cfg = node.get("config", {})
         if execute:
-            require("executor" in node and "requires" in node, "Execution requires executor and resources")
+            require("executor" in node, "Execution requires an executor")
             executor(node["executor"])
-            cost = node["requires"]
-            require(isinstance(cost, dict) and cost and all(text(k) and number(v, True)
-                    for k, v in cost.items()), "requires must contain positive resource allocations")
+            # requires is optional: subscription admission happens in a resources action instead.
+            if "requires" in node:
+                cost = node["requires"]
+                require(isinstance(cost, dict) and cost and all(text(k) and number(v, True)
+                        for k, v in cost.items()), "requires must contain positive resource allocations")
             require("task" in inputs, "Execution requires a task input")
             keys(cfg, set())
         else:
@@ -59,10 +61,13 @@ def validate(graph):
             elif action == "result":
                 check_result(cfg)
             elif action == "resources":
-                keys(cfg, {"requires"})
+                keys(cfg, {"requires", "subscriptions"})
                 cost = cfg.get("requires", {})
                 require(isinstance(cost, dict) and all(text(k) and number(v, True)
                         for k, v in cost.items()), "Invalid resource inspection allocation")
+                names = cfg.get("subscriptions", [])
+                require(isinstance(names, list) and all(text(k) for k in names) and len(set(names)) == len(names),
+                        "subscriptions must be unique resource names")
             else:
                 keys(cfg, set())
                 if action == "select":

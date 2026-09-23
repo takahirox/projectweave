@@ -14,6 +14,8 @@ from .resources import Resources
 
 PRIORITIES = ["P0", "P1", "P2"]
 FILES = ("project.json", "resources.json", "graph.json", "gitweave.json")
+# The one subscription the default graph checks; ProjectWeave never infers providers from gitweave.json.
+SUBSCRIPTION = "subscription"
 
 
 def ensure_field(backend, report, fields, name, options):
@@ -68,7 +70,8 @@ def add_init_arguments(parser):
 
 
 def templates(workspace):
-    resources = {"gitweave": {"unit": "runs", "available": 0, "accounting": "reservation"}}
+    # Remaining usage starts unknown, so nothing runs until a human records it.
+    resources = {SUBSCRIPTION: {"type": "subscription", "stop_at_remaining_percent": 20}}
     worker = {"version": 1, "retries": 0, "max_steps": 1, "nodes": {"work": {
         "kind": "agent", "provider": "CONFIGURE_PROVIDER", "model": "CONFIGURE_MODEL",
         "workspace_base": 0,
@@ -81,8 +84,8 @@ def templates(workspace):
     graph = {"version": 1, "nodes": {
         "load": {"kind": "action", "action": "load"},
         "select": {"kind": "action", "action": "select", "inputs": {"items": "/results/load/data/items"}},
-        "capacity": {"kind": "action", "action": "resources", "config": {"requires": {"gitweave": 1}}},
-        "execute": {"kind": "action", "action": "execute", "requires": {"gitweave": 1},
+        "capacity": {"kind": "action", "action": "resources", "config": {"subscriptions": [SUBSCRIPTION]}},
+        "execute": {"kind": "action", "action": "execute",
                     "executor": {"type": "gitweave", "graph": str(workspace / "gitweave.json")},
                     "inputs": {"task": "/results/select/data/task"}},
         "comment": {"kind": "action", "action": "writeback", "inputs": {
@@ -110,7 +113,8 @@ def compatible(name, value, expected):
     candidate = deepcopy(value)
     if name == "resources.json":
         Resources(candidate)
-        candidate["gitweave"]["available"] = 0
+        candidate[SUBSCRIPTION].pop("remaining_percent", None)
+        candidate[SUBSCRIPTION]["stop_at_remaining_percent"] = expected[SUBSCRIPTION]["stop_at_remaining_percent"]
     elif name == "graph.json":
         validate(candidate)
     elif name == "gitweave.json":
@@ -165,8 +169,8 @@ def initialize(args):
         worker = values["gitweave.json"]["nodes"]["work"]
         if worker["provider"] == "CONFIGURE_PROVIDER" or worker["model"] == "CONFIGURE_MODEL":
             report["missing"].append("Explicit provider and model in gitweave.json")
-        if values["resources.json"]["gitweave"]["available"] < 1:
-            report["missing"].append("Human-approved capacity: set resources.json gitweave.available to at least 1")
+        if values["resources.json"][SUBSCRIPTION].get("remaining_percent") is None:
+            report["missing"].append(f"Observed usage: set resources.json {SUBSCRIPTION}.remaining_percent (0-100) before each Run")
         # GitWeave's public validator does not run agents or access the network.
         operation = "Install GitWeave with its public validate/run CLI on PATH; review gitweave.json if validation fails"
         with tempfile.TemporaryDirectory(prefix="projectweave-validate-") as tmp:
@@ -221,7 +225,7 @@ def initialize(args):
         ]
         report["human_actions"] = [
             "Choose provider/model explicitly in gitweave.json; review instruction and any effort/permission settings. Install and authenticate that provider yourself.",
-            "Set resources.json capacity deliberately. It is a per-Run reservation count, not a token or money budget; every Run reloads the file.",
+            f"Before each Run, record the provider subscription's remaining usage as resources.json {SUBSCRIPTION}.remaining_percent (0-100) for the provider chosen in gitweave.json. No Task starts while it is unknown or at/below stop_at_remaining_percent (default 20; adjust deliberately). ProjectWeave does not observe or estimate usage itself; every Run reloads the file.",
             f"Choose an open Issue from any repository and add it to the Project using the commands below, then set its {ELIGIBILITY_FIELD} field to {READY} in the Project. No Issue has been selected or changed.",
             "A Run clones the selected Issue's repository lazily into repos/OWNER/REPO under this workspace with `gh repo clone`, fetches origin, and executes the remote default branch tip (origin/HEAD); push changes you want included. Fetch uses Git credentials: for HTTPS run `gh auth setup-git` or use SSH. Init clones nothing.",
             "Run readiness is not certified: provider credentials, repository clone access, Issue comment permission, Project item-add access, Git identity and provenance push access need human verification. A live GitWeave Run may push refs/notes to origin; init never runs AI or pushes.",

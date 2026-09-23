@@ -45,8 +45,8 @@ Init creates four ordinary JSON files in the current directory (the workspace):
 | File | Purpose / human input |
 | --- | --- |
 | `project.json` | Project owner/type/number, standard Priority order `P0`, `P1`, `P2` |
-| `resources.json` | `gitweave.available` starts at **0**; explicitly set capacity to at least 1 before execution |
-| `graph.json` | Load, select an eligible Issue from any repository in the Project, check capacity, execute GitWeave in that Issue's repository, comment the result |
+| `resources.json` | One `subscription` entry with `stop_at_remaining_percent: 20` and **no** `remaining_percent`; record the observed remaining usage before each Run |
+| `graph.json` | Load, select an eligible Issue from any repository in the Project, check the subscription threshold, execute GitWeave in that Issue's repository, comment the result |
 | `gitweave.json` | One implementation agent; explicitly replace `CONFIGURE_PROVIDER` and `CONFIGURE_MODEL`, review the instruction and optional effort/permission settings |
 
 The default workflow retains the standard Priority order **P0, P1, P2**.
@@ -80,7 +80,7 @@ completed; exit 2 means incomplete setup. `ready` stays false: shallow checks ca
 certify provider credentials, Issue comment permission, future Issue eligibility,
 or provenance publication access. Remaining configuration blockers are listed in
 `missing`; access/operational checks are listed in `human_actions`, even after the
-model and capacity are configured. Init requires working `gh` and GitWeave
+model and remaining usage are configured. Init requires working `gh` and GitWeave
 commands, `gh` authentication and Project read access.
 Project or missing field creation needs Project write access. Failure reports give the current check
 and a concrete recovery action. A field read failure stops creation; after a field
@@ -109,9 +109,17 @@ projectweave run --graph graph.json --project project.json --resources resources
 ```
 
 Adding an Issue to the Project and setting `AI execution` require Project write
-access. Init does neither operation. Capacity is a per-Run reservation count,
-not a token/dollar budget, and is reloaded each Run. With zero capacity or no
-eligible Issue, this graph neither launches GitWeave nor posts a comment.
+access. Init does neither operation.
+
+The default policy is a subscription stop line. Before each Run, set
+`resources.json` `subscription.remaining_percent` to the remaining usage (0–100)
+of the provider subscription used by `gitweave.json`, for example 45. The graph
+starts a Task only while `remaining_percent > stop_at_remaining_percent` (default
+20; edit it deliberately). With the value absent or null (unknown), at or below
+the stop line, or with no eligible Issue, this graph neither launches GitWeave nor
+posts a comment. The name `subscription` is only a label; ProjectWeave does not
+observe provider usage, estimate it, or infer the provider. The file is reloaded
+each Run.
 It does not reset `AI execution` or close the Issue afterward; set the field to
 `Not ready` manually when appropriate to avoid selecting it again.
 
@@ -138,7 +146,8 @@ runs a probe agent nor promises live Run success.
 
 Rerun `projectweave init` in the workspace to reuse saved Project selection.
 Files are never overwritten; missing files are generated. The small compatibility
-check accepts this fixed scaffold with edited resource capacity and GitWeave
+check accepts this fixed scaffold with edited `remaining_percent` /
+`stop_at_remaining_percent` and GitWeave
 provider/model/instruction plus optional `effort`, `sandbox`, `permission_mode`.
 Other graph or policy edits are reported as incompatible with this initializer,
 not repaired or treated as invalid for the runtime. Continue managing a customized
@@ -168,7 +177,10 @@ belong to one repository. To migrate:
    the old checkout is no longer used.
 
 Alternatively run `projectweave init --project-owner OWNER --project-number N` in
-a new workspace and reapply your provider/model/capacity edits.
+a new workspace and reapply your provider/model edits. Init now emits the
+subscription threshold policy instead of `gitweave` run capacity; an old
+`resources.json` with `gitweave` capacity keeps working with its old graph but is
+reported as incompatible by init.
 
 ### Migrating from the `projectweave-ready` label
 
@@ -218,7 +230,7 @@ python3 -m projectweave run --graph examples/dispatch.json \
 status, failure (or null), executed steps, per-node results, ordered events, last
 result, and remaining/charged resources. A repeated node ID replaces that ID's
 entry; events retain every invocation. Exit 0 means normal graph completion
-(including no work, exhausted capacity, or a negative task outcome); exit 1 is a
+(including no work, exhausted resources, or a negative task outcome); exit 1 is a
 Runtime Failure; exit 2 is invalid input/setup. CLI argument syntax errors also
 use exit 2 via argparse. Save receipts for diagnostics if desired; GitHub remains
 the project state. Receipts contain selected Issue content and bounded executor
@@ -233,8 +245,8 @@ pointers into the Run context. No templating or shell evaluation occurs.
 | --- | --- | --- |
 | `action: load` | none | `items`: nonarchived open Issues and their metadata |
 | `action: select` | `inputs.items` | `task`: highest ranked eligible Issue or null |
-| `action: resources` | optional `config.requires` allocation | `resources` snapshot and `available` admission boolean |
-| `action: execute` | `executor`, nonempty `requires`, `inputs.task`; optional `inputs.context` | executor's Result data |
+| `action: resources` | optional `config.requires` allocation and/or `config.subscriptions` names | `resources` snapshot and `available` admission boolean |
+| `action: execute` | `executor`, `inputs.task`; optional nonempty `requires`, `inputs.context` | executor's Result data |
 | `kind: agent` | same as execute plus `instruction`; omit action | executor's Result data |
 | `action: writeback` | `inputs.task`, `inputs.result`; optional `config.status` | updated Status name or null; comment URL in references |
 | `action: result` | `config` containing a complete Result | literal Result, useful for terminal no-work branches |
@@ -252,7 +264,10 @@ is not supported, so downstream actions do not run after a Runtime Failure.
 `resources.config.requires` tests whether an entire allocation can be admitted
 without charging it. Actual execution checks again and charges before launching.
 An unavailable allocation returns `data.status: "resource_exhausted"`; it is not a
-launch failure. No task returns null from select; graphs should branch before
+launch failure. `resources.config.subscriptions` additionally requires each named
+subscription's `remaining_percent` to be known and above its
+`stop_at_remaining_percent`; it is checked only by this action, so branch on
+`data.available` before executing. No task returns null from select; graphs should branch before
 executing, as the example does. Missing pointer targets are Runtime Failures.
 
 To change Project Status, give a writeback node `"config":{"status":"Done"}`.
