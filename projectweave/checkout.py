@@ -1,4 +1,5 @@
 """Deterministic Task checkouts at <workspace>/repos/<owner>/<repo>; no registry or mapping."""
+import os
 from pathlib import Path
 import re
 from .contracts import Failure, require
@@ -31,7 +32,7 @@ def resolve(workspace, repository):
             require(path.is_dir() and not path.is_symlink(), f"{path} exists but is not a checkout directory", "checkout")
             # Git searches upward, so first ensure the path is itself a repository root, not inside another one.
             top = process(["git", "-C", str(path), "rev-parse", "--show-toplevel"], None, 30).strip()
-            require(Path(top).resolve() == path.resolve(), f"{path} exists but is not itself a Git checkout", "checkout")
+            require(os.path.samefile(top, path), f"{path} exists but is not itself a Git checkout", "checkout")
             origin = process(["git", "-C", str(path), "remote", "get-url", "origin"], None, 30)
             require(origin_matches(origin, repository),
                     f"{path} has origin {origin.strip()!r}, not {repository}; refusing to reuse it", "checkout")
