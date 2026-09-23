@@ -158,7 +158,7 @@ Use `python3 -m projectweave` from this checkout, or install with
 `python3 -m pip install .` to use the `projectweave` command.
 
 ```sh
-python3 -m projectweave validate --graph examples/dispatch.json
+python3 -m projectweave validate --graph projectweave/templates/graph.json
 python3 -m projectweave validate --graph examples/review-fix.json
 python3 -m unittest discover -s tests -v
 ```
@@ -182,21 +182,21 @@ Follow the printed steps to add a chosen Issue to the Project, set its
 `AI execution` field to `Ready`, and run. See [initialization and recovery](docs/usage.md#initialize-a-project-workspace)
 for prerequisites, compatibility rules, and live Run limitations.
 
-For manual setup, configure the project, resource amounts, and executor paths in
-[examples/dispatch.json](examples/dispatch.json),
-[examples/project.json](examples/project.json), and
-[examples/resources.json](examples/resources.json), then run:
+The default recommended workflow is one canonical pair of files, which init
+copies and the docs describe:
 
-```sh
-projectweave run --graph examples/dispatch.json \
-  --project examples/project.json --resources examples/resources.json > run.json
-```
+- [projectweave/templates/graph.json](projectweave/templates/graph.json), the
+  **ProjectWeave graph** (how the Project is operated): load the Project → select
+  a `Ready` repository Issue (or return `no_work`) → check the subscription stop
+  line → resolve `task.repository` in the workspace → run GitWeave → comment the
+  Result on the Issue.
+- [projectweave/templates/gitweave.json](projectweave/templates/gitweave.json),
+  the **GitWeave Task graph** (how one selected Issue is implemented), with
+  [resources.json](projectweave/templates/resources.json) for its stop line.
 
-The example selects the highest-priority eligible open Issue, checks primary
-executor capacity, uses an instruction-driven command executor or GitWeave,
-and comments the structured outcome on the Issue. The primary executor starts
-with zero capacity, so only the GitWeave path needs configuring initially.
-Supply a wrapper implementing the JSON contract to enable the primary path.
+[examples/](examples/) holds specialized feature examples such as the
+[review/fix loop](examples/review-fix.json) and a manual
+[project.json](examples/project.json); they are not alternative defaults.
 The runtime never changes provider in response to an executor failure.
 
 See the [minimal runtime design](docs/runtime.md) and

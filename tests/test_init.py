@@ -73,7 +73,13 @@ class InitTests(unittest.TestCase):
         executor = graph["nodes"]["execute"]["executor"]
         self.assertEqual(executor, {"type": "gitweave", "graph": str(self.root / "gitweave.json")})
         self.assertEqual(self.read("resources.json"), {"subscription": {"type": "subscription", "stop_at_remaining_percent": 20}})
-        self.assertEqual(graph["nodes"]["capacity"]["config"], {"subscriptions": ["subscription"]})
+        self.assertEqual(graph["nodes"]["subscription"]["config"], {"subscriptions": ["subscription"]})
+        # The generated files are the packaged canonical templates; only the GitWeave graph path is materialized.
+        canonical = json.loads((ROOT / "projectweave/templates/graph.json").read_text())
+        canonical["nodes"]["execute"]["executor"]["graph"] = str(self.root / "gitweave.json")
+        self.assertEqual(graph, canonical)
+        for name in ("gitweave.json", "resources.json"):
+            self.assertEqual(self.read(name), json.loads((ROOT / "projectweave/templates" / name).read_text()))
         self.assertNotIn("requires", graph["nodes"]["execute"])
         self.assertTrue(any("remaining_percent" in entry for entry in report["missing"]))
         self.assertEqual(self.read("gitweave.json")["nodes"]["work"]["model"], "CONFIGURE_MODEL")
@@ -89,6 +95,9 @@ class InitTests(unittest.TestCase):
         self.assertIsNone(record["failure"])
         invoke.assert_not_called()
         writeback.assert_not_called()
+        with patch.object(GitHub, "load", return_value=[]):
+            record = Runtime(graph, self.read("project.json"), self.read("resources.json")).run()
+        self.assertEqual(record["last"]["data"], {"status": "no_work"})
 
     def test_create_user_project_and_rerun_reuses_all_without_overwrite(self):
         self.state.write_text(json.dumps({"projects": 0, "owner_type": "User"}))
@@ -375,7 +384,7 @@ class InitTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         record = json.loads(result.stdout)
-        self.assertEqual(record["results"]["comment"]["data"]["status"], None)
+        self.assertEqual(record["results"]["writeback"]["data"]["status"], None)
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
         launch = next(c for c in calls if c["command"] == "gitweave")
         self.assertEqual(launch["argv"][2], str(self.directory / "gitweave.json"))
