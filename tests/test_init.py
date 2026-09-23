@@ -19,7 +19,7 @@ class InitTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name).resolve() / "checkout with spaces"
+        self.root = Path(self.tmp.name).resolve() / "workspace with spaces"
         self.root.mkdir()
         self.bin = Path(self.tmp.name) / "bin"
         self.bin.mkdir()
@@ -27,25 +27,27 @@ class InitTests(unittest.TestCase):
             script = self.bin / name
             script.write_text(f"#!{sys.executable}\n" + (ROOT / "tests/fake_init_cli.py").read_text())
             script.chmod(0o755)
-        self.directory = self.root / ".projectweave"
+        self.directory = self.root  # The workspace holds configuration directly.
         self.log = Path(self.tmp.name) / "calls.jsonl"
         self.state = Path(self.tmp.name) / "remote.json"
         self.state.write_text(json.dumps({"projects": 0}))
         self.env = dict(os.environ, PATH=str(self.bin), PYTHONPATH=str(ROOT),
                         INIT_ROOT=str(self.root), INIT_LOG=str(self.log), INIT_STATE=str(self.state))
 
-    def invoke(self, *args, mode="success", origin=None):
+    def invoke(self, *args, mode="success", owner=True):
         self.log.unlink(missing_ok=True)
         env = dict(self.env, INIT_MODE=mode)
-        if origin:
-            env["INIT_ORIGIN"] = origin
-        result = subprocess.run([sys.executable, "-m", "projectweave", "init", "--repo", "o/r", *args],
+        if owner and "--project-owner" not in args:
+            args = ("--project-owner", "o", *args)
+        result = subprocess.run([sys.executable, "-m", "projectweave", "init", *args],
                                 cwd=self.root, env=env, capture_output=True, text=True, timeout=20)
         self.assertEqual(result.stderr, "")
         report = json.loads(result.stdout)
         calls = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
         # The strict fixture rejects all execution, issue mutation and unexpected field mutation, installation, auth changes and pushes.
         self.assertFalse(any(c["name"] == "gitweave" and c["args"][0] != "validate" for c in calls))
+        self.assertFalse(any(c["name"] == "git" or c["args"][:2] == ["repo", "clone"] for c in calls))
+        self.assertFalse((self.root / "repos").exists())
         return result.returncode, report, calls
 
     def read(self, name):
@@ -66,14 +68,14 @@ class InitTests(unittest.TestCase):
         self.assertEqual(len(report["created"]), 6)
         self.assertEqual(len(self.mutations(calls)), 2)
         self.assertEqual(self.read("project.json"), {"owner": "o", "owner_type": "organization", "number": 7,
-                         "repository": "o/r", "priority_order": ["P0", "P1", "P2"]})
+                         "priority_order": ["P0", "P1", "P2"]})
         graph = validate(self.read("graph.json"))
         executor = graph["nodes"]["execute"]["executor"]
-        self.assertEqual(Path(executor["repo"]), self.root)
-        self.assertEqual(Path(executor["graph"]), self.directory / "gitweave.json")
+        self.assertEqual(executor, {"type": "gitweave", "graph": str(self.root / "gitweave.json")})
         self.assertEqual(self.read("resources.json")["gitweave"]["available"], 0)
         self.assertEqual(self.read("gitweave.json")["nodes"]["work"]["model"], "CONFIGURE_MODEL")
         self.assertTrue(any("item-add 7 --owner o" in c for c in report["next_commands"]))
+        self.assertIn("projectweave run --graph graph.json --project project.json --resources resources.json", report["next_commands"])
         self.assertIn("AI execution field (Ready/Not ready)", report["created"])
         self.assertFalse(any("label" in c for c in report["next_commands"]))
         self.assertTrue(any("AI execution field to Ready" in a for a in report["human_actions"]))
@@ -92,7 +94,7 @@ class InitTests(unittest.TestCase):
         self.assertEqual(self.read("project.json")["owner_type"], "user")
         before = {p.name: p.read_bytes() for p in self.directory.iterdir()}
         for flags in ((), ("--create-project", "First run", "--project-owner", "team")):
-            code, report, calls = self.invoke(*flags)
+            code, report, calls = self.invoke(*flags, owner=False)
             self.assertEqual(code, 0, report)
             self.assertEqual(report["created"], [])
             self.assertEqual(self.mutations(calls), [])
@@ -132,13 +134,6 @@ class InitTests(unittest.TestCase):
     def test_symlinks_rejected(self):
         outside = Path(self.tmp.name) / "outside"
         outside.mkdir()
-        self.directory.symlink_to(outside, target_is_directory=True)
-        code, _, calls = self.invoke("--project-number", "7")
-        self.assertEqual(code, 2)
-        self.assertEqual(list(outside.iterdir()), [])
-        self.assertEqual(self.mutations(calls), [])
-        self.directory.unlink()
-        self.directory.mkdir()
         target = outside / "project.json"
         target.write_text("{}")
         (self.directory / "project.json").symlink_to(target)
@@ -147,19 +142,15 @@ class InitTests(unittest.TestCase):
         self.assertEqual(target.read_text(), "{}")
         self.assertEqual(self.mutations(calls), [])
 
-    def test_identity_and_commit_preflight(self):
-        for origin in ("git@github.com:other/repo.git", "https://elsewhere/o/r.git", "/local/o/r", "https://github.com/o/r.git.evil"):
-            with self.subTest(origin=origin):
-                code, report, calls = self.invoke("--create-project", "New", origin=origin)
-                self.assertEqual(code, 2, report)
-                self.assertFalse(self.directory.exists())
-                self.assertTrue(all(c["name"] == "git" for c in calls))
-        code, report, calls = self.invoke("--create-project", "New", mode="unborn")
+    def test_owner_required_without_repository_or_checkout(self):
+        code, report, calls = self.invoke("--project-number", "7", owner=False)
         self.assertEqual(code, 2)
-        self.assertIn("first commit", report["failure"]["action"])
-        self.assertTrue(all(c["name"] == "git" for c in calls))
-        for origin in ("https://github.com/o/r.git", "ssh://git@github.com/o/r.git", "https://github.com/O/R"):
-            self.assertEqual(self.invoke("--project-number", "7", origin=origin)[0], 0)
+        self.assertIn("--project-owner", report["failure"]["message"])
+        self.assertEqual(calls, [])
+        # A plain directory (not a Git checkout) is a valid workspace; no repository is named or cloned.
+        code, report, calls = self.invoke("--project-number", "7")
+        self.assertEqual(code, 0, report)
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), sorted(["project.json", "resources.json", "graph.json", "gitweave.json"]))
 
     def test_selection_required_and_conflicts(self):
         code, report, calls = self.invoke()
@@ -173,14 +164,14 @@ class InitTests(unittest.TestCase):
             self.assertEqual(self.mutations(calls), [])
 
     def test_tool_auth_access_and_static_validation_failures(self):
-        for mode in ("auth", "repo", "project", "invalid_graph", "repo_redirect", "malformed", "owner_type"):
+        for mode in ("auth", "project", "invalid_graph", "owner_type"):
             with self.subTest(mode=mode):
                 code, report, calls = self.invoke("--project-number", "7", mode=mode)
                 self.assertEqual(code, 2, report)
                 self.assertFalse(report["initialized"])
-                self.assertFalse(self.directory.exists())
+                self.assertEqual(list(self.root.iterdir()), [])
                 self.assertEqual(self.mutations(calls), [])
-        for tool in ("git", "gitweave", "gh"):
+        for tool in ("gitweave", "gh"):
             with self.subTest(tool=tool):
                 source = self.bin / tool
                 source.rename(self.bin / (tool + ".disabled"))
@@ -194,9 +185,8 @@ class InitTests(unittest.TestCase):
         for mode in ("field_read", "field_write", "field_lost"):
             with self.subTest(mode=mode):
                 self.state.write_text(json.dumps({"projects": 0}))
-                if self.directory.exists():
-                    for path in self.directory.iterdir():
-                        path.unlink()
+                for path in self.directory.iterdir():
+                    path.unlink()
                 code, report, _ = self.invoke("--create-project", "New", mode=mode)
                 self.assertEqual(code, 2)
                 self.assertEqual(self.read("project.json")["number"], 9)
@@ -220,7 +210,7 @@ class InitTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("Project o #9", report["created"])
         self.assertIn("--project-number 9", report["failure"]["action"])
-        self.directory.unlink()
+        (self.directory / "project.json").unlink()
         code, report, calls = self.invoke("--project-number", "9")
         self.assertEqual(code, 0, report)
         self.assertEqual(json.loads(self.state.read_text())["projects"], 1)
@@ -364,7 +354,7 @@ class InitTests(unittest.TestCase):
         capacity = self.read("resources.json")
         capacity["gitweave"]["available"] = 1
         self.write("resources.json", capacity)
-        for name in ("gh", "gitweave"):
+        for name in ("gh", "gitweave", "git"):
             (self.bin / name).write_text(f"#!{sys.executable}\n" + (ROOT / "tests/fake_cli.py").read_text())
         self.log.unlink()
         args = [sys.executable, "-m", "projectweave", "run", "--graph", str(self.directory / "graph.json"),
@@ -377,8 +367,8 @@ class InitTests(unittest.TestCase):
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
         launch = next(c for c in calls if c["command"] == "gitweave")
         self.assertEqual(launch["argv"][2], str(self.directory / "gitweave.json"))
-        self.assertEqual(launch["argv"][4], str(self.root))
-        mutations = [c for c in calls if c["command"] == "gh" and c["request"]["query"].startswith("mutation")]
+        self.assertEqual(launch["argv"][4:7], [str(self.root / "repos" / "o" / "r"), "--commit", "origin/HEAD"])
+        mutations = [c for c in calls if c["command"] == "gh" and c["request"] and c["request"]["query"].startswith("mutation")]
         self.assertEqual(len(mutations), 1)
         self.assertIn("addComment(", mutations[0]["request"]["query"])
 
@@ -392,21 +382,26 @@ class InitTests(unittest.TestCase):
         self.assertEqual(self.read("gitweave.json"), worker)
         self.assertEqual(self.mutations(calls), [])
 
-    def test_cross_repository_issue_excluded_and_priority_not_assigned(self):
+    def test_multi_repository_selection_and_optional_saved_filter(self):
         self.assertEqual(self.invoke("--project-number", "7")[0], 0)
         backend = GitHub(self.read("project.json"))
         old = {"state": "OPEN", "ai_execution": "Ready", "priority": "P2", "created_at": "2025", "url": "url", "item_id": "1", "repository": "O/R"}
         new = dict(old, priority="P0", created_at="2026")
-        foreign = dict(old, created_at="2020", repository="o/other")
+        foreign = dict(old, priority="P0", created_at="2020", repository="o/other")
         middle = dict(old, priority="P1")
         unknown = dict(old, priority="other", created_at="2020")
         absent = dict(unknown, priority=None)
         tasks = [foreign, new, old, middle, unknown, absent]
         before = json.dumps(tasks)
-        self.assertIs(backend.select(tasks), new)
+        self.assertIs(backend.select(tasks), foreign)  # Any repository in the Project is eligible by default.
         self.assertIs(backend.select([old, middle, unknown, absent]), middle)
         self.assertIs(backend.select([old, unknown, absent]), old)
         self.assertEqual(json.dumps(tasks), before)
+        # An explicit repository filter from an older setup is still accepted as optional policy.
+        self.write("project.json", dict(self.read("project.json"), repository="o/r"))
+        code, report, calls = self.invoke()
+        self.assertEqual(code, 0, report)
+        self.assertIs(GitHub(self.read("project.json")).select(tasks), new)
 
     @unittest.skipUnless(os.environ.get("GITWEAVE_SOURCE"), "Optional installed public GitWeave source validation")
     def test_actual_gitweave_public_validator(self):

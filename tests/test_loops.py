@@ -35,7 +35,7 @@ class LoopTests(unittest.TestCase):
         backend.load.return_value = []
         execute = Mock(side_effect=outputs)
         env = {"ai": {"unit": "calls", "available": amount, "accounting": mode}}
-        record = Runtime(g, PROJECT, env, backend, execute).run()
+        record = Runtime(g, PROJECT, env, backend, execute, checkout=lambda repository: "checkout").run()
         return record, backend, execute
 
     def test_post_condition_and_state_retention(self):
@@ -194,7 +194,7 @@ class LoopTests(unittest.TestCase):
                 execute = Mock(side_effect=outputs)
                 record = Runtime(copy.deepcopy(example), PROJECT,
                                  {"ai": {"unit": "calls", "available": 3, "accounting": "reservation"}},
-                                 backend, execute).run()
+                                 backend, execute, checkout=lambda repository: "checkout").run()
                 self.assertEqual(record["status"], "completed")
                 self.assertEqual([e["node"] for e in record["events"]],
                                  ["load", "select"] + (["review", "fix"] if rejected_first else []) + ["review"])

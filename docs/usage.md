@@ -1,37 +1,52 @@
 # CLI and executor guide
 
-## Initialize a repository
+## Initialize a Project workspace
 
-Install ProjectWeave, Git, `gh`, and GitWeave on PATH first. From a checkout with
-an `origin` on github.com and at least one commit, explicitly select a Project:
+A ProjectWeave Project is one GitHub Project whose Tasks are ordinary repository
+Issues from one or more repositories. A single-repository Project is simply the
+case where every Task belongs to one repository.
+
+Each Project has one local **workspace**: the directory containing `project.json`.
+It holds the Project configuration and graphs; Task repositories are cloned into it
+on demand:
+
+```text
+workspace/
+├─ project.json  resources.json  graph.json  gitweave.json
+└─ repos/
+   └─ OWNER/REPO/   (cloned when a Task from OWNER/REPO first runs)
+```
+
+Install ProjectWeave, `gh`, and GitWeave on PATH first. From an empty directory
+that will be the workspace (it need not be a Git repository and init does not run
+`git init`), explicitly select a Project:
 
 ```sh
-projectweave init --repo owner/repo --project-number 7
+mkdir my-project && cd my-project
+projectweave init --project-owner my-team --project-number 7
 ```
 
 Or explicitly create one (no discovery or automatic creation):
 
 ```sh
-projectweave init --repo owner/repo --project-owner my-team --create-project "First Run"
+projectweave init --project-owner my-team --create-project "First Run"
 ```
 
 `--project-number` and `--create-project TITLE` are mutually exclusive.
-`--project-owner` defaults to the saved configuration's owner, then the repository
-owner. GitHub determines whether that login is a user or organization; both
-Projects v2 owner types work. An existing `.projectweave/project.json` is reused,
-including when rerunning with `--create-project`. Conflicting explicit selections
-fail. No candidate is chosen when selection is missing. Enterprise hosts and
-local-only origins are unsupported. The checkout's `origin` must match `--repo`
-(case-insensitively; HTTPS and GitHub SSH forms are accepted), and HEAD must resolve
-to a commit, before any file or GitHub mutation.
+`--project-owner` is required unless `project.json` already names the owner.
+GitHub determines whether that login is a user or organization; both Projects v2
+owner types work. An existing `project.json` is reused, including when rerunning
+with `--create-project`. Conflicting explicit selections fail. No candidate is
+chosen when selection is missing. Enterprise hosts are unsupported. Init names,
+inspects and clones no repository.
 
-Init creates four ordinary JSON files under the checkout root's `.projectweave/`:
+Init creates four ordinary JSON files in the current directory (the workspace):
 
 | File | Purpose / human input |
 | --- | --- |
-| `project.json` | Project owner/type/number, repository scope, standard Priority order `P0`, `P1`, `P2` |
+| `project.json` | Project owner/type/number, standard Priority order `P0`, `P1`, `P2` |
 | `resources.json` | `gitweave.available` starts at **0**; explicitly set capacity to at least 1 before execution |
-| `graph.json` | Load, select an eligible Issue from this repository, check capacity, execute GitWeave, comment the result |
+| `graph.json` | Load, select an eligible Issue from any repository in the Project, check capacity, execute GitWeave in that Issue's repository, comment the result |
 | `gitweave.json` | One implementation agent; explicitly replace `CONFIGURE_PROVIDER` and `CONFIGURE_MODEL`, review the instruction and optional effort/permission settings |
 
 The default workflow retains the standard Priority order **P0, P1, P2**.
@@ -46,12 +61,12 @@ Init verifies/creates the `AI execution` single-select field with `Ready` and
 fields are reported, never repaired). Init creates no repository labels.
 Init never selects Issues, adds Project items, assigns priorities, marks items
 ready, runs AI, installs tools, changes auth, or pushes. Selection at Run time uses
-open, nonarchived Project Issues whose `AI execution` is `Ready` and whose
-repository matches, ranked
-by P0/P1/P2, then oldest Issue and existing tie-breakers. Unknown or unset Priority
-values sort below those three; setting an Issue priority remains a human choice.
-The optional `repository` project setting scopes selection; configurations that
-omit it retain the original all-repositories selection behavior.
+open, nonarchived Project Issues from any repository whose `AI execution` is
+`Ready`, ranked by P0/P1/P2, then oldest Issue and existing tie-breakers. Unknown
+or unset Priority values sort below those three; setting an Issue priority remains
+a human choice. Draft Issues are not Tasks. An optional `repository` setting in
+`project.json` restricts selection to one repository; init does not emit it but
+accepts it in an existing `project.json` as deliberate policy.
 
 Both graphs receive static validation, including the public `gitweave validate`
 command, which runs no agents. Provider/model placeholders are deliberate:
@@ -65,8 +80,8 @@ completed; exit 2 means incomplete setup. `ready` stays false: shallow checks ca
 certify provider credentials, Issue comment permission, future Issue eligibility,
 or provenance publication access. Remaining configuration blockers are listed in
 `missing`; access/operational checks are listed in `human_actions`, even after the
-model and capacity are configured. Init requires working `git`, `gh` and GitWeave
-commands, `gh` authentication, repository read access and Project read access.
+model and capacity are configured. Init requires working `gh` and GitWeave
+commands, `gh` authentication and Project read access.
 Project or missing field creation needs Project write access. Failure reports give the current check
 and a concrete recovery action. A field read failure stops creation; after a field
 creation failure (including a lost response), rerun init to inspect all fields and
@@ -84,14 +99,13 @@ After reviewing/editing the files and installing/authenticating your chosen
 provider yourself, follow the printed commands. For example:
 
 ```sh
-# From the target checkout; replace 7, owner/repo, and 123 with your choices.
-gitweave validate --graph .projectweave/gitweave.json
-projectweave validate --graph .projectweave/graph.json
-ISSUE_NUMBER=123
-GH_HOST=github.com gh project item-add 7 --owner owner --url "https://github.com/owner/repo/issues/$ISSUE_NUMBER"
+# From the workspace; replace 7, my-team, and the Issue URL with your choices.
+gitweave validate --graph gitweave.json
+projectweave validate --graph graph.json
+ISSUE_URL=https://github.com/owner/repo/issues/123
+GH_HOST=github.com gh project item-add 7 --owner my-team --url "$ISSUE_URL"
 # Then set the item's "AI execution" field to "Ready" in the Project.
-projectweave run --graph .projectweave/graph.json \
-  --project .projectweave/project.json --resources .projectweave/resources.json
+projectweave run --graph graph.json --project project.json --resources resources.json
 ```
 
 Adding an Issue to the Project and setting `AI execution` require Project write
@@ -101,22 +115,34 @@ eligible Issue, this graph neither launches GitWeave nor posts a comment.
 It does not reset `AI execution` or close the Issue afterward; set the field to
 `Not ready` manually when appropriate to avoid selecting it again.
 
-The executor targets the verified checkout using absolute repo/graph paths, and
-runs from its **HEAD commit**, not uncommitted edits. Review and commit intended
-repository changes before running. A moved checkout needs manually updated paths;
-init reports the old scaffold as incompatible. GitWeave retains work as commits
-and may automatically push provenance refs/notes to origin during a live Run.
+Before executing, the Run resolves the selected Issue's repository
+(`task.repository`) to `<workspace>/repos/OWNER/REPO`. The first Task from a
+repository clones it with `gh repo clone`; later Runs reuse the directory only if
+it is itself a Git checkout (not merely inside another repository) whose `origin`
+is that repository on github.com (HTTPS or SSH form, case-insensitive). An existing directory that is not such a checkout is never
+overwritten or repurposed: the Run fails. Every execution then runs `git fetch
+origin` and GitWeave executes the **remote default branch tip (`origin/HEAD`)**,
+not a local branch or uncommitted edits; push changes you want included. Plain
+`git fetch` (and GitWeave's provenance push) use your Git credentials, so for
+HTTPS run `gh auth setup-git` or use SSH. If `origin/HEAD` is missing or the
+default branch was renamed, run `git remote set-head origin --auto` in the
+checkout. Clone,
+fetch or origin failures are `checkout` Runtime Failures before the executor
+launches, with no Issue comment. The graph file path is absolute; a moved
+workspace needs it updated. GitWeave retains work as commits and may
+automatically push provenance refs/notes to origin during a live Run.
+If the workspace is itself a Git repository, ignore `repos/`.
 The default graph contains no PR publication or merge action. Review your Git
 identity, permissions and provenance destination before executing; init neither
 runs a probe agent nor promises live Run success.
 
-Rerun `projectweave init --repo owner/repo` to reuse saved Project selection.
+Rerun `projectweave init` in the workspace to reuse saved Project selection.
 Files are never overwritten; missing files are generated. The small compatibility
 check accepts this fixed scaffold with edited resource capacity and GitWeave
 provider/model/instruction plus optional `effort`, `sandbox`, `permission_mode`.
 Other graph or policy edits are reported as incompatible with this initializer,
 not repaired or treated as invalid for the runtime. Continue managing a customized
-setup manually. Symlinked setup files/directories are rejected.
+setup manually. Symlinked setup files are rejected.
 
 Partial failures leave ordinary files and GitHub state in place, with completed
 pieces in the report. The Project identity is saved first, before field creation,
@@ -124,6 +150,25 @@ so a rerun can reuse it. There is no rollback, retry loop or setup database. If
 Project creation succeeds remotely but its response or local save fails, inspect
 `GH_HOST=github.com gh project list --owner OWNER` and rerun with `--project-number NUMBER` before
 considering another creation. Avoid concurrent init invocations.
+
+### Migrating a single-repository setup
+
+Earlier versions ran `projectweave init --repo owner/repo` inside a checkout and
+wrote `.projectweave/` there, with a fixed `repo`/`commit` in the GitWeave
+executor. That setup remains conceptually valid: it is a Project whose Tasks all
+belong to one repository. To migrate:
+
+1. Create a workspace directory outside the checkout and copy the four files from
+   `.projectweave/` into it.
+2. In `graph.json`, delete the executor's `repo` and `commit` (now rejected) and
+   point `graph` at the workspace's `gitweave.json`.
+3. Optionally delete `"repository"` from `project.json` to select Issues from all
+   repositories in the Project; keeping it remains a supported filter.
+4. Run from the workspace. The first Run clones the repository into `repos/`;
+   the old checkout is no longer used.
+
+Alternatively run `projectweave init --project-owner OWNER --project-number N` in
+a new workspace and reapply your provider/model/capacity edits.
 
 ### Migrating from the `projectweave-ready` label
 
@@ -151,13 +196,17 @@ to select by open Issue plus `AI execution` = `Ready` alone. Unknown or absent P
 sort below all configured values. Priority ordering is explicit, not inferred
 from the order returned by GitHub.
 
-Configure the GitWeave graph, local repository, and commit in `dispatch.json`.
+Configure the GitWeave graph path in `dispatch.json`. The workspace is the
+directory containing the `--project` file; each Task's checkout is resolved under
+its `repos/` as described above.
 Use a GitWeave installation matching its documented v0 `run` CLI contract. The
 adapter reads stdout JSON only; it does not import GitWeave. Its graph owns task
 instructions, model choices, artifact handling, and any publication actions.
 `provenance_remote` optionally maps to GitWeave's `--provenance-remote`; otherwise
 GitWeave applies its own destination defaults. All paths (including relative
 paths in graph options and argv) resolve from the invoking working directory.
+Command executors receive the resolved checkout path in the request's
+`checkout` field.
 
 ```sh
 python3 -m projectweave validate --graph examples/dispatch.json
@@ -265,8 +314,11 @@ An executor object is either:
 or:
 
 ```json
-{"type":"gitweave","graph":"/path/to/graph.json","repo":"/path/to/repo","commit":"HEAD","timeout":3600}
+{"type":"gitweave","graph":"/path/to/graph.json","timeout":3600}
 ```
+
+GitWeave receives the selected Task's resolved checkout as `--repo` and
+`origin/HEAD` as `--commit`; `repo` and `commit` are not configurable.
 
 The timeout is positive seconds; default 3600. GitHub requests each have a
 120-second timeout. Timeout terminates the direct process group; descendants
@@ -276,7 +328,8 @@ Command stdin is one JSON object:
 
 ```json
 {
-  "task": {"title":"Example", "body":"Task description"},
+  "task": {"title":"Example", "body":"Task description", "repository":"owner/repo"},
+  "checkout": "/path/to/workspace/repos/owner/repo",
   "context": {},
   "resources": {"api":{"unit":"USD","available":8,"accounting":"reported","charged":2}},
   "allocation": {"api":2},

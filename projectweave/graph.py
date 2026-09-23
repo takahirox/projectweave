@@ -9,8 +9,9 @@ def executor(config):
         require(isinstance(config["argv"], list) and config["argv"] and
                 all(text(x) for x in config["argv"]), "argv must be nonempty strings")
     else:
-        keys(config, {"type", "graph", "repo", "commit", "provenance_remote", "timeout"},
-             {"type", "graph", "repo", "commit"})
+        require("repo" not in config and "commit" not in config,
+                "GitWeave repo/commit are resolved per Task from the Project workspace; remove them")
+        keys(config, {"type", "graph", "provenance_remote", "timeout"}, {"type", "graph"})
         require(config["type"] == "gitweave", "Unknown executor type")
         require(all(text(v) for k, v in config.items() if k != "timeout"),
                 "GitWeave configuration must be nonblank text")

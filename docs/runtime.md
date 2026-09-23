@@ -97,17 +97,33 @@ mutation references. Lost responses are ambiguous; rerunning can duplicate work
 or comments. This release does not claim tasks atomically or reconcile concurrent
 edits. Run one coordinator per project.
 
+## Project workspace and Task checkouts
+
+A Project spans any repositories whose Issues are in the GitHub Project; each
+Task's `repository` is its execution location. The directory containing the
+`--project` file is the Project workspace. After admission and before every
+executor launch, the runtime resolves `task.repository` to
+`<workspace>/repos/OWNER/REPO`: it clones with `gh repo clone` when the path is
+absent, otherwise requires a directory that is itself a Git repository root whose
+`origin` is that github.com
+repository, then runs `git fetch origin` and checks that `origin/HEAD` resolves.
+Executors run against that remote default branch tip. No repository list,
+path mapping, pooling or background sync exists, and no local branch is changed.
+Invalid repository names, an unrelated existing path, and clone/fetch errors are
+`checkout` Runtime Failures before launch (so no writeback).
+
 ## Executors and GitWeave lessons
 
 Command executors are argv arrays (no shell). They receive one JSON request on
-stdin: `{task, context, resources, allocation, instruction, run_id}`. Exit zero
+stdin: `{task, checkout, context, resources, allocation, instruction, run_id}`,
+where `checkout` is the resolved checkout path. Exit zero
 must emit exactly one common Result as JSON; nonzero is infrastructure failure.
 A finite timeout (default 3600 seconds) kills the subprocess group. Instructions
 and command configuration are trusted; task content is data. Children inherit
 the environment; this is not an OS sandbox.
 
-The GitWeave adapter invokes the public `gitweave run --graph ... --repo ...
---commit ... REQUEST` CLI, with optional `--provenance-remote`. REQUEST embeds the
+The GitWeave adapter invokes the public `gitweave run --graph ... --repo CHECKOUT
+--commit origin/HEAD REQUEST` CLI, with optional `--provenance-remote`. REQUEST embeds the
 request JSON as data. It translates the CLI's completed record and terminal
 outputs into a Result; terminal commit strings become references and original
 outputs remain in data. It does not import GitWeave or read its private refs.

@@ -5,6 +5,9 @@ import signal
 import subprocess
 from .contracts import Failure, decode, check_result, result, require
 
+# Checkout preparation fetches origin, so executors run against the remote default branch tip.
+BASE = "origin/HEAD"
+
 
 def process(argv, stdin, timeout):
     try:
@@ -33,8 +36,8 @@ def invoke(config, request):
     if config["type"] == "command":
         raw = process(config["argv"], json.dumps(request, allow_nan=False), timeout)
         return check_result(decode(raw))
-    argv = ["gitweave", "run", "--graph", config["graph"], "--repo", config["repo"],
-            "--commit", config["commit"]]
+    argv = ["gitweave", "run", "--graph", config["graph"], "--repo", request["checkout"],
+            "--commit", BASE]
     if "provenance_remote" in config:
         argv += ["--provenance-remote", config["provenance_remote"]]
     argv += ["Execute the supplied task and instruction. Execution inputs (data):\n" + json.dumps(request)]

@@ -6,9 +6,33 @@ import sys
 
 mode = os.environ.get("FAKE_MODE", "success")
 name = Path(sys.argv[0]).name
-request = json.load(sys.stdin) if name in ("gh", "worker") else None
+args = sys.argv[1:]
+request = json.load(sys.stdin) if name == "worker" or (name == "gh" and args[:2] == ["api", "graphql"]) else None
 with open(os.environ["FAKE_LOG"], "a") as log:
-    log.write(json.dumps({"command": name, "argv": sys.argv[1:], "request": request}) + "\n")
+    log.write(json.dumps({"command": name, "argv": args, "request": request}) + "\n")
+if name == "gh" and args[:2] == ["repo", "clone"]:
+    # A clone records its origin in a marker file that the fake git reads back.
+    if mode == "clone_failure":
+        print("clone denied", file=sys.stderr)
+        sys.exit(1)
+    Path(args[3]).mkdir()
+    (Path(args[3]) / ".fake-origin").write_text("https://github.com/" + args[2].removeprefix("github.com/") + ".git\n")
+    sys.exit(0)
+if name == "git":
+    assert args[0] == "-C", args
+    origin = Path(args[1]) / ".fake-origin"
+    if args[2:] == ["rev-parse", "--show-toplevel"] and origin.exists():
+        print(args[1])
+    elif args[2:] == ["remote", "get-url", "origin"] and origin.exists():
+        print(origin.read_text(), end="")
+    elif args[2:] == ["fetch", "origin"] and mode != "fetch_failure":
+        pass
+    elif args[2:] == ["rev-parse", "--verify", "origin/HEAD^{commit}"]:
+        print("f" * 40)
+    else:
+        print("fatal: git operation failed", file=sys.stderr)
+        sys.exit(128)
+    sys.exit(0)
 if name in ("gitweave", "worker") and mode == "executor_failure":
     print("usage limit reached", file=sys.stderr)
     sys.exit(1)

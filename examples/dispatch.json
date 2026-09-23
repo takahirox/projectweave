@@ -45,8 +45,6 @@
       "executor": {
         "type": "gitweave",
         "graph": "/path/to/gitweave-graph.json",
-        "repo": "/path/to/repo",
-        "commit": "HEAD",
         "timeout": 3600
       },
       "requires": {
