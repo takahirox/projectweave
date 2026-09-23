@@ -143,6 +143,22 @@ class InitTests(unittest.TestCase):
                 self.assertEqual((self.directory / name).read_bytes(), before)
                 (self.directory / name).unlink()
 
+    def test_graph_generated_before_canonical_template_is_incompatible(self):
+        self.invoke("--project-number", "7")
+        old = self.read("graph.json")
+        old["nodes"]["capacity"] = old["nodes"].pop("subscription")
+        old["nodes"]["comment"] = old["nodes"].pop("writeback")
+        del old["nodes"]["no_work"]
+        old["flow"] = ["load", "select", {"if": {"path": "/results/select/data/task", "equals": None, "then": [],
+            "else": ["capacity", {"if": {"path": "/results/capacity/data/available", "equals": True,
+            "then": ["execute", "comment"], "else": []}}]}}]
+        self.write("graph.json", old)
+        code, report, calls = self.invoke()
+        self.assertEqual(code, 2)
+        self.assertIn("Incompatible graph.json", report["failure"]["message"])
+        self.assertEqual(self.read("graph.json"), old)
+        self.assertEqual(self.mutations(calls), [])
+
     def test_old_run_capacity_resources_reported_clearly(self):
         old = {"gitweave": {"unit": "runs", "available": 1, "accounting": "reservation"}}
         self.write("resources.json", old)

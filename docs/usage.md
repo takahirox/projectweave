@@ -242,7 +242,8 @@ sort below all configured values. Priority ordering is explicit, not inferred
 from the order returned by GitHub.
 
 The template's GitWeave graph path `gitweave.json` is relative, so run from the
-workspace (or make it absolute). Set provider/model in `gitweave.json` and
+workspace (or make it absolute). Init manages only files it generated: in a
+hand-copied workspace it reports this relative path as incompatible. Set provider/model in `gitweave.json` and
 `remaining_percent` in `resources.json`. The workspace is the
 directory containing the `--project` file; each Task's checkout is resolved under
 its `repos/` as described above.
@@ -303,14 +304,14 @@ launch failure. `resources.config.subscriptions` additionally requires each name
 subscription's `remaining_percent` to be known and above its
 `stop_at_remaining_percent`; it is checked only by this action, so branch on
 `data.available` before executing. No task returns null from select; graphs should branch before
-executing, as the example does. Missing pointer targets are Runtime Failures.
+executing, as the canonical template does. Missing pointer targets are Runtime Failures.
 
 To change Project Status, give a writeback node `"config":{"status":"Done"}`.
 Use a conditional branch to select that node only when the executor's structured
 outcome warrants it. A GitWeave task verdict can be selected at
-`/results/gitweave/data/outputs/0/data/approved` if its graph returns that field.
-The runtime does not equate GitWeave completion with task approval. The shipped
-example comments outcomes without choosing a Status policy. PR URLs can be
+`/results/execute/data/outputs/0/data/approved` if its graph returns that field.
+The runtime does not equate GitWeave completion with task approval. The canonical
+template comments outcomes without choosing a Status policy. PR URLs can be
 returned in Result references and will appear in the Issue comment.
 
 ## Review/fix loop

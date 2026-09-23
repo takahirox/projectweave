@@ -146,15 +146,15 @@ def initialize(args):
             require(equal(unscoped, project), "Incompatible project.json; default setup uses Priority order P0/P1/P2 and no Status policy; review manually")
             report["existing"].append(str(workspace / "project.json"))
         values = {}
-        for name, template in expected.items():
+        for name, default in expected.items():
             value = read_file(workspace / name)
             if value is not None:
                 try:
-                    compatible(name, value, template)
+                    compatible(name, value, default)
                 except (Failure, KeyError, TypeError) as exc:
                     raise Failure("setup", f"Incompatible {name}: {exc}") from exc
                 report["existing"].append(str(workspace / name))
-            values[name] = value if value is not None else template
+            values[name] = value if value is not None else default
         worker = values["gitweave.json"]["nodes"]["work"]
         if worker["provider"] == "CONFIGURE_PROVIDER" or worker["model"] == "CONFIGURE_MODEL":
             report["missing"].append("Explicit provider and model in gitweave.json")
