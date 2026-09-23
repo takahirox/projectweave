@@ -1,6 +1,7 @@
 import copy
 import json
 import unittest
+import unittest.mock
 from unittest.mock import Mock
 from projectweave.contracts import Failure, result, decode, pointer, equal
 from projectweave.graph import validate
@@ -10,7 +11,7 @@ from projectweave.github import GitHub
 
 PROJECT = {"owner": "example", "owner_type": "organization", "number": 1}
 TASK = {"id": "I", "item_id": "ITEM", "project_id": "P", "state": "OPEN", "labels": [], "ai_execution": "Ready",
-        "priority": "P1", "status": "Todo", "created_at": "2026-01-01T00:00:00Z", "url": "https://github.com/o/r/issues/1"}
+        "priority": "P1", "status": "Todo", "created_at": "2026-01-01T00:00:00Z", "url": "https://github.com/o/r/issues/1", "repository": "o/r"}
 
 
 def envelope(amount=2, mode="reservation"):
@@ -34,7 +35,8 @@ class RuntimeTests(unittest.TestCase):
         backend.select.side_effect = GitHub(PROJECT).select
         backend.writeback.return_value = result("posted", references=["comment"])
         execute = executor or Mock(return_value=result("Rejected", {"approved": False}))
-        record = Runtime(g or graph(), PROJECT, env if env is not None else envelope(), backend, execute).run()
+        record = Runtime(g or graph(), PROJECT, env if env is not None else envelope(), backend, execute,
+                         checkout=lambda repository: "/workspace/repos/" + repository).run()
         return record, backend, execute
 
     def test_handoff_agent_and_task_rejection(self):
@@ -285,7 +287,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_gitweave_reported_usage_rejected_before_launch(self):
         g = graph()
-        g["nodes"]["work"]["executor"] = {"type": "gitweave", "graph": "g", "repo": "r", "commit": "HEAD"}
+        g["nodes"]["work"]["executor"] = {"type": "gitweave", "graph": "g"}
         record, _, execute = self.run_graph(g, env=envelope(mode="reported"))
         self.assertEqual(record["failure"]["kind"], "accounting")
         self.assertEqual(record["resources"]["ai"]["charged"], 0)
@@ -322,3 +324,33 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(backend.select(ordering)["item_id"], "A")
         with self.assertRaises(Failure):
             decode('{"value": 1e999}')
+
+
+class CheckoutTests(unittest.TestCase):
+    def test_gitweave_repo_and_commit_are_rejected_with_migration_hint(self):
+        for extra in ({"repo": "/r"}, {"commit": "HEAD"}):
+            g = graph()
+            g["nodes"]["work"]["executor"] = {"type": "gitweave", "graph": "g", **extra}
+            with self.assertRaises(Failure) as caught:
+                validate(g)
+            self.assertIn("resolved per Task", str(caught.exception))
+
+    def test_execution_without_workspace_fails_before_launch(self):
+        backend = Mock()
+        backend.load.return_value = [TASK]
+        backend.select.side_effect = GitHub(PROJECT).select
+        execute = Mock()
+        record = Runtime(graph(), PROJECT, envelope(), backend, execute).run()
+        self.assertEqual(record["failure"]["kind"], "checkout")
+        execute.assert_not_called()
+        backend.writeback.assert_not_called()
+
+    def test_invalid_task_repository_never_touches_disk(self):
+        from projectweave.checkout import resolve
+        for repository in (None, "", "o", "o/..", "../o/r", "o/r/x", "o/r;x"):
+            with self.subTest(repository=repository):
+                with unittest.mock.patch("projectweave.checkout.process") as process:
+                    with self.assertRaises(Failure) as caught:
+                        resolve("/nonexistent-workspace", repository)
+                self.assertEqual(caught.exception.kind, "checkout")
+                process.assert_not_called()

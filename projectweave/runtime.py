@@ -9,11 +9,13 @@ from .executors import invoke
 
 
 class Runtime:
-    def __init__(self, graph, project, envelope, backend=None, executor=invoke):
+    def __init__(self, graph, project, envelope, backend=None, executor=invoke, checkout=None):
         self.graph = validate(graph)
         self.resources = Resources(envelope)
         self.backend = backend or GitHub(project)
         self.executor = executor
+        # Maps a Task repository to its prepared local checkout path (see checkout.resolve).
+        self.checkout = checkout
         self.context = {"run_id": uuid.uuid4().hex, "project": project,
                         "resources": self.resources.state, "results": {}, "last": None}
         self.steps = 0
@@ -31,7 +33,9 @@ class Runtime:
             if not self.resources.reserve(allocation):
                 return result("Required resources unavailable; executor was not launched",
                               {"status": "resource_exhausted", "required": allocation})
-            request = {"task": inputs["task"], "context": inputs.get("context", {}),
+            require(self.checkout is not None, "Execution needs a Project workspace", "checkout")
+            checkout = self.checkout(inputs["task"].get("repository"))
+            request = {"task": inputs["task"], "checkout": checkout, "context": inputs.get("context", {}),
                        "resources": deepcopy(self.resources.state), "allocation": allocation,
                        "instruction": node.get("instruction"), "run_id": self.context["run_id"]}
             output = None

@@ -163,18 +163,21 @@ python3 -m projectweave validate --graph examples/review-fix.json
 python3 -m unittest discover -s tests -v
 ```
 
-For first-time setup in a target checkout, select an existing GitHub Project:
+A ProjectWeave Project is a GitHub Project whose Tasks are repository Issues
+from one or more repositories. For first-time setup, create a Project workspace
+directory and select an existing GitHub Project:
 
 ```sh
-projectweave init --repo owner/repo --project-number 7
+mkdir my-project && cd my-project
+projectweave init --project-owner my-team --project-number 7
 ```
 
-Or explicitly create one with `--create-project "First Run"`; use
-`--project-owner LOGIN` for a different user/organization owner. Init writes
-human-editable files in `.projectweave/` without overwriting existing files.
+Or explicitly create one with `--create-project "First Run"`. Init writes
+human-editable files into the workspace without overwriting existing files; Task
+repositories are cloned into its `repos/` only when a Run executes their Issues.
 Capacity starts at zero and provider/model configuration remains a human action.
 Follow the printed steps to add a chosen Issue to the Project, set its
-`AI execution` field to `Ready`, and run. See [initialization and recovery](docs/usage.md#initialize-a-repository)
+`AI execution` field to `Ready`, and run. See [initialization and recovery](docs/usage.md#initialize-a-project-workspace)
 for prerequisites, compatibility rules, and live Run limitations.
 
 For manual setup, configure the project, resource amounts, and executor paths in

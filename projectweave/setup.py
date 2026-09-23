@@ -61,15 +61,13 @@ def ensure_fields(backend, report):
 
 
 def add_init_arguments(parser):
-    parser.add_argument("--repo", required=True, help="github.com OWNER/REPO; must match checkout origin")
-    parser.add_argument("--project-owner", help="Project owner login (defaults to saved owner, then repository owner)")
+    parser.add_argument("--project-owner", help="Project owner login (required unless saved in project.json)")
     choice = parser.add_mutually_exclusive_group()
     choice.add_argument("--project-number", type=int, help="Use this existing Project v2")
     choice.add_argument("--create-project", metavar="TITLE", help="Explicitly create a Project, unless saved configuration exists")
 
 
-def templates(root):
-    directory = root / ".projectweave"
+def templates(workspace):
     resources = {"gitweave": {"unit": "runs", "available": 0, "accounting": "reservation"}}
     worker = {"version": 1, "retries": 0, "max_steps": 1, "nodes": {"work": {
         "kind": "agent", "provider": "CONFIGURE_PROVIDER", "model": "CONFIGURE_MODEL",
@@ -79,13 +77,13 @@ def templates(root):
                        "Leave artifacts in the assigned worktree. Do not publish, push, merge, or change GitHub state. "
                        "Do not reset usage limits, buy allowance, or switch models/providers; stop on a usage limit."
     }}, "flow": ["work"]}
+    # The runtime supplies each selected Task's checkout; no project-wide repository path.
     graph = {"version": 1, "nodes": {
         "load": {"kind": "action", "action": "load"},
         "select": {"kind": "action", "action": "select", "inputs": {"items": "/results/load/data/items"}},
         "capacity": {"kind": "action", "action": "resources", "config": {"requires": {"gitweave": 1}}},
         "execute": {"kind": "action", "action": "execute", "requires": {"gitweave": 1},
-                    "executor": {"type": "gitweave", "graph": str(directory / "gitweave.json"),
-                                 "repo": str(root), "commit": "HEAD"},
+                    "executor": {"type": "gitweave", "graph": str(workspace / "gitweave.json")},
                     "inputs": {"task": "/results/select/data/task"}},
         "comment": {"kind": "action", "action": "writeback", "inputs": {
             "task": "/results/select/data/task", "result": "/results/execute"}}
@@ -129,24 +127,14 @@ def compatible(name, value, expected):
 def initialize(args):
     report = {"initialized": False, "ready": False, "created": [], "existing": [],
               "missing": [], "next_commands": [], "human_actions": [], "failure": None}
-    directory = None
-    operation = "Verify git is installed and run init inside the intended checkout"
+    operation = "Review incompatible files manually; init never overwrites files"
+    # The current directory is the Project workspace: configuration here, Task checkouts under repos/.
+    workspace = Path.cwd().resolve()
     try:
-        require(bool(re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", args.repo))
-                and args.repo.split("/")[1] not in (".", ".."), "--repo must be OWNER/REPO on github.com")
-        root = Path(process(["git", "rev-parse", "--show-toplevel"], None, 30).strip()).resolve()
-        origin = process(["git", "remote", "get-url", "origin"], None, 30).strip()
-        match = re.fullmatch(r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+/[^/]+?)(?:\.git)?/?", origin)
-        require(match is not None and match[1].lower() == args.repo.lower(),
-                "Checkout origin does not match --repo; use the matching checkout (github.com only)")
-        operation = "Create a first commit manually; GitWeave requires a committed base"
-        process(["git", "rev-parse", "--verify", "HEAD^{commit}"], None, 30)
-        operation = "Review incompatible files manually; init never overwrites files"
-        directory = root / ".projectweave"
-        require(not directory.is_symlink(), f"Incompatible symlink: {directory}")
-        expected = templates(root)
-        saved = read_file(directory / "project.json")
-        owner = args.project_owner or (saved.get("owner") if isinstance(saved, dict) else None) or args.repo.split("/")[0]
+        expected = templates(workspace)
+        saved = read_file(workspace / "project.json")
+        owner = args.project_owner or (saved.get("owner") if isinstance(saved, dict) else None)
+        require(owner is not None, "Choose --project-owner LOGIN for the GitHub Project")
         require(bool(re.fullmatch(r"[A-Za-z0-9_-]+", owner)), "Invalid --project-owner")
         number = args.project_number
         if saved is not None:
@@ -158,23 +146,25 @@ def initialize(args):
         require(number is not None or text(args.create_project),
                 "Choose --project-number NUMBER or explicitly --create-project TITLE; no Project is auto-selected")
         project = {"owner": owner, "owner_type": saved["owner_type"] if saved else "user",
-                   "number": number or 1, "repository": args.repo, "priority_order": PRIORITIES}
+                   "number": number or 1, "priority_order": PRIORITIES}
         if saved is not None:
-            require(equal(saved, project), "Incompatible project.json; default setup uses Priority order P0/P1/P2 and no Status policy; review manually")
-            report["existing"].append(str(directory / "project.json"))
+            # An explicit repository filter from older setups remains an accepted optional policy.
+            unscoped = {key: value for key, value in saved.items() if key != "repository"}
+            require(equal(unscoped, project), "Incompatible project.json; default setup uses Priority order P0/P1/P2 and no Status policy; review manually")
+            report["existing"].append(str(workspace / "project.json"))
         values = {}
         for name, template in expected.items():
-            value = read_file(directory / name)
+            value = read_file(workspace / name)
             if value is not None:
                 try:
                     compatible(name, value, template)
                 except (Failure, KeyError, TypeError) as exc:
                     raise Failure("setup", f"Incompatible {name}: {exc}") from exc
-                report["existing"].append(str(directory / name))
+                report["existing"].append(str(workspace / name))
             values[name] = value if value is not None else template
         worker = values["gitweave.json"]["nodes"]["work"]
         if worker["provider"] == "CONFIGURE_PROVIDER" or worker["model"] == "CONFIGURE_MODEL":
-            report["missing"].append("Explicit provider and model in .projectweave/gitweave.json")
+            report["missing"].append("Explicit provider and model in gitweave.json")
         if values["resources.json"]["gitweave"]["available"] < 1:
             report["missing"].append("Human-approved capacity: set resources.json gitweave.available to at least 1")
         # GitWeave's public validator does not run agents or access the network.
@@ -185,9 +175,6 @@ def initialize(args):
             process(["gitweave", "validate", "--graph", str(check)], None, 30)
         operation = "Install gh on PATH and check `gh auth status --hostname github.com`; grant access manually if needed"
         process(["gh", "auth", "status", "--hostname", "github.com"], None, 30)
-        operation = f"Check repository access with `gh repo view {args.repo}`"
-        repository = decode(process(["gh", "api", "--hostname", "github.com", f"repos/{args.repo}"], None, 120))
-        require(repository["full_name"].lower() == args.repo.lower(), "GitHub repository identity differs from --repo")
         operation = f"Check Project owner {owner}; supported owner types are user and organization"
         account = decode(process(["gh", "api", "--hostname", "github.com", f"users/{owner}"], None, 120))
         require(account["type"] in ("User", "Organization"), "Unsupported Project owner type")
@@ -210,11 +197,10 @@ def initialize(args):
             report["existing"].append(f"Project {owner} #{number}")
         report["project"] = project
         # Save the Project identity first so ordinary reruns reuse a created Project.
-        operation = (f"Check .projectweave write access, then rerun `projectweave init --repo {args.repo} "
+        operation = (f"Check workspace write access, then rerun `projectweave init "
                      f"--project-owner {owner} --project-number {project['number']}` to reuse this Project")
-        directory.mkdir(exist_ok=True)
         for name, value in {"project.json": project, **values}.items():
-            path = directory / name
+            path = workspace / name
             if not path.exists():
                 with path.open("x") as output:
                     output.write(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
@@ -226,24 +212,23 @@ def initialize(args):
         report["initialized"] = True
         q = shlex.quote
         report["next_commands"] = [
-            f"cd {q(str(root))}",
-            f"gitweave validate --graph {q(str(directory / 'gitweave.json'))}",
-            f"projectweave validate --graph {q(str(directory / 'graph.json'))}",
-            "ISSUE_NUMBER='REPLACE_WITH_OPEN_ISSUE_NUMBER'",
-            f'GH_HOST=github.com gh project item-add {project["number"]} --owner {q(owner)} --url "https://github.com/{args.repo}/issues/$ISSUE_NUMBER"',
-            "projectweave run --graph .projectweave/graph.json --project .projectweave/project.json --resources .projectweave/resources.json"
+            f"cd {q(str(workspace))}",
+            "gitweave validate --graph gitweave.json",
+            "projectweave validate --graph graph.json",
+            "ISSUE_URL='REPLACE_WITH_OPEN_ISSUE_URL'  # e.g. https://github.com/OWNER/REPO/issues/123",
+            f'GH_HOST=github.com gh project item-add {project["number"]} --owner {q(owner)} --url "$ISSUE_URL"',
+            "projectweave run --graph graph.json --project project.json --resources resources.json"
         ]
         report["human_actions"] = [
             "Choose provider/model explicitly in gitweave.json; review instruction and any effort/permission settings. Install and authenticate that provider yourself.",
             "Set resources.json capacity deliberately. It is a per-Run reservation count, not a token or money budget; every Run reloads the file.",
-            f"Choose an open Issue and add it to the Project using the commands below, then set its {ELIGIBILITY_FIELD} field to {READY} in the Project. No Issue has been selected or changed.",
-            "Review and commit intended repository changes before running: GitWeave executes HEAD, not uncommitted edits.",
-            "Run readiness is not certified: provider credentials, Issue comment permission, Project item-add access, Git identity and provenance push access need human verification. A live GitWeave Run may push refs/notes to origin; init never runs AI or pushes.",
+            f"Choose an open Issue from any repository and add it to the Project using the commands below, then set its {ELIGIBILITY_FIELD} field to {READY} in the Project. No Issue has been selected or changed.",
+            "A Run clones the selected Issue's repository lazily into repos/OWNER/REPO under this workspace with `gh repo clone`, fetches origin, and executes the remote default branch tip (origin/HEAD); push changes you want included. Init clones nothing.",
+            "Run readiness is not certified: provider credentials, repository clone access, Issue comment permission, Project item-add access, Git identity and provenance push access need human verification. A live GitWeave Run may push refs/notes to origin; init never runs AI or pushes.",
             f"Set {ELIGIBILITY_FIELD} back to Not ready manually after processing if the Issue should not run again; this workflow comments results and does not change Status or {ELIGIBILITY_FIELD}."
         ]
     except (Failure, OSError, UnicodeError, KeyError, TypeError, AttributeError, RecursionError) as exc:
         report["failure"] = {"message": str(exc), "action": operation}
         report["human_actions"].append(operation)
-    if directory is not None:
-        report["missing"].extend(str(directory / name) for name in FILES if not (directory / name).is_file())
+    report["missing"].extend(str(workspace / name) for name in FILES if not (workspace / name).is_file())
     return report

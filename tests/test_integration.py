@@ -19,7 +19,7 @@ class CLITests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.directory = Path(self.tmp.name)
-        for name in ("gh", "gitweave", "worker"):
+        for name in ("gh", "gitweave", "worker", "git"):
             path = self.directory / name
             path.write_text(f"#!{sys.executable}\n" + (ROOT / "tests/fake_cli.py").read_text())
             path.chmod(0o755)
@@ -49,14 +49,19 @@ class CLITests(unittest.TestCase):
         self.assertEqual(record["results"]["select"]["data"]["task"]["priority"], "P0")
         launch = [c for c in calls if c["command"] == "gitweave"]
         self.assertEqual(len(launch), 1)
-        self.assertEqual(launch[0]["argv"][:3], ["run", "--graph", "/path/to/gitweave-graph.json"])
+        checkout = str(self.directory.resolve() / "repos" / "o" / "r")
+        self.assertEqual(launch[0]["argv"][:7], ["run", "--graph", "/path/to/gitweave-graph.json",
+                                                 "--repo", checkout, "--commit", "origin/HEAD"])
+        self.assertEqual([c["argv"] for c in calls if c["argv"][:2] == ["repo", "clone"]],
+                         [["repo", "clone", "github.com/o/r", checkout]])
+        self.assertIn(["-C", checkout, "fetch", "origin"], [c["argv"] for c in calls if c["command"] == "git"])
         self.assertIn("task $(literal) `literal`", launch[0]["argv"][-1])
         self.assertEqual(record["results"]["gitweave"]["references"], ["abc123"])
         self.assertFalse(record["results"]["gitweave"]["data"]["outputs"][0]["data"]["approved"])
         for field in ("items", "labels", "fieldValues", "fields"):
-            pages = [c for c in calls if c["command"] == "gh" and field + "(first:" in c["request"]["query"]]
+            pages = [c for c in calls if c["command"] == "gh" and c["request"] and field + "(first:" in c["request"]["query"]]
             self.assertEqual([p["request"]["variables"]["cursor"] for p in pages], [None, "next"])
-        mutations = [c for c in calls if c["command"] == "gh" and c["request"]["query"].startswith("mutation")]
+        mutations = [c for c in calls if c["command"] == "gh" and c["request"] and c["request"]["query"].startswith("mutation")]
         self.assertEqual(len(mutations), 2)
         self.assertIn(record["run_id"], mutations[0]["request"]["variables"]["body"])
         self.assertEqual(mutations[1]["request"]["variables"]["option"], "DONE")
@@ -67,6 +72,7 @@ class CLITests(unittest.TestCase):
         self.assertEqual(code, 0)
         worker = next(c for c in calls if c["command"] == "worker")
         self.assertEqual(worker["request"]["task"]["id"], "I")
+        self.assertEqual(worker["request"]["checkout"], str(self.directory.resolve() / "repos" / "o" / "r"))
         self.assertIsInstance(worker["request"]["instruction"], str)
         self.assertFalse(any(c["command"] == "gitweave" for c in calls))
         self.assertTrue(record["results"]["primary"]["data"]["approved"])
@@ -89,7 +95,8 @@ class CLITests(unittest.TestCase):
         code, record, calls = self.run_cli()
         self.assertEqual(code, 0)
         self.assertEqual(record["results"]["gitweave"]["data"]["status"], "resource_exhausted")
-        self.assertTrue(all(c["command"] == "gh" for c in calls))
+        self.assertTrue(all(c["command"] == "gh" and c["request"] for c in calls))  # No clone or fetch.
+        self.assertFalse((self.directory / "repos").exists())
 
     def test_executor_failure_stops_without_github_mutation(self):
         for node, command in (("gitweave", "gitweave"), ("primary", "worker")):
@@ -107,7 +114,47 @@ class CLITests(unittest.TestCase):
                 self.assertNotIn(node, record["results"])
                 self.assertNotIn("update", record["results"])
                 self.assertFalse(any(c["command"] == "gh" and
+                                     c["request"] and c["request"]["query"].startswith("mutation") for c in calls))
+
+    def test_existing_checkout_is_reused_after_origin_check(self):
+        self.assertEqual(self.run_cli()[0], 0)
+        self.log.unlink()
+        code, record, calls = self.run_cli()
+        self.assertEqual(code, 0, record)
+        self.assertFalse(any(c["argv"][:2] == ["repo", "clone"] for c in calls))
+        checkout = str(self.directory.resolve() / "repos" / "o" / "r")
+        self.assertEqual([c["argv"][2:] for c in calls if c["command"] == "git"],
+                         [["remote", "get-url", "origin"], ["fetch", "origin"], ["rev-parse", "--verify", "origin/HEAD^{commit}"]])
+        self.assertEqual(next(c for c in calls if c["command"] == "gitweave")["argv"][4], checkout)
+
+    def test_checkout_failures_stop_before_executor_and_writeback(self):
+        checkout = self.directory / "repos" / "o" / "r"
+        cases = {"clone_failure": None, "fetch_failure": None,
+                 "wrong_origin": "https://github.com/o/other.git\n", "not_checkout": ""}
+        for case, origin in cases.items():
+            with self.subTest(case=case):
+                self.log.unlink(missing_ok=True)
+                if checkout.exists():
+                    for path in checkout.iterdir():
+                        path.unlink()
+                    checkout.rmdir()
+                if origin is not None:
+                    checkout.mkdir(parents=True)
+                    if origin:
+                        (checkout / ".fake-origin").write_text(origin)
+                    (checkout / "keep").write_text("user data")
+                code, record, calls = self.run_cli(case if case.endswith("failure") else "success")
+                self.assertEqual(code, 1, record)
+                self.assertEqual(record["failure"]["kind"], "checkout")
+                self.assertEqual(record["failure"]["node"], "gitweave")
+                self.assertIn("o/r", record["failure"]["message"])
+                self.assertFalse(any(c["command"] == "gitweave" for c in calls))
+                self.assertNotIn("update", record["results"])
+                self.assertFalse(any(c["command"] == "gh" and c["request"] and
                                      c["request"]["query"].startswith("mutation") for c in calls))
+                if origin is not None:
+                    self.assertEqual((checkout / "keep").read_text(), "user data")
+                    self.assertFalse(any(c["argv"][:2] == ["repo", "clone"] for c in calls))
 
     def test_partial_writeback_preserves_result(self):
         self.graph["nodes"]["update"]["config"] = {"status": "Done"}
@@ -122,7 +169,7 @@ class CLITests(unittest.TestCase):
         code, record, calls = self.run_cli()
         self.assertEqual(code, 1)
         self.assertEqual(record["failure"]["kind"], "writeback")
-        self.assertFalse(any(c["command"] == "gh" and "addComment(" in c["request"]["query"] for c in calls))
+        self.assertFalse(any(c["command"] == "gh" and c["request"] and "addComment(" in c["request"]["query"] for c in calls))
 
     def test_graphql_error(self):
         code, record, calls = self.run_cli("graphql_error")
@@ -157,11 +204,11 @@ class BoundaryTests(unittest.TestCase):
             invoke({"type": "command", "argv": [sys.executable, "-c", "print('not JSON')"]}, {})
 
     def test_gitweave_malformed_or_failed_records(self):
-        config = {"type": "gitweave", "graph": "g", "repo": "r", "commit": "HEAD"}
+        config = {"type": "gitweave", "graph": "g"}
         for record in ({}, {"status": "failed", "outputs": []}, {"status": "completed", "outputs": [{}]}):
             with patch("projectweave.executors.process", return_value=json.dumps(record)):
                 with self.assertRaises(Failure):
-                    invoke(config, {})
+                    invoke(config, {"checkout": "r"})
 
     def test_pagination_repeated_cursor_fails(self):
         backend = GitHub({"owner": "o", "owner_type": "user", "number": 1})

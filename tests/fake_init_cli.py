@@ -24,17 +24,7 @@ def fail(message):
 
 
 if name == "git":
-    if args == ["rev-parse", "--show-toplevel"]:
-        print(os.environ["INIT_ROOT"])
-    elif args == ["remote", "get-url", "origin"]:
-        print(os.environ.get("INIT_ORIGIN", "git@github.com:o/r.git"))
-    elif args == ["rev-parse", "--verify", "HEAD^{commit}"]:
-        if mode == "unborn":
-            fail("no commit")
-        print("a" * 40)
-    else:
-        fail("unexpected git operation")
-    sys.exit(0)
+    fail("init must not use git")
 if name == "gitweave":
     if args[:2] != ["validate", "--graph"] or len(args) != 3:
         fail("AI execution forbidden")
@@ -53,14 +43,6 @@ if args == ["auth", "status", "--hostname", "github.com"]:
         fail("not authenticated")
     sys.exit(0)
 if args[:3] == ["api", "--hostname", "github.com"]:
-    if args[3] == "repos/o/r":
-        if mode == "repo":
-            fail("repository inaccessible")
-        if mode == "repo_redirect":
-            emit({"full_name": "other/r"})
-        if mode == "malformed":
-            emit({"full_name": 123})
-        emit({"full_name": "o/r"})
     if args[3] in ("users/o", "users/team"):
         if mode == "owner_type":
             emit({"type": "Bot"})
@@ -105,6 +87,6 @@ if request:
         if mode == "create_lost":
             fail("response lost")
         if mode == "local_save":
-            (Path(os.environ["INIT_ROOT"]) / ".projectweave").write_text("concurrent file")
+            (Path(os.environ["INIT_ROOT"]) / "project.json").symlink_to("concurrent-missing-target")
         emit({"data": {"createProjectV2": {"projectV2": {"id": "P", "number": 9}}}})
 fail("Unexpected gh operation: " + repr(args))
