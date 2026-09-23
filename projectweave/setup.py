@@ -113,6 +113,8 @@ def compatible(name, value, expected):
     candidate = deepcopy(value)
     if name == "resources.json":
         Resources(candidate)
+        require(isinstance(candidate.get(SUBSCRIPTION), dict) and candidate[SUBSCRIPTION].get("type") == "subscription",
+                f"default setup uses a {SUBSCRIPTION} threshold entry, not gitweave run capacity")
         candidate[SUBSCRIPTION].pop("remaining_percent", None)
         candidate[SUBSCRIPTION]["stop_at_remaining_percent"] = expected[SUBSCRIPTION]["stop_at_remaining_percent"]
     elif name == "graph.json":

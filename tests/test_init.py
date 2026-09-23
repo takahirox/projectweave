@@ -134,6 +134,15 @@ class InitTests(unittest.TestCase):
                 self.assertEqual((self.directory / name).read_bytes(), before)
                 (self.directory / name).unlink()
 
+    def test_old_run_capacity_resources_reported_clearly(self):
+        old = {"gitweave": {"unit": "runs", "available": 1, "accounting": "reservation"}}
+        self.write("resources.json", old)
+        code, report, calls = self.invoke("--project-number", "7")
+        self.assertEqual(code, 2)
+        self.assertIn("not gitweave run capacity", report["failure"]["message"])
+        self.assertEqual(self.read("resources.json"), old)
+        self.assertEqual(self.mutations(calls), [])
+
     def test_symlinks_rejected(self):
         outside = Path(self.tmp.name) / "outside"
         outside.mkdir()

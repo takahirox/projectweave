@@ -119,7 +119,9 @@ starts a Task only while `remaining_percent > stop_at_remaining_percent` (defaul
 the stop line, or with no eligible Issue, this graph neither launches GitWeave nor
 posts a comment. The name `subscription` is only a label; ProjectWeave does not
 observe provider usage, estimate it, or infer the provider. The file is reloaded
-each Run.
+each Run. Renaming the entry (for example to `codex`) or checking several
+subscriptions is a custom graph/resources edit that init's compatibility check
+reports as incompatible; manage such a setup manually.
 It does not reset `AI execution` or close the Issue afterward; set the field to
 `Not ready` manually when appropriate to avoid selecting it again.
 
@@ -353,7 +355,8 @@ Command stdin is one JSON object:
 }
 ```
 
-The resources snapshot is after reservation. Action execute sets instruction to
+The resources snapshot is after reservation; subscription entries appear as
+supplied, without `charged`. Action execute sets instruction to
 null; agent supplies its declared instruction. The wrapper must emit exactly
 one JSON Result to stdout and use stderr for logs. Exit nonzero means Runtime
 Failure; ordinary task failure is an exit-zero Result with appropriate data.
