@@ -1,5 +1,30 @@
 # CLI and executor guide
 
+## Default workflow
+
+ProjectWeave has one canonical default workflow, packaged as a pair of files that
+init copies and these docs describe:
+
+| File | Layer |
+| --- | --- |
+| [`projectweave/templates/graph.json`](../projectweave/templates/graph.json) | ProjectWeave graph: how the Project is operated |
+| [`projectweave/templates/gitweave.json`](../projectweave/templates/gitweave.json) | GitWeave Task graph: how one selected repository Issue is implemented |
+| [`projectweave/templates/resources.json`](../projectweave/templates/resources.json) | The subscription stop line the Project graph checks |
+
+The Project graph runs:
+
+```text
+load → select ─┬─ no Task → no_work Result
+               └─ Task → subscription check ─┬─ below/at stop line or unknown → stop
+                                             └─ above → execute (GitWeave in the
+                                                Task's workspace checkout) → writeback
+```
+
+Task selection can be changed by editing a copy; the template is the recommended
+minimal workflow. [`examples/`](../examples/) contains specialized feature
+examples (for example the [review/fix loop](#reviewfix-loop)), not alternative
+defaults.
+
 ## Initialize a Project workspace
 
 A ProjectWeave Project is one GitHub Project whose Tasks are ordinary repository
@@ -40,13 +65,15 @@ with `--create-project`. Conflicting explicit selections fail. No candidate is
 chosen when selection is missing. Enterprise hosts are unsupported. Init names,
 inspects and clones no repository.
 
-Init creates four ordinary JSON files in the current directory (the workspace):
+Init creates four ordinary JSON files in the current directory (the workspace).
+`graph.json`, `gitweave.json` and `resources.json` are copies of the packaged
+templates; only the GitWeave graph path in `graph.json` is made absolute:
 
 | File | Purpose / human input |
 | --- | --- |
 | `project.json` | Project owner/type/number, standard Priority order `P0`, `P1`, `P2` |
 | `resources.json` | One `subscription` entry with `stop_at_remaining_percent: 20` and **no** `remaining_percent`; record the observed remaining usage before each Run |
-| `graph.json` | Load, select an eligible Issue from any repository in the Project, check the subscription threshold, execute GitWeave in that Issue's repository, comment the result |
+| `graph.json` | Load, select an eligible Issue from any repository in the Project (or return `no_work`), check the subscription threshold, execute GitWeave in that Issue's repository, comment the result |
 | `gitweave.json` | One implementation agent; explicitly replace `CONFIGURE_PROVIDER` and `CONFIGURE_MODEL`, review the instruction and optional effort/permission settings |
 
 The default workflow retains the standard Priority order **P0, P1, P2**.
@@ -182,7 +209,10 @@ Alternatively run `projectweave init --project-owner OWNER --project-number N` i
 a new workspace and reapply your provider/model edits. Init now emits the
 subscription threshold policy instead of `gitweave` run capacity; an old
 `resources.json` with `gitweave` capacity keeps working with its old graph but is
-reported as incompatible by init.
+reported as incompatible by init. Likewise a `graph.json` generated before the
+canonical template (node names `capacity`/`comment`, no `no_work` branch) keeps
+running but is reported as incompatible; replace it with a fresh copy of the
+template if you want init to manage it.
 
 ### Migrating from the `projectweave-ready` label
 
@@ -202,15 +232,19 @@ project write access for Status updates, and Issue comment permission for
 writeback. The runtime targets github.com, including user and organization
 Projects v2; classic Projects and enterprise hosts are not supported.
 
-Copy `examples/dispatch.json`, `examples/project.json`, and
-`examples/resources.json`, replace the project owner/number, and adjust
+Copy `projectweave/templates/graph.json`, `gitweave.json`, `resources.json`
+and `examples/project.json` into a workspace directory, replace the project
+owner/number, and adjust
 Priority and Status names to the actual single-select field values. Values are
 case-sensitive. Optional `eligible_statuses` is an additional filter; remove it
 to select by open Issue plus `AI execution` = `Ready` alone. Unknown or absent Priority values
 sort below all configured values. Priority ordering is explicit, not inferred
 from the order returned by GitHub.
 
-Configure the GitWeave graph path in `dispatch.json`. The workspace is the
+The template's GitWeave graph path `gitweave.json` is relative, so run from the
+workspace (or make it absolute). Init manages only files it generated: in a
+hand-copied workspace it reports this relative path as incompatible. Set provider/model in `gitweave.json` and
+`remaining_percent` in `resources.json`. The workspace is the
 directory containing the `--project` file; each Task's checkout is resolved under
 its `repos/` as described above.
 Use a GitWeave installation matching its documented v0 `run` CLI contract. The
@@ -223,9 +257,9 @@ Command executors receive the resolved checkout path in the request's
 `checkout` field.
 
 ```sh
-python3 -m projectweave validate --graph examples/dispatch.json
-python3 -m projectweave run --graph examples/dispatch.json \
-  --project examples/project.json --resources examples/resources.json > run.json
+python3 -m projectweave validate --graph graph.json
+python3 -m projectweave run --graph graph.json \
+  --project project.json --resources resources.json > run.json
 ```
 
 `validate` makes no external calls. `run` emits a JSON receipt on stdout: Run ID,
@@ -270,14 +304,14 @@ launch failure. `resources.config.subscriptions` additionally requires each name
 subscription's `remaining_percent` to be known and above its
 `stop_at_remaining_percent`; it is checked only by this action, so branch on
 `data.available` before executing. No task returns null from select; graphs should branch before
-executing, as the example does. Missing pointer targets are Runtime Failures.
+executing, as the canonical template does. Missing pointer targets are Runtime Failures.
 
 To change Project Status, give a writeback node `"config":{"status":"Done"}`.
 Use a conditional branch to select that node only when the executor's structured
 outcome warrants it. A GitWeave task verdict can be selected at
-`/results/gitweave/data/outputs/0/data/approved` if its graph returns that field.
-The runtime does not equate GitWeave completion with task approval. The shipped
-example comments outcomes without choosing a Status policy. PR URLs can be
+`/results/execute/data/outputs/0/data/approved` if its graph returns that field.
+The runtime does not equate GitWeave completion with task approval. The canonical
+template comments outcomes without choosing a Status policy. PR URLs can be
 returned in Result references and will appear in the Issue comment.
 
 ## Review/fix loop

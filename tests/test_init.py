@@ -73,7 +73,13 @@ class InitTests(unittest.TestCase):
         executor = graph["nodes"]["execute"]["executor"]
         self.assertEqual(executor, {"type": "gitweave", "graph": str(self.root / "gitweave.json")})
         self.assertEqual(self.read("resources.json"), {"subscription": {"type": "subscription", "stop_at_remaining_percent": 20}})
-        self.assertEqual(graph["nodes"]["capacity"]["config"], {"subscriptions": ["subscription"]})
+        self.assertEqual(graph["nodes"]["subscription"]["config"], {"subscriptions": ["subscription"]})
+        # The generated files are the packaged canonical templates; only the GitWeave graph path is materialized.
+        canonical = json.loads((ROOT / "projectweave/templates/graph.json").read_text())
+        canonical["nodes"]["execute"]["executor"]["graph"] = str(self.root / "gitweave.json")
+        self.assertEqual(graph, canonical)
+        for name in ("gitweave.json", "resources.json"):
+            self.assertEqual(self.read(name), json.loads((ROOT / "projectweave/templates" / name).read_text()))
         self.assertNotIn("requires", graph["nodes"]["execute"])
         self.assertTrue(any("remaining_percent" in entry for entry in report["missing"]))
         self.assertEqual(self.read("gitweave.json")["nodes"]["work"]["model"], "CONFIGURE_MODEL")
@@ -89,6 +95,9 @@ class InitTests(unittest.TestCase):
         self.assertIsNone(record["failure"])
         invoke.assert_not_called()
         writeback.assert_not_called()
+        with patch.object(GitHub, "load", return_value=[]):
+            record = Runtime(graph, self.read("project.json"), self.read("resources.json")).run()
+        self.assertEqual(record["last"]["data"], {"status": "no_work"})
 
     def test_create_user_project_and_rerun_reuses_all_without_overwrite(self):
         self.state.write_text(json.dumps({"projects": 0, "owner_type": "User"}))
@@ -133,6 +142,22 @@ class InitTests(unittest.TestCase):
                 self.assertEqual(self.mutations(calls), [])
                 self.assertEqual((self.directory / name).read_bytes(), before)
                 (self.directory / name).unlink()
+
+    def test_graph_generated_before_canonical_template_is_incompatible(self):
+        self.invoke("--project-number", "7")
+        old = self.read("graph.json")
+        old["nodes"]["capacity"] = old["nodes"].pop("subscription")
+        old["nodes"]["comment"] = old["nodes"].pop("writeback")
+        del old["nodes"]["no_work"]
+        old["flow"] = ["load", "select", {"if": {"path": "/results/select/data/task", "equals": None, "then": [],
+            "else": ["capacity", {"if": {"path": "/results/capacity/data/available", "equals": True,
+            "then": ["execute", "comment"], "else": []}}]}}]
+        self.write("graph.json", old)
+        code, report, calls = self.invoke()
+        self.assertEqual(code, 2)
+        self.assertIn("Incompatible graph.json", report["failure"]["message"])
+        self.assertEqual(self.read("graph.json"), old)
+        self.assertEqual(self.mutations(calls), [])
 
     def test_old_run_capacity_resources_reported_clearly(self):
         old = {"gitweave": {"unit": "runs", "available": 1, "accounting": "reservation"}}
@@ -375,7 +400,7 @@ class InitTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         record = json.loads(result.stdout)
-        self.assertEqual(record["results"]["comment"]["data"]["status"], None)
+        self.assertEqual(record["results"]["writeback"]["data"]["status"], None)
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
         launch = next(c for c in calls if c["command"] == "gitweave")
         self.assertEqual(launch["argv"][2], str(self.directory / "gitweave.json"))

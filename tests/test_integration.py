@@ -25,9 +25,11 @@ class CLITests(unittest.TestCase):
             path.chmod(0o755)
         self.log = self.directory / "calls.jsonl"
         self.env = dict(os.environ, PATH=str(self.directory) + os.pathsep + os.environ["PATH"], FAKE_LOG=str(self.log))
-        self.graph = json.loads((ROOT / "examples/dispatch.json").read_text())
-        self.graph["nodes"]["primary"]["executor"]["argv"] = ["worker"]
-        self.resources = json.loads((ROOT / "examples/resources.json").read_text())
+        # The canonical default workflow, with remaining usage recorded above its stop line.
+        self.graph = json.loads((ROOT / "projectweave/templates/graph.json").read_text())
+        self.graph["nodes"]["execute"]["executor"]["graph"] = "/path/to/gitweave-graph.json"
+        self.resources = json.loads((ROOT / "projectweave/templates/resources.json").read_text())
+        self.resources["subscription"]["remaining_percent"] = 50
         self.project = json.loads((ROOT / "examples/project.json").read_text())
 
     def run_cli(self, mode="success"):
@@ -43,7 +45,7 @@ class CLITests(unittest.TestCase):
         return completed.returncode, record, calls
 
     def test_gitweave_end_to_end_pagination_and_literal_request(self):
-        self.graph["nodes"]["update"]["config"] = {"status": "Done"}
+        self.graph["nodes"]["writeback"]["config"] = {"status": "Done"}
         code, record, calls = self.run_cli()
         self.assertEqual(code, 0, record)
         self.assertEqual(record["results"]["select"]["data"]["task"]["priority"], "P0")
@@ -56,8 +58,8 @@ class CLITests(unittest.TestCase):
                          [["repo", "clone", "github.com/o/r", checkout]])
         self.assertIn(["-C", checkout, "fetch", "origin"], [c["argv"] for c in calls if c["command"] == "git"])
         self.assertIn("task $(literal) `literal`", launch[0]["argv"][-1])
-        self.assertEqual(record["results"]["gitweave"]["references"], ["abc123"])
-        self.assertFalse(record["results"]["gitweave"]["data"]["outputs"][0]["data"]["approved"])
+        self.assertEqual(record["results"]["execute"]["references"], ["abc123"])
+        self.assertFalse(record["results"]["execute"]["data"]["outputs"][0]["data"]["approved"])
         for field in ("items", "labels", "fieldValues", "fields"):
             pages = [c for c in calls if c["command"] == "gh" and c["request"] and field + "(first:" in c["request"]["query"]]
             self.assertEqual([p["request"]["variables"]["cursor"] for p in pages], [None, "next"])
@@ -66,8 +68,13 @@ class CLITests(unittest.TestCase):
         self.assertIn(record["run_id"], mutations[0]["request"]["variables"]["body"])
         self.assertEqual(mutations[1]["request"]["variables"]["option"], "DONE")
 
+    def use_command_agent(self):
+        self.graph["nodes"]["execute"] = {"kind": "agent", "instruction": "Implement the selected task.",
+                                          "executor": {"type": "command", "argv": ["worker"]},
+                                          "inputs": {"task": "/results/select/data/task"}}
+
     def test_agent_command_path(self):
-        self.resources["primary"]["available"] = 1
+        self.use_command_agent()
         code, record, calls = self.run_cli()
         self.assertEqual(code, 0)
         worker = next(c for c in calls if c["command"] == "worker")
@@ -75,7 +82,7 @@ class CLITests(unittest.TestCase):
         self.assertEqual(worker["request"]["checkout"], str(self.directory / "repos" / "o" / "r"))
         self.assertIsInstance(worker["request"]["instruction"], str)
         self.assertFalse(any(c["command"] == "gitweave" for c in calls))
-        self.assertTrue(record["results"]["primary"]["data"]["approved"])
+        self.assertTrue(record["results"]["execute"]["data"]["approved"])
 
     def test_empty_cli(self):
         code, record, calls = self.run_cli("empty")
@@ -90,29 +97,33 @@ class CLITests(unittest.TestCase):
         self.assertEqual(record["results"]["load"]["data"]["items"][0]["ai_execution"], "Not ready")
         self.assertTrue(all(c["command"] == "gh" and not c["request"]["query"].startswith("mutation") for c in calls))
 
-    def test_exhausted_cli(self):
-        self.resources["gitweave"]["available"] = 0
-        code, record, calls = self.run_cli()
-        self.assertEqual(code, 0)
-        self.assertEqual(record["results"]["gitweave"]["data"]["status"], "resource_exhausted")
-        self.assertTrue(all(c["command"] == "gh" and c["request"] for c in calls))  # No clone or fetch.
-        self.assertFalse((self.directory / "repos").exists())
+    def test_subscription_at_stop_line_or_unknown_starts_nothing(self):
+        for remaining in (20, None):
+            with self.subTest(remaining=remaining):
+                self.log.unlink(missing_ok=True)
+                self.resources["subscription"]["remaining_percent"] = remaining
+                code, record, calls = self.run_cli()
+                self.assertEqual(code, 0)
+                self.assertFalse(record["results"]["subscription"]["data"]["available"])
+                self.assertNotIn("execute", record["results"])
+                self.assertTrue(all(c["command"] == "gh" and c["request"] for c in calls))  # No clone or fetch.
+                self.assertFalse(any(c["request"]["query"].startswith("mutation") for c in calls))
+                self.assertFalse((self.directory / "repos").exists())
 
     def test_executor_failure_stops_without_github_mutation(self):
-        for node, command in (("gitweave", "gitweave"), ("primary", "worker")):
-            with self.subTest(node=node):
-                self.resources["primary"]["available"] = int(node == "primary")
-                if self.log.exists():
-                    self.log.unlink()
+        for kind, command in (("gitweave", "gitweave"), ("command", "worker")):
+            with self.subTest(kind=kind):
+                if kind == "command":
+                    self.use_command_agent()
+                self.log.unlink(missing_ok=True)
                 code, record, calls = self.run_cli("executor_failure")
                 self.assertEqual(code, 1)
                 self.assertEqual(record["status"], "failed")
                 self.assertEqual(record["failure"]["kind"], "transport")
-                self.assertEqual(record["failure"]["node"], node)
-                self.assertEqual(record["resources"][node]["charged"], 1)
+                self.assertEqual(record["failure"]["node"], "execute")
                 self.assertEqual(len([c for c in calls if c["command"] == command]), 1)
-                self.assertNotIn(node, record["results"])
-                self.assertNotIn("update", record["results"])
+                self.assertNotIn("execute", record["results"])
+                self.assertNotIn("writeback", record["results"])
                 self.assertFalse(any(c["command"] == "gh" and
                                      c["request"] and c["request"]["query"].startswith("mutation") for c in calls))
 
@@ -147,10 +158,10 @@ class CLITests(unittest.TestCase):
                 code, record, calls = self.run_cli(case if case.endswith("failure") else "success")
                 self.assertEqual(code, 1, record)
                 self.assertEqual(record["failure"]["kind"], "checkout")
-                self.assertEqual(record["failure"]["node"], "gitweave")
+                self.assertEqual(record["failure"]["node"], "execute")
                 self.assertIn("o/r", record["failure"]["message"])
                 self.assertFalse(any(c["command"] == "gitweave" for c in calls))
-                self.assertNotIn("update", record["results"])
+                self.assertNotIn("writeback", record["results"])
                 self.assertFalse(any(c["command"] == "gh" and c["request"] and
                                      c["request"]["query"].startswith("mutation") for c in calls))
                 if origin is not None:
@@ -158,15 +169,15 @@ class CLITests(unittest.TestCase):
                     self.assertFalse(any(c["argv"][:2] == ["repo", "clone"] for c in calls))
 
     def test_partial_writeback_preserves_result(self):
-        self.graph["nodes"]["update"]["config"] = {"status": "Done"}
+        self.graph["nodes"]["writeback"]["config"] = {"status": "Done"}
         code, record, _ = self.run_cli("writeback_failure")
         self.assertEqual(code, 1)
         self.assertEqual(record["failure"]["kind"], "writeback")
         self.assertEqual(len(record["failure"]["details"]["completed_references"]), 1)
-        self.assertIn("gitweave", record["results"])
+        self.assertIn("execute", record["results"])
 
     def test_missing_status_preflight_does_not_comment(self):
-        self.graph["nodes"]["update"]["config"] = {"status": "Unknown"}
+        self.graph["nodes"]["writeback"]["config"] = {"status": "Unknown"}
         code, record, calls = self.run_cli()
         self.assertEqual(code, 1)
         self.assertEqual(record["failure"]["kind"], "writeback")
@@ -179,7 +190,7 @@ class CLITests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
     def test_invalid_input_exits_before_io(self):
-        self.resources["gitweave"]["available"] = -1
+        self.resources["subscription"]["remaining_percent"] = 101
         code, _, calls = self.run_cli()
         self.assertEqual(code, 2)
         self.assertEqual(calls, [])

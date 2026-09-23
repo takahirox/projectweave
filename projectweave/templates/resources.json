@@ -1,0 +1,6 @@
+{
+  "subscription": {
+    "type": "subscription",
+    "stop_at_remaining_percent": 20
+  }
+}

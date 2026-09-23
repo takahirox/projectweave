@@ -1,4 +1,0 @@
-{
-  "primary": {"unit": "invocations", "available": 0, "accounting": "reservation"},
-  "gitweave": {"unit": "runs", "available": 1, "accounting": "reservation"}
-}

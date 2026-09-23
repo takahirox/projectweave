@@ -1,5 +1,6 @@
 """Mechanical first-use setup; no runtime, agents, or setup state database."""
 from copy import deepcopy
+from importlib.resources import files
 import json
 from pathlib import Path
 import re
@@ -14,7 +15,7 @@ from .resources import Resources
 
 PRIORITIES = ["P0", "P1", "P2"]
 FILES = ("project.json", "resources.json", "graph.json", "gitweave.json")
-# The one subscription the default graph checks; ProjectWeave never infers providers from gitweave.json.
+# The one subscription templates/graph.json checks; ProjectWeave never infers providers from gitweave.json.
 SUBSCRIPTION = "subscription"
 
 
@@ -69,31 +70,17 @@ def add_init_arguments(parser):
     choice.add_argument("--create-project", metavar="TITLE", help="Explicitly create a Project, unless saved configuration exists")
 
 
+def template(name):
+    return decode(files("projectweave").joinpath("templates", name).read_text())
+
+
 def templates(workspace):
-    # Remaining usage starts unknown, so nothing runs until a human records it.
-    resources = {SUBSCRIPTION: {"type": "subscription", "stop_at_remaining_percent": 20}}
-    worker = {"version": 1, "retries": 0, "max_steps": 1, "nodes": {"work": {
-        "kind": "agent", "provider": "CONFIGURE_PROVIDER", "model": "CONFIGURE_MODEL",
-        "workspace_base": 0,
-        "instruction": "Implement only the selected Issue in the supplied ProjectWeave request. "
-                       "Follow repository development instructions, run relevant checks, and summarize the result. "
-                       "Leave artifacts in the assigned worktree. Do not publish, push, merge, or change GitHub state. "
-                       "Do not reset usage limits, buy allowance, or switch models/providers; stop on a usage limit."
-    }}, "flow": ["work"]}
-    # The runtime supplies each selected Task's checkout; no project-wide repository path.
-    graph = {"version": 1, "nodes": {
-        "load": {"kind": "action", "action": "load"},
-        "select": {"kind": "action", "action": "select", "inputs": {"items": "/results/load/data/items"}},
-        "capacity": {"kind": "action", "action": "resources", "config": {"subscriptions": [SUBSCRIPTION]}},
-        "execute": {"kind": "action", "action": "execute",
-                    "executor": {"type": "gitweave", "graph": str(workspace / "gitweave.json")},
-                    "inputs": {"task": "/results/select/data/task"}},
-        "comment": {"kind": "action", "action": "writeback", "inputs": {
-            "task": "/results/select/data/task", "result": "/results/execute"}}
-    }, "flow": ["load", "select", {"if": {"path": "/results/select/data/task", "equals": None,
-        "then": [], "else": ["capacity", {"if": {"path": "/results/capacity/data/available",
-        "equals": True, "then": ["execute", "comment"], "else": []}}]}}]}
-    return {"resources.json": resources, "graph.json": validate(graph), "gitweave.json": worker}
+    """The canonical default workflow pair and resources, materialized for one workspace."""
+    graph = template("graph.json")
+    # The packaged graph names gitweave.json relative to the workspace; generated files use an absolute path.
+    graph["nodes"]["execute"]["executor"]["graph"] = str(workspace / "gitweave.json")
+    return {"resources.json": template("resources.json"), "graph.json": validate(graph),
+            "gitweave.json": template("gitweave.json")}
 
 
 def read_file(path):
@@ -159,15 +146,15 @@ def initialize(args):
             require(equal(unscoped, project), "Incompatible project.json; default setup uses Priority order P0/P1/P2 and no Status policy; review manually")
             report["existing"].append(str(workspace / "project.json"))
         values = {}
-        for name, template in expected.items():
+        for name, default in expected.items():
             value = read_file(workspace / name)
             if value is not None:
                 try:
-                    compatible(name, value, template)
+                    compatible(name, value, default)
                 except (Failure, KeyError, TypeError) as exc:
                     raise Failure("setup", f"Incompatible {name}: {exc}") from exc
                 report["existing"].append(str(workspace / name))
-            values[name] = value if value is not None else template
+            values[name] = value if value is not None else default
         worker = values["gitweave.json"]["nodes"]["work"]
         if worker["provider"] == "CONFIGURE_PROVIDER" or worker["model"] == "CONFIGURE_MODEL":
             report["missing"].append("Explicit provider and model in gitweave.json")
