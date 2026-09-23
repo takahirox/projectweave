@@ -31,7 +31,7 @@ def main(argv=None):
             print(json.dumps({"status": "valid"}))
             return 0
         # The directory containing project.json is the Project workspace.
-        workspace = args.project.resolve().parent
+        workspace = args.project.absolute().parent
         record = Runtime(graph, decode(args.project.read_text()), decode(args.resources.read_text()),
                          checkout=partial(resolve, workspace)).run()
         print(json.dumps(record, ensure_ascii=False, allow_nan=False, indent=2))

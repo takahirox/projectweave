@@ -22,18 +22,23 @@ def resolve(workspace, repository):
     """Return the checkout path for a Task repository, cloning it lazily and fetching origin."""
     require(valid_repository(repository), f"Invalid Task repository: {repository!r}", "checkout")
     path = Path(workspace) / "repos" / repository
+    hint = ""
     try:
         if not path.exists() and not path.is_symlink():
             path.parent.mkdir(parents=True, exist_ok=True)
             process(["gh", "repo", "clone", f"github.com/{repository}", str(path)], None, 600)
         else:
             require(path.is_dir() and not path.is_symlink(), f"{path} exists but is not a checkout directory", "checkout")
+            # Git searches upward, so first ensure the path is itself a repository root, not inside another one.
+            top = process(["git", "-C", str(path), "rev-parse", "--show-toplevel"], None, 30).strip()
+            require(Path(top).resolve() == path.resolve(), f"{path} exists but is not itself a Git checkout", "checkout")
             origin = process(["git", "-C", str(path), "remote", "get-url", "origin"], None, 30)
             require(origin_matches(origin, repository),
                     f"{path} has origin {origin.strip()!r}, not {repository}; refusing to reuse it", "checkout")
         process(["git", "-C", str(path), "fetch", "origin"], None, 600)
+        hint = "; if origin/HEAD is missing or stale, run `git remote set-head origin --auto` there"
         process(["git", "-C", str(path), "rev-parse", "--verify", f"{BASE}^{{commit}}"], None, 30)
     except (Failure, OSError) as exc:
         details = exc.details if isinstance(exc, Failure) else {}
-        raise Failure("checkout", f"Cannot prepare checkout for {repository}: {exc}", details) from exc
+        raise Failure("checkout", f"Cannot prepare checkout for {repository}: {exc}{hint}", details) from exc
     return str(path)

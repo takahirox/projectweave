@@ -354,3 +354,20 @@ class CheckoutTests(unittest.TestCase):
                         resolve("/nonexistent-workspace", repository)
                 self.assertEqual(caught.exception.kind, "checkout")
                 process.assert_not_called()
+
+    def test_directory_inside_another_repository_is_not_reused(self):
+        # Real git: an empty directory inside a checkout with the same origin must not borrow it.
+        import subprocess, tempfile
+        from pathlib import Path
+        from projectweave.checkout import resolve
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = Path(tmp) / "outer"
+            subprocess.run(["git", "init", "-q", str(outer)], check=True)
+            subprocess.run(["git", "-C", str(outer), "remote", "add", "origin", "https://github.com/o/r.git"], check=True)
+            nested = outer / "ws" / "repos" / "o" / "r"
+            nested.mkdir(parents=True)
+            with self.assertRaises(Failure) as caught:
+                resolve(outer / "ws", "o/r")
+            self.assertEqual(caught.exception.kind, "checkout")
+            self.assertIn("not itself a Git checkout", str(caught.exception))
+            self.assertEqual(list(nested.iterdir()), [])

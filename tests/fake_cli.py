@@ -21,7 +21,9 @@ if name == "gh" and args[:2] == ["repo", "clone"]:
 if name == "git":
     assert args[0] == "-C", args
     origin = Path(args[1]) / ".fake-origin"
-    if args[2:] == ["remote", "get-url", "origin"] and origin.exists():
+    if args[2:] == ["rev-parse", "--show-toplevel"] and origin.exists():
+        print(args[1])
+    elif args[2:] == ["remote", "get-url", "origin"] and origin.exists():
         print(origin.read_text(), end="")
     elif args[2:] == ["fetch", "origin"] and mode != "fetch_failure":
         pass

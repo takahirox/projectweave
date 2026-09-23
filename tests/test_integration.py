@@ -49,7 +49,7 @@ class CLITests(unittest.TestCase):
         self.assertEqual(record["results"]["select"]["data"]["task"]["priority"], "P0")
         launch = [c for c in calls if c["command"] == "gitweave"]
         self.assertEqual(len(launch), 1)
-        checkout = str(self.directory.resolve() / "repos" / "o" / "r")
+        checkout = str(self.directory / "repos" / "o" / "r")
         self.assertEqual(launch[0]["argv"][:7], ["run", "--graph", "/path/to/gitweave-graph.json",
                                                  "--repo", checkout, "--commit", "origin/HEAD"])
         self.assertEqual([c["argv"] for c in calls if c["argv"][:2] == ["repo", "clone"]],
@@ -72,7 +72,7 @@ class CLITests(unittest.TestCase):
         self.assertEqual(code, 0)
         worker = next(c for c in calls if c["command"] == "worker")
         self.assertEqual(worker["request"]["task"]["id"], "I")
-        self.assertEqual(worker["request"]["checkout"], str(self.directory.resolve() / "repos" / "o" / "r"))
+        self.assertEqual(worker["request"]["checkout"], str(self.directory / "repos" / "o" / "r"))
         self.assertIsInstance(worker["request"]["instruction"], str)
         self.assertFalse(any(c["command"] == "gitweave" for c in calls))
         self.assertTrue(record["results"]["primary"]["data"]["approved"])
@@ -122,9 +122,10 @@ class CLITests(unittest.TestCase):
         code, record, calls = self.run_cli()
         self.assertEqual(code, 0, record)
         self.assertFalse(any(c["argv"][:2] == ["repo", "clone"] for c in calls))
-        checkout = str(self.directory.resolve() / "repos" / "o" / "r")
+        checkout = str(self.directory / "repos" / "o" / "r")
         self.assertEqual([c["argv"][2:] for c in calls if c["command"] == "git"],
-                         [["remote", "get-url", "origin"], ["fetch", "origin"], ["rev-parse", "--verify", "origin/HEAD^{commit}"]])
+                         [["rev-parse", "--show-toplevel"], ["remote", "get-url", "origin"], ["fetch", "origin"],
+                          ["rev-parse", "--verify", "origin/HEAD^{commit}"]])
         self.assertEqual(next(c for c in calls if c["command"] == "gitweave")["argv"][4], checkout)
 
     def test_checkout_failures_stop_before_executor_and_writeback(self):

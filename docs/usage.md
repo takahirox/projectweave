@@ -118,11 +118,15 @@ It does not reset `AI execution` or close the Issue afterward; set the field to
 Before executing, the Run resolves the selected Issue's repository
 (`task.repository`) to `<workspace>/repos/OWNER/REPO`. The first Task from a
 repository clones it with `gh repo clone`; later Runs reuse the directory only if
-its `origin` is that repository on github.com (HTTPS or SSH form,
-case-insensitive). An existing directory that is not such a checkout is never
+it is itself a Git checkout (not merely inside another repository) whose `origin`
+is that repository on github.com (HTTPS or SSH form, case-insensitive). An existing directory that is not such a checkout is never
 overwritten or repurposed: the Run fails. Every execution then runs `git fetch
 origin` and GitWeave executes the **remote default branch tip (`origin/HEAD`)**,
-not a local branch or uncommitted edits; push changes you want included. Clone,
+not a local branch or uncommitted edits; push changes you want included. Plain
+`git fetch` (and GitWeave's provenance push) use your Git credentials, so for
+HTTPS run `gh auth setup-git` or use SSH. If `origin/HEAD` is missing or the
+default branch was renamed, run `git remote set-head origin --auto` in the
+checkout. Clone,
 fetch or origin failures are `checkout` Runtime Failures before the executor
 launches, with no Issue comment. The graph file path is absolute; a moved
 workspace needs it updated. GitWeave retains work as commits and may
