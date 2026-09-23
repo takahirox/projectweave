@@ -81,11 +81,12 @@ scoped to one Run, not concurrent processes or a billing ledger.
 ## GitHub mapping
 
 `--project` is a JSON file containing `owner`, `number`, and `owner_type`
-(`organization` or `user`). Optional `label` defaults to `projectweave-ready`;
-`priority_field`, `status_field` default to Priority and Status; `priority_order`
-defaults to `["P0", "P1", "P2"]`; optional `eligible_statuses` further restricts
-selection. Read all pages of items, labels, item field values, and project fields.
-Only nonarchived open Issues with the label qualify; drafts, PRs, inaccessible
+(`organization` or `user`). `priority_field`, `status_field` default to Priority
+and Status; `priority_order` defaults to `["P0", "P1", "P2"]`; optional
+`eligible_statuses` further restricts selection (AND). Read all pages of items,
+labels, item field values, and project fields. Eligibility is the fixed Project
+single-select field `AI execution`: only nonarchived open Issues whose value is
+`Ready` qualify (labels play no part; a `label` setting is rejected); drafts, PRs, inaccessible
 content, and closed Issues are excluded. Rank by configured priority, then oldest
 createdAt, then Issue URL and item ID. Missing/unknown priorities sort last.
 `select` returns task null for empty work. Writeback posts an ordinary Issue

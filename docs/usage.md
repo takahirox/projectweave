@@ -29,7 +29,7 @@ Init creates four ordinary JSON files under the checkout root's `.projectweave/`
 
 | File | Purpose / human input |
 | --- | --- |
-| `project.json` | Project owner/type/number, repository scope, ready label, standard Priority order `P0`, `P1`, `P2` |
+| `project.json` | Project owner/type/number, repository scope, standard Priority order `P0`, `P1`, `P2` |
 | `resources.json` | `gitweave.available` starts at **0**; explicitly set capacity to at least 1 before execution |
 | `graph.json` | Load, select an eligible Issue from this repository, check capacity, execute GitWeave, comment the result |
 | `gitweave.json` | One implementation agent; explicitly replace `CONFIGURE_PROVIDER` and `CONFIGURE_MODEL`, review the instruction and optional effort/permission settings |
@@ -41,11 +41,13 @@ exactly once (additional options and any display order are allowed), or creates
 that field with P0/P1/P2 options when absent. An incompatible type, missing or
 ambiguous required options, or ambiguous field name is reported without repair.
 No Status filter or update is needed: Status fields and policy are left unchanged.
-The only label init verifies/creates is `projectweave-ready`; an existing label is
-reused without changing its color or description (incompatible casing is reported).
-Init never selects Issues, adds Project items, assigns priorities, runs AI,
-installs tools, changes auth, or pushes. Selection at Run time uses open,
-nonarchived Project Issues with the ready label and matching repository, ranked
+Init verifies/creates the `AI execution` single-select field with `Ready` and
+`Not ready` options in the same way (other options are allowed; incompatible
+fields are reported, never repaired). Init creates no repository labels.
+Init never selects Issues, adds Project items, assigns priorities, marks items
+ready, runs AI, installs tools, changes auth, or pushes. Selection at Run time uses
+open, nonarchived Project Issues whose `AI execution` is `Ready` and whose
+repository matches, ranked
 by P0/P1/P2, then oldest Issue and existing tie-breakers. Unknown or unset Priority
 values sort below those three; setting an Issue priority remains a human choice.
 The optional `repository` project setting scopes selection; configurations that
@@ -65,8 +67,7 @@ or provenance publication access. Remaining configuration blockers are listed in
 `missing`; access/operational checks are listed in `human_actions`, even after the
 model and capacity are configured. Init requires working `git`, `gh` and GitWeave
 commands, `gh` authentication, repository read access and Project read access.
-Project or missing Priority field creation needs Project write access; label creation needs
-repository permission to manage labels. Failure reports give the current check
+Project or missing field creation needs Project write access. Failure reports give the current check
 and a concrete recovery action. A field read failure stops creation; after a field
 creation failure (including a lost response), rerun init to inspect all fields and
 reuse any compatible field already created. Saved files and Project identity are
@@ -88,17 +89,17 @@ gitweave validate --graph .projectweave/gitweave.json
 projectweave validate --graph .projectweave/graph.json
 ISSUE_NUMBER=123
 GH_HOST=github.com gh project item-add 7 --owner owner --url "https://github.com/owner/repo/issues/$ISSUE_NUMBER"
-gh issue edit "$ISSUE_NUMBER" --repo github.com/owner/repo --add-label projectweave-ready
+# Then set the item's "AI execution" field to "Ready" in the Project.
 projectweave run --graph .projectweave/graph.json \
   --project .projectweave/project.json --resources .projectweave/resources.json
 ```
 
-Adding an Issue to the Project requires Project write access. Labeling alone does
-not add it. Init does neither operation. Capacity is a per-Run reservation count,
+Adding an Issue to the Project and setting `AI execution` require Project write
+access. Init does neither operation. Capacity is a per-Run reservation count,
 not a token/dollar budget, and is reloaded each Run. With zero capacity or no
 eligible Issue, this graph neither launches GitWeave nor posts a comment.
-It does not remove the ready label or close the Issue afterward; remove the label
-manually when appropriate to avoid selecting it again.
+It does not reset `AI execution` or close the Issue afterward; set the field to
+`Not ready` manually when appropriate to avoid selecting it again.
 
 The executor targets the verified checkout using absolute repo/graph paths, and
 runs from its **HEAD commit**, not uncommitted edits. Review and commit intended
@@ -118,12 +119,21 @@ not repaired or treated as invalid for the runtime. Continue managing a customiz
 setup manually. Symlinked setup files/directories are rejected.
 
 Partial failures leave ordinary files and GitHub state in place, with completed
-pieces in the report. The Project identity is saved first, before label creation,
+pieces in the report. The Project identity is saved first, before field creation,
 so a rerun can reuse it. There is no rollback, retry loop or setup database. If
 Project creation succeeds remotely but its response or local save fails, inspect
 `GH_HOST=github.com gh project list --owner OWNER` and rerun with `--project-number NUMBER` before
-considering another creation. A lost label response is recovered by checking for
-the label on rerun. Avoid concurrent init invocations.
+considering another creation. Avoid concurrent init invocations.
+
+### Migrating from the `projectweave-ready` label
+
+Eligibility is now the Project field `AI execution` = `Ready`; labels are ignored
+and there is no fallback. For an existing setup:
+
+1. Delete `"label"` from `project.json` (the runtime and init reject it).
+2. Rerun `projectweave init` to create or verify the `AI execution` field.
+3. For each Project item that had the label, set `AI execution` to `Ready`.
+4. Optionally delete the `projectweave-ready` label from each repository.
 
 ## Manual setup and one Run
 
@@ -137,7 +147,7 @@ Copy `examples/dispatch.json`, `examples/project.json`, and
 `examples/resources.json`, replace the project owner/number, and adjust
 Priority and Status names to the actual single-select field values. Values are
 case-sensitive. Optional `eligible_statuses` is an additional filter; remove it
-to select by open Issue plus ready label alone. Unknown or absent Priority values
+to select by open Issue plus `AI execution` = `Ready` alone. Unknown or absent Priority values
 sort below all configured values. Priority ordering is explicit, not inferred
 from the order returned by GitHub.
 

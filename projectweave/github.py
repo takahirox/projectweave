@@ -5,10 +5,17 @@ from .contracts import Failure, keys, require, text, decode, result, check_resul
 from .executors import process
 
 PAGE = "pageInfo { hasNextPage endCursor }"
+# Standard Project-native eligibility switch; deliberately not configurable.
+ELIGIBILITY_FIELD = "AI execution"
+ELIGIBILITY_OPTIONS = ["Ready", "Not ready"]
+READY = "Ready"
 
 
 def validate_project(config):
-    keys(config, {"owner", "number", "owner_type", "label", "priority_field", "status_field",
+    require(not isinstance(config, dict) or "label" not in config,
+            f"Label eligibility was removed: delete \"label\" and set the Project field "
+            f"\"{ELIGIBILITY_FIELD}\" to {READY} instead")
+    keys(config, {"owner", "number", "owner_type", "priority_field", "status_field",
                   "priority_order", "eligible_statuses", "repository"}, {"owner", "number", "owner_type"})
     require(text(config["owner"]) and re.fullmatch(r"[A-Za-z0-9_-]+", config["owner"]), "Invalid project owner")
     require(type(config["number"]) is int and config["number"] > 0, "Invalid project number")
@@ -16,7 +23,7 @@ def validate_project(config):
     if "repository" in config:
         require(text(config["repository"]) and re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", config["repository"])
                 and config["repository"].split("/")[1] not in (".", ".."), "Invalid repository")
-    for field in ("label", "priority_field", "status_field"):
+    for field in ("priority_field", "status_field"):
         require(field not in config or text(config[field]), f"Invalid {field}")
     for field in ("priority_order", "eligible_statuses"):
         if field in config:
@@ -95,7 +102,8 @@ class GitHub:
                               "url": issue["url"], "created_at": issue["createdAt"], "state": issue["state"],
                               "repository": issue["repository"]["nameWithOwner"], "labels": labels,
                               "priority": fields.get(self.config.get("priority_field", "Priority")),
-                              "status": fields.get(self.config.get("status_field", "Status"))})
+                              "status": fields.get(self.config.get("status_field", "Status")),
+                              "ai_execution": fields.get(ELIGIBILITY_FIELD)})
         except (KeyError, TypeError, AttributeError) as exc:
             raise Failure("github", "Malformed project item") from exc
         return tasks
@@ -108,7 +116,7 @@ class GitHub:
             eligible = [t for t in tasks if t["state"] == "OPEN"
                         and ("repository" not in self.config or
                              t["repository"].lower() == self.config["repository"].lower())
-                        and self.config.get("label", "projectweave-ready") in t["labels"]
+                        and t["ai_execution"] == READY
                         and ("eligible_statuses" not in self.config or t["status"] in self.config["eligible_statuses"])]
             return min(eligible, key=lambda t: (ranks.get(t["priority"], len(ranks)),
                                                t["created_at"], t["url"], t["item_id"]), default=None)

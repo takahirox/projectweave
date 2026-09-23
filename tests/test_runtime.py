@@ -9,7 +9,7 @@ from projectweave.resources import Resources
 from projectweave.github import GitHub
 
 PROJECT = {"owner": "example", "owner_type": "organization", "number": 1}
-TASK = {"id": "I", "item_id": "ITEM", "project_id": "P", "state": "OPEN", "labels": ["projectweave-ready"],
+TASK = {"id": "I", "item_id": "ITEM", "project_id": "P", "state": "OPEN", "labels": [], "ai_execution": "Ready",
         "priority": "P1", "status": "Todo", "created_at": "2026-01-01T00:00:00Z", "url": "https://github.com/o/r/issues/1"}
 
 
@@ -242,7 +242,9 @@ class RuntimeTests(unittest.TestCase):
         tasks = [dict(TASK, id="old", priority="P2", created_at="2020"),
                  dict(TASK, id="priority", priority="P0", created_at="2025"),
                  dict(TASK, id="old-priority", priority="P0", created_at="2024"),
-                 dict(TASK, id="excluded", priority="P0", created_at="2000", labels=[])]
+                 dict(TASK, id="excluded", priority="P0", created_at="2000", ai_execution="Not ready"),
+                 dict(TASK, id="unset", priority="P0", created_at="2000", ai_execution=None),
+                 dict(TASK, id="label-only", priority="P0", created_at="2000", labels=["projectweave-ready"], ai_execution=None)]
         for ordering in (tasks, list(reversed(tasks))):
             self.assertEqual(backend.select(ordering)["id"], "old-priority")
         backend.config = dict(PROJECT, eligible_statuses=["Done"])
