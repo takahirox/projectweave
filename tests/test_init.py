@@ -60,7 +60,7 @@ class InitTests(unittest.TestCase):
     def mutations(self, calls):
         return [c for c in calls if c["request"] and c["request"]["query"].startswith("mutation")]
 
-    def test_first_run_existing_project_and_zero_capacity(self):
+    def test_first_run_existing_project_and_unknown_remaining_usage(self):
         code, report, calls = self.invoke("--project-number", "7")
         self.assertEqual(code, 0, report)
         self.assertTrue(report["initialized"])
@@ -72,7 +72,10 @@ class InitTests(unittest.TestCase):
         graph = validate(self.read("graph.json"))
         executor = graph["nodes"]["execute"]["executor"]
         self.assertEqual(executor, {"type": "gitweave", "graph": str(self.root / "gitweave.json")})
-        self.assertEqual(self.read("resources.json")["gitweave"]["available"], 0)
+        self.assertEqual(self.read("resources.json"), {"subscription": {"type": "subscription", "stop_at_remaining_percent": 20}})
+        self.assertEqual(graph["nodes"]["capacity"]["config"], {"subscriptions": ["subscription"]})
+        self.assertNotIn("requires", graph["nodes"]["execute"])
+        self.assertTrue(any("remaining_percent" in entry for entry in report["missing"]))
         self.assertEqual(self.read("gitweave.json")["nodes"]["work"]["model"], "CONFIGURE_MODEL")
         self.assertTrue(any("item-add 7 --owner o" in c for c in report["next_commands"]))
         self.assertIn("projectweave run --graph graph.json --project project.json --resources resources.json", report["next_commands"])
@@ -107,7 +110,7 @@ class InitTests(unittest.TestCase):
         worker["nodes"]["work"].update(provider="codex", model="human-selected", effort="medium")
         self.write("gitweave.json", worker)
         capacity = self.read("resources.json")
-        capacity["gitweave"]["available"] = 2
+        capacity["subscription"].update(remaining_percent=45, stop_at_remaining_percent=30)
         self.write("resources.json", capacity)
         (self.directory / "graph.json").unlink()
         code, report, calls = self.invoke()
@@ -119,7 +122,7 @@ class InitTests(unittest.TestCase):
         self.assertEqual(self.mutations(calls), [])
 
     def test_incompatible_files_stop_before_remote_mutations(self):
-        bad_values = {"graph.json": {"version": 999}, "resources.json": {"gitweave": {"available": -1}},
+        bad_values = {"graph.json": {"version": 999}, "resources.json": {"subscription": {"type": "subscription", "stop_at_remaining_percent": 101}},
                       "gitweave.json": {"nodes": []}, "project.json": None}
         for name, bad in bad_values.items():
             with self.subTest(name=name):
@@ -130,6 +133,15 @@ class InitTests(unittest.TestCase):
                 self.assertEqual(self.mutations(calls), [])
                 self.assertEqual((self.directory / name).read_bytes(), before)
                 (self.directory / name).unlink()
+
+    def test_old_run_capacity_resources_reported_clearly(self):
+        old = {"gitweave": {"unit": "runs", "available": 1, "accounting": "reservation"}}
+        self.write("resources.json", old)
+        code, report, calls = self.invoke("--project-number", "7")
+        self.assertEqual(code, 2)
+        self.assertIn("not gitweave run capacity", report["failure"]["message"])
+        self.assertEqual(self.read("resources.json"), old)
+        self.assertEqual(self.mutations(calls), [])
 
     def test_symlinks_rejected(self):
         outside = Path(self.tmp.name) / "outside"
@@ -352,7 +364,7 @@ class InitTests(unittest.TestCase):
         worker["nodes"]["work"].update(provider="codex", model="human-selected")
         self.write("gitweave.json", worker)
         capacity = self.read("resources.json")
-        capacity["gitweave"]["available"] = 1
+        capacity["subscription"]["remaining_percent"] = 21
         self.write("resources.json", capacity)
         for name in ("gh", "gitweave", "git"):
             (self.bin / name).write_text(f"#!{sys.executable}\n" + (ROOT / "tests/fake_cli.py").read_text())

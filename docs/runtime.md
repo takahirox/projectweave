@@ -52,9 +52,30 @@ Failure routing is not supported; subsequent graph operations are not executed.
 
 ## Resources
 
-Envelope entries are `{unit, available, accounting}`. `accounting` is `reservation`
-or `reported`. Units are operator-defined (invocations, tokens, USD, etc.). Every
-agent/execute node requires a nonempty `requires` map of positive amounts. All
+### Subscription thresholds (default policy)
+
+A subscription entry is
+`{"type":"subscription","remaining_percent":45,"stop_at_remaining_percent":20}`.
+`remaining_percent` is the provider's observed remaining usage normalized to
+0–100; for now it is supplied in the `--resources` file (updated by a human or a
+future provider adapter). `stop_at_remaining_percent` (0–100) is the Project stop
+line. A `resources` action names the subscriptions it checks in
+`config.subscriptions`; `data.available` is true only if every named subscription
+exists and has `remaining_percent > stop_at_remaining_percent`. At or below the
+stop line, or with `remaining_percent` absent/null (unknown), new work is not
+admitted. This is an ordinary admission outcome, not a Runtime Failure. Graphs
+branch on it before executing. ProjectWeave never estimates usage from tokens,
+attributes usage to Tasks, or inspects GitWeave graphs to infer providers.
+Subscription entries are never reserved or charged: naming one in `requires` is an
+`accounting` Runtime Failure.
+
+### Metered resources
+
+Metered entries are `{unit, available, accounting}`. `accounting` is `reservation`
+or `reported`. Units are operator-defined (invocations, tokens, USD, etc.). They
+remain available for custom workflows and future credit budgets but are not
+emitted by init. An agent/execute node may declare a nonempty `requires` map of
+positive amounts, or omit it when no metered reservation is needed. All
 amounts are checked atomically and reserved before launch. Insufficient or absent
 resources produce an ordinary `resource_exhausted` result without launching.
 `reservation` keeps the full reserved amount charged, regardless of supplied usage.

@@ -26,7 +26,7 @@ class Runtime:
         action = node.get("action")
         if node["kind"] == "agent" or action == "execute":
             require(isinstance(inputs["task"], dict), "Execution needs a task object", "input")
-            allocation = node["requires"]
+            allocation = node.get("requires", {})
             if node["executor"]["type"] == "gitweave":
                 require(all(self.resources.state.get(k, {}).get("accounting", "reservation") == "reservation"
                             for k in allocation), "GitWeave requires reservation accounting", "accounting")
@@ -53,9 +53,9 @@ class Runtime:
             task = self.backend.select(inputs["items"])
             return result("Task selected" if task else "No eligible tasks", {"task": task})
         if action == "resources":
-            allocation = node.get("config", {}).get("requires", {})
-            available = all(k in self.resources.state and self.resources.state[k]["available"] >= v
-                            for k, v in allocation.items())
+            config = node.get("config", {})
+            available = (self.resources.admits(config.get("requires", {}))
+                         and all(self.resources.subscribed(k) for k in config.get("subscriptions", [])))
             return result("Resource state", {"resources": deepcopy(self.resources.state), "available": available})
         if action == "writeback":
             return self.backend.writeback(inputs["task"], inputs["result"], self.context["run_id"],
