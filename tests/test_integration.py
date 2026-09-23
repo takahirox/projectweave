@@ -77,6 +77,13 @@ class CLITests(unittest.TestCase):
         self.assertEqual(record["last"]["data"]["status"], "no_work")
         self.assertEqual(len(calls), 2)
 
+    def test_not_ready_field_is_not_selected(self):
+        code, record, calls = self.run_cli("not_ready")
+        self.assertEqual(code, 0)
+        self.assertEqual(record["results"]["select"]["data"]["task"], None)
+        self.assertEqual(record["results"]["load"]["data"]["items"][0]["ai_execution"], "Not ready")
+        self.assertTrue(all(c["command"] == "gh" and not c["request"]["query"].startswith("mutation") for c in calls))
+
     def test_exhausted_cli(self):
         self.resources["gitweave"]["available"] = 0
         code, record, calls = self.run_cli()

@@ -2,7 +2,6 @@
   "owner": "YOUR_ORG",
   "owner_type": "organization",
   "number": 1,
-  "label": "projectweave-ready",
   "priority_field": "Priority",
   "priority_order": ["P0", "P1", "P2"],
   "status_field": "Status",

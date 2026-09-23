@@ -52,8 +52,8 @@ elif "items(first:" in query:
 elif "labels(first:" in query:
     connection("labels", [{"name": "other"}] if variables["cursor"] is None else [{"name": "projectweave-ready"}], variables["cursor"] is None)
 elif "fieldValues(first:" in query:
-    field, value = ("Status", "Todo") if variables["cursor"] is None else ("Priority", "P0")
-    connection("fieldValues", [{"field": {"name": field}, "name": value}], variables["cursor"] is None)
+    values = [("Status", "Todo")] if variables["cursor"] is None else [("Priority", "P0"), ("AI execution", mode != "not_ready" and "Ready" or "Not ready")]
+    connection("fieldValues", [{"field": {"name": f}, "name": v} for f, v in values], variables["cursor"] is None)
 elif "fields(first:" in query:
     connection("fields", [{}] if variables["cursor"] is None else [
         {"id": "STATUS", "name": "Status", "options": [{"id": "DONE", "name": "Done"}]}], variables["cursor"] is None)

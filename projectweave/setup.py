@@ -8,46 +8,56 @@ import tempfile
 
 from .contracts import Failure, decode, equal, require, text
 from .executors import process
-from .github import GitHub, validate_project
+from .github import ELIGIBILITY_FIELD, ELIGIBILITY_OPTIONS, READY, GitHub, validate_project
 from .graph import validate
 from .resources import Resources
 
-LABEL = "projectweave-ready"
 PRIORITIES = ["P0", "P1", "P2"]
 FILES = ("project.json", "resources.json", "graph.json", "gitweave.json")
 
 
-def ensure_priority(backend, report):
-    pending = "Verified Priority single-select field with P0/P1/P2 options"
-    report["missing"].append(pending)
-    # Exhaust pagination before deciding a field is absent (or unambiguous).
-    fields = list(backend.pages(backend.resolve(), "ProjectV2", "fields",
-        "__typename ... on ProjectV2FieldCommon { name dataType } "
-        "... on ProjectV2SingleSelectField { options { name } }"))
-    matches = [field for field in fields if field["name"] == "Priority"]
+def ensure_field(backend, report, fields, name, options):
+    """Reuse a compatible single-select field or create it; incompatible fields are never repaired."""
+    summary = f"{name} field ({'/'.join(options)})"
+    matches = [field for field in fields if field["name"] == name]
     if matches:
-        require(len(matches) == 1, "Incompatible Priority fields: name is ambiguous; review manually")
+        require(len(matches) == 1, f"Incompatible {name} fields: name is ambiguous; review manually")
         field = matches[0]
         require(field["__typename"] == "ProjectV2SingleSelectField" and field["dataType"] == "SINGLE_SELECT",
-                "Incompatible Priority field: expected SINGLE_SELECT; existing field left unchanged")
+                f"Incompatible {name} field: expected SINGLE_SELECT; existing field left unchanged")
         names = [option["name"] for option in field["options"]]
-        require(all(names.count(name) == 1 for name in PRIORITIES),
-                "Incompatible Priority options: require P0, P1, P2 exactly once each; existing options left unchanged")
-        report["existing"].append("Priority field (P0/P1/P2)")
+        require(all(names.count(option) == 1 for option in options),
+                f"Incompatible {name} options: require {', '.join(options)} exactly once each; existing options left unchanged")
+        report["existing"].append(summary)
     else:
         response = backend.query("""mutation($input:CreateProjectV2FieldInput!) {
           createProjectV2Field(input:$input) { projectV2Field {
             ... on ProjectV2SingleSelectField { id name options { name } }
-          } } }""", {"input": {"projectId": backend.resolve(), "name": "Priority",
+          } } }""", {"input": {"projectId": backend.resolve(), "name": name,
             "dataType": "SINGLE_SELECT", "singleSelectOptions": [
-                {"name": name, "color": "GRAY", "description": ""} for name in PRIORITIES]}})
+                {"name": option, "color": "GRAY", "description": ""} for option in options]}})
         field = response["createProjectV2Field"]["projectV2Field"]
-        require(text(field["id"]) and field["name"] == "Priority"
-                and [option["name"] for option in field["options"]] == PRIORITIES,
-                "Unexpected Priority creation response; rerun to inspect existing fields")
-        report["created"].append("Priority field (P0/P1/P2)")
-    report["missing"].remove(pending)
-    report["fields"] = "Priority verified; Status unchanged (no filter or update)"
+        require(text(field["id"]) and field["name"] == name
+                and [option["name"] for option in field["options"]] == options,
+                f"Unexpected {name} creation response; rerun to inspect existing fields")
+        report["created"].append(summary)
+    report["missing"].remove(pending(name, options))
+
+
+def pending(name, options):
+    return f"Verified {name} single-select field with {'/'.join(options)} options"
+
+
+def ensure_fields(backend, report):
+    required = (("Priority", PRIORITIES), (ELIGIBILITY_FIELD, ELIGIBILITY_OPTIONS))
+    report["missing"].extend(pending(name, options) for name, options in required)
+    # Exhaust pagination before deciding a field is absent (or unambiguous).
+    fields = list(backend.pages(backend.resolve(), "ProjectV2", "fields",
+        "__typename ... on ProjectV2FieldCommon { name dataType } "
+        "... on ProjectV2SingleSelectField { options { name } }"))
+    for name, options in required:
+        ensure_field(backend, report, fields, name, options)
+    report["fields"] = f"Priority and {ELIGIBILITY_FIELD} verified; Status unchanged (no filter or update)"
 
 
 def add_init_arguments(parser):
@@ -148,7 +158,7 @@ def initialize(args):
         require(number is not None or text(args.create_project),
                 "Choose --project-number NUMBER or explicitly --create-project TITLE; no Project is auto-selected")
         project = {"owner": owner, "owner_type": saved["owner_type"] if saved else "user",
-                   "number": number or 1, "repository": args.repo, "label": LABEL, "priority_order": PRIORITIES}
+                   "number": number or 1, "repository": args.repo, "priority_order": PRIORITIES}
         if saved is not None:
             require(equal(saved, project), "Incompatible project.json; default setup uses Priority order P0/P1/P2 and no Status policy; review manually")
             report["existing"].append(str(directory / "project.json"))
@@ -175,7 +185,7 @@ def initialize(args):
             process(["gitweave", "validate", "--graph", str(check)], None, 30)
         operation = "Install gh on PATH and check `gh auth status --hostname github.com`; grant access manually if needed"
         process(["gh", "auth", "status", "--hostname", "github.com"], None, 30)
-        operation = f"Check repository access with `gh repo view {args.repo}`; label creation requires repository write access"
+        operation = f"Check repository access with `gh repo view {args.repo}`"
         repository = decode(process(["gh", "api", "--hostname", "github.com", f"repos/{args.repo}"], None, 120))
         require(repository["full_name"].lower() == args.repo.lower(), "GitHub repository identity differs from --repo")
         operation = f"Check Project owner {owner}; supported owner types are user and organization"
@@ -209,24 +219,10 @@ def initialize(args):
                 with path.open("x") as output:
                     output.write(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
                 report["created"].append(str(path))
-        operation = f"Check label access in {args.repo}; rerun to reuse any label created before a failure"
-        repo_owner, repo_name = args.repo.split("/")
-        response = backend.query("query($owner:String!,$name:String!,$label:String!) { repository(owner:$owner,name:$name) { label(name:$label) { name } } }",
-                                 {"owner": repo_owner, "name": repo_name, "label": LABEL})
-        label = response["repository"]["label"]
-        if label is not None:
-            require(label["name"] == LABEL, "Incompatible label casing; rename it manually to projectweave-ready")
-            report["existing"].append(f"label {LABEL}")
-        else:
-            report["missing"].append(f"Confirmed label {LABEL} (rerun to check after an uncertain creation)")
-            process(["gh", "label", "create", LABEL, "--repo", f"github.com/{args.repo}", "--color", "0E8A16",
-                     "--description", "Explicitly eligible for ProjectWeave"], None, 120)
-            report["created"].append(f"label {LABEL}")
-            report["missing"].remove(f"Confirmed label {LABEL} (rerun to check after an uncertain creation)")
-        operation = ("Check Project field read access and write access for missing Priority creation; "
+        operation = (f"Check Project field read access and write access for missing Priority/{ELIGIBILITY_FIELD} creation; "
                      "review incompatible fields manually. Rerun init to read all fields and reuse any "
-                     "Priority field created before a failure; existing fields are never repaired")
-        ensure_priority(backend, report)
+                     "field created before a failure; existing fields are never repaired")
+        ensure_fields(backend, report)
         report["initialized"] = True
         q = shlex.quote
         report["next_commands"] = [
@@ -235,16 +231,15 @@ def initialize(args):
             f"projectweave validate --graph {q(str(directory / 'graph.json'))}",
             "ISSUE_NUMBER='REPLACE_WITH_OPEN_ISSUE_NUMBER'",
             f'GH_HOST=github.com gh project item-add {project["number"]} --owner {q(owner)} --url "https://github.com/{args.repo}/issues/$ISSUE_NUMBER"',
-            f'gh issue edit "$ISSUE_NUMBER" --repo github.com/{args.repo} --add-label {LABEL}',
             "projectweave run --graph .projectweave/graph.json --project .projectweave/project.json --resources .projectweave/resources.json"
         ]
         report["human_actions"] = [
             "Choose provider/model explicitly in gitweave.json; review instruction and any effort/permission settings. Install and authenticate that provider yourself.",
             "Set resources.json capacity deliberately. It is a per-Run reservation count, not a token or money budget; every Run reloads the file.",
-            "Choose an open Issue, add it to the Project, then label it ready using the commands below. No Issue has been selected or changed.",
+            f"Choose an open Issue and add it to the Project using the commands below, then set its {ELIGIBILITY_FIELD} field to {READY} in the Project. No Issue has been selected or changed.",
             "Review and commit intended repository changes before running: GitWeave executes HEAD, not uncommitted edits.",
             "Run readiness is not certified: provider credentials, Issue comment permission, Project item-add access, Git identity and provenance push access need human verification. A live GitWeave Run may push refs/notes to origin; init never runs AI or pushes.",
-            "Remove the ready label manually after processing if the Issue should not run again; this workflow comments results and does not change Status."
+            f"Set {ELIGIBILITY_FIELD} back to Not ready manually after processing if the Issue should not run again; this workflow comments results and does not change Status or {ELIGIBILITY_FIELD}."
         ]
     except (Failure, OSError, UnicodeError, KeyError, TypeError, AttributeError, RecursionError) as exc:
         report["failure"] = {"message": str(exc), "action": operation}

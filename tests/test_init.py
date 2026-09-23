@@ -30,7 +30,7 @@ class InitTests(unittest.TestCase):
         self.directory = self.root / ".projectweave"
         self.log = Path(self.tmp.name) / "calls.jsonl"
         self.state = Path(self.tmp.name) / "remote.json"
-        self.state.write_text(json.dumps({"label": False, "projects": 0}))
+        self.state.write_text(json.dumps({"projects": 0}))
         self.env = dict(os.environ, PATH=str(self.bin), PYTHONPATH=str(ROOT),
                         INIT_ROOT=str(self.root), INIT_LOG=str(self.log), INIT_STATE=str(self.state))
 
@@ -56,8 +56,7 @@ class InitTests(unittest.TestCase):
         (self.directory / name).write_text(json.dumps(value))
 
     def mutations(self, calls):
-        return [c for c in calls if c["args"][:2] == ["label", "create"] or
-                (c["request"] and c["request"]["query"].startswith("mutation"))]
+        return [c for c in calls if c["request"] and c["request"]["query"].startswith("mutation")]
 
     def test_first_run_existing_project_and_zero_capacity(self):
         code, report, calls = self.invoke("--project-number", "7")
@@ -67,7 +66,7 @@ class InitTests(unittest.TestCase):
         self.assertEqual(len(report["created"]), 6)
         self.assertEqual(len(self.mutations(calls)), 2)
         self.assertEqual(self.read("project.json"), {"owner": "o", "owner_type": "organization", "number": 7,
-                         "repository": "o/r", "label": "projectweave-ready", "priority_order": ["P0", "P1", "P2"]})
+                         "repository": "o/r", "priority_order": ["P0", "P1", "P2"]})
         graph = validate(self.read("graph.json"))
         executor = graph["nodes"]["execute"]["executor"]
         self.assertEqual(Path(executor["repo"]), self.root)
@@ -75,8 +74,10 @@ class InitTests(unittest.TestCase):
         self.assertEqual(self.read("resources.json")["gitweave"]["available"], 0)
         self.assertEqual(self.read("gitweave.json")["nodes"]["work"]["model"], "CONFIGURE_MODEL")
         self.assertTrue(any("item-add 7 --owner o" in c for c in report["next_commands"]))
-        self.assertTrue(any("--add-label projectweave-ready" in c for c in report["next_commands"]))
-        task = {"id": "I", "item_id": "ITEM", "project_id": "P", "state": "OPEN", "labels": ["projectweave-ready"],
+        self.assertIn("AI execution field (Ready/Not ready)", report["created"])
+        self.assertFalse(any("label" in c for c in report["next_commands"]))
+        self.assertTrue(any("AI execution field to Ready" in a for a in report["human_actions"]))
+        task = {"id": "I", "item_id": "ITEM", "project_id": "P", "state": "OPEN", "labels": [], "ai_execution": "Ready",
                 "priority": None, "status": None, "created_at": "2026", "url": "url", "repository": "o/r"}
         with patch.object(GitHub, "load", return_value=[task]), patch("projectweave.runtime.invoke") as invoke, patch.object(GitHub, "writeback") as writeback:
             record = Runtime(graph, self.read("project.json"), self.read("resources.json")).run()
@@ -85,7 +86,7 @@ class InitTests(unittest.TestCase):
         writeback.assert_not_called()
 
     def test_create_user_project_and_rerun_reuses_all_without_overwrite(self):
-        self.state.write_text(json.dumps({"label": False, "projects": 0, "owner_type": "User"}))
+        self.state.write_text(json.dumps({"projects": 0, "owner_type": "User"}))
         code, report, _ = self.invoke("--create-project", "First run", "--project-owner", "team")
         self.assertEqual(code, 0, report)
         self.assertEqual(self.read("project.json")["owner_type"], "user")
@@ -190,9 +191,9 @@ class InitTests(unittest.TestCase):
                 (self.bin / (tool + ".disabled")).rename(source)
 
     def test_partial_failures_recover_using_saved_project(self):
-        for mode in ("label_read", "label_write", "label_lost"):
+        for mode in ("field_read", "field_write", "field_lost"):
             with self.subTest(mode=mode):
-                self.state.write_text(json.dumps({"label": False, "projects": 0}))
+                self.state.write_text(json.dumps({"projects": 0}))
                 if self.directory.exists():
                     for path in self.directory.iterdir():
                         path.unlink()
@@ -238,11 +239,14 @@ class InitTests(unittest.TestCase):
     def test_compatible_priority_on_later_page_reused_without_changes(self):
         field = {"__typename": "ProjectV2SingleSelectField", "name": "Priority",
                  "dataType": "SINGLE_SELECT", "options": [{"name": n} for n in ("Other", "P2", "P0", "P1")]}
-        state = {"label": True, "projects": 0, "fields": [field]}
+        ready = {"__typename": "ProjectV2SingleSelectField", "name": "AI execution",
+                 "dataType": "SINGLE_SELECT", "options": [{"name": n} for n in ("Not ready", "Blocked", "Ready")]}
+        state = {"projects": 0, "fields": [field, ready]}
         self.state.write_text(json.dumps(state))
         code, report, calls = self.invoke("--project-number", "7")
         self.assertEqual(code, 0, report)
         self.assertIn("Priority field (P0/P1/P2)", report["existing"])
+        self.assertIn("AI execution field (Ready/Not ready)", report["existing"])
         self.assertEqual(self.mutations(calls), [])
         self.assertEqual(json.loads(self.state.read_text()), state)
         reads = [c for c in calls if c["request"] and "fields(first:" in c["request"]["query"]]
@@ -255,7 +259,7 @@ class InitTests(unittest.TestCase):
                 ("ProjectV2SingleSelectField", "SINGLE_SELECT", ["P0", "P1", "p2"]),
                 ("ProjectV2SingleSelectField", "SINGLE_SELECT", ["P0", "P1", "P2", "P2"])):
             with self.subTest(kind=kind, options=options):
-                state = {"label": True, "projects": 0, "fields": [{"__typename": kind,
+                state = {"projects": 0, "fields": [{"__typename": kind,
                          "name": "Priority", "dataType": datatype, "options": [{"name": n} for n in options]}]}
                 self.state.write_text(json.dumps(state))
                 code, report, calls = self.invoke("--project-number", "7")
@@ -269,7 +273,7 @@ class InitTests(unittest.TestCase):
     def test_ambiguous_priority_across_pages_not_accepted(self):
         field = {"__typename": "ProjectV2SingleSelectField", "name": "Priority",
                  "dataType": "SINGLE_SELECT", "options": [{"name": n} for n in ("P0", "P1", "P2")]}
-        state = {"label": True, "projects": 0, "first_fields": [field], "fields": [field]}
+        state = {"projects": 0, "first_fields": [field], "fields": [field]}
         self.state.write_text(json.dumps(state))
         code, report, calls = self.invoke("--project-number", "7")
         self.assertEqual(code, 2)
@@ -280,7 +284,7 @@ class InitTests(unittest.TestCase):
     def test_priority_failure_and_recovery_without_duplicate_creation(self):
         for mode in ("field_read", "field_page", "field_write", "field_lost"):
             with self.subTest(mode=mode):
-                self.state.write_text(json.dumps({"label": True, "projects": 0}))
+                self.state.write_text(json.dumps({"projects": 0}))
                 code, report, calls = self.invoke("--project-number", "7", mode=mode)
                 self.assertEqual(code, 2, report)
                 self.assertFalse(report["initialized"])
@@ -291,8 +295,9 @@ class InitTests(unittest.TestCase):
                 before = {p.name: p.read_bytes() for p in self.directory.iterdir()}
                 code, report, calls = self.invoke()
                 self.assertEqual(code, 0, report)
-                self.assertEqual(len(self.mutations(calls)), 0 if mode == "field_lost" else 1)
-                self.assertEqual(len(json.loads(self.state.read_text())["fields"]), 1)
+                # Priority is created first; a lost Priority response leaves only AI execution to create.
+                self.assertEqual(len(self.mutations(calls)), 1 if mode == "field_lost" else 2)
+                self.assertEqual(len(json.loads(self.state.read_text())["fields"]), 2)
                 self.assertEqual(before, {p.name: p.read_bytes() for p in self.directory.iterdir()})
                 code, report, calls = self.invoke()
                 self.assertEqual(code, 0, report)
@@ -309,11 +314,46 @@ class InitTests(unittest.TestCase):
         self.assertEqual(self.read("project.json"), project)
         self.assertEqual(self.mutations(calls), [])
 
-    def test_incompatible_label_case_is_reported(self):
-        self.state.write_text(json.dumps({"label": True, "projects": 0, "label_name": "ProjectWeave-Ready"}))
-        code, report, calls = self.invoke("--project-number", "7")
+    def test_second_field_lost_creation_recovers_without_duplicate(self):
+        priority = {"__typename": "ProjectV2SingleSelectField", "name": "Priority", "dataType": "SINGLE_SELECT",
+                    "options": [{"name": n} for n in ("P0", "P1", "P2")]}
+        self.state.write_text(json.dumps({"projects": 0, "fields": [priority]}))
+        code, report, calls = self.invoke("--project-number", "7", mode="field_lost")
+        self.assertEqual(code, 2, report)
+        self.assertTrue(any("AI execution" in entry for entry in report["missing"]))
+        self.assertEqual(len(self.mutations(calls)), 1)
+        code, report, calls = self.invoke()
+        self.assertEqual(code, 0, report)
+        self.assertEqual(self.mutations(calls), [])
+        self.assertIn("AI execution field (Ready/Not ready)", report["existing"])
+        self.assertEqual([f["name"] for f in json.loads(self.state.read_text())["fields"]], ["Priority", "AI execution"])
+
+    def test_incompatible_ai_execution_field_never_repaired(self):
+        for kind, datatype, options in (("ProjectV2Field", "TEXT", []),
+                ("ProjectV2SingleSelectField", "SINGLE_SELECT", ["Ready"]),
+                ("ProjectV2SingleSelectField", "SINGLE_SELECT", ["ready", "Not ready"])):
+            with self.subTest(kind=kind, options=options):
+                state = {"projects": 0, "fields": [
+                    {"__typename": "ProjectV2SingleSelectField", "name": "Priority", "dataType": "SINGLE_SELECT",
+                     "options": [{"name": n} for n in ("P0", "P1", "P2")]},
+                    {"__typename": kind, "name": "AI execution", "dataType": datatype,
+                     "options": [{"name": n} for n in options]}]}
+                self.state.write_text(json.dumps(state))
+                code, report, calls = self.invoke("--project-number", "7")
+                self.assertEqual(code, 2)
+                self.assertIn("Incompatible AI execution", report["failure"]["message"])
+                self.assertTrue(any("AI execution" in entry for entry in report["missing"]))
+                self.assertEqual(self.mutations(calls), [])
+                self.assertEqual(json.loads(self.state.read_text()), state)
+
+    def test_saved_label_configuration_reports_migration(self):
+        self.invoke("--project-number", "7")
+        project = dict(self.read("project.json"), label="projectweave-ready")
+        self.write("project.json", project)
+        code, report, calls = self.invoke()
         self.assertEqual(code, 2)
-        self.assertIn("Incompatible label casing", report["failure"]["message"])
+        self.assertIn("Label eligibility was removed", report["failure"]["message"])
+        self.assertEqual(self.read("project.json"), project)
         self.assertEqual(self.mutations(calls), [])
 
     def test_generated_workflow_executes_and_only_comments_using_external_fixtures(self):
@@ -355,7 +395,7 @@ class InitTests(unittest.TestCase):
     def test_cross_repository_issue_excluded_and_priority_not_assigned(self):
         self.assertEqual(self.invoke("--project-number", "7")[0], 0)
         backend = GitHub(self.read("project.json"))
-        old = {"state": "OPEN", "labels": ["projectweave-ready"], "priority": "P2", "created_at": "2025", "url": "url", "item_id": "1", "repository": "O/R"}
+        old = {"state": "OPEN", "ai_execution": "Ready", "priority": "P2", "created_at": "2025", "url": "url", "item_id": "1", "repository": "O/R"}
         new = dict(old, priority="P0", created_at="2026")
         foreign = dict(old, created_at="2020", repository="o/other")
         middle = dict(old, priority="P1")

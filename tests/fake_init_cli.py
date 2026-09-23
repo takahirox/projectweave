@@ -79,14 +79,15 @@ if request:
             "pageInfo": {"hasNextPage": cursor is None, "endCursor": "last" if cursor is None else None}}}}})
     if "createProjectV2Field(" in query:
         assert query.startswith("mutation($input:CreateProjectV2FieldInput!)")
-        assert request["variables"] == {"input": {"projectId": "P", "name": "Priority",
-            "dataType": "SINGLE_SELECT", "singleSelectOptions": [
-                {"name": n, "color": "GRAY", "description": ""} for n in ("P0", "P1", "P2")]}}
-        assert not any(f["name"] == "Priority" for f in state.get("fields", [])), "duplicate field"
+        field_input = request["variables"]["input"]
+        options = {"Priority": ["P0", "P1", "P2"], "AI execution": ["Ready", "Not ready"]}[field_input["name"]]
+        assert field_input == {"projectId": "P", "name": field_input["name"], "dataType": "SINGLE_SELECT",
+            "singleSelectOptions": [{"name": n, "color": "GRAY", "description": ""} for n in options]}
+        assert not any(f["name"] == field_input["name"] for f in state.get("fields", [])), "duplicate field"
         if mode == "field_write":
             fail("field write denied")
-        field = {"__typename": "ProjectV2SingleSelectField", "id": "F", "name": "Priority",
-                 "dataType": "SINGLE_SELECT", "options": [{"name": n} for n in ("P0", "P1", "P2")]}
+        field = {"__typename": "ProjectV2SingleSelectField", "id": "F", "name": field_input["name"],
+                 "dataType": "SINGLE_SELECT", "options": [{"name": n} for n in options]}
         state.setdefault("fields", []).append(field)
         state_file.write_text(json.dumps(state))
         if mode == "field_lost":
@@ -106,17 +107,4 @@ if request:
         if mode == "local_save":
             (Path(os.environ["INIT_ROOT"]) / ".projectweave").write_text("concurrent file")
         emit({"data": {"createProjectV2": {"projectV2": {"id": "P", "number": 9}}}})
-    if "label(name:" in query:
-        if mode == "label_read":
-            fail("label read failed")
-        label = {"name": state.get("label_name", "projectweave-ready")} if state["label"] else None
-        emit({"data": {"repository": {"label": label}}})
-if args == ["label", "create", "projectweave-ready", "--repo", "github.com/o/r", "--color", "0E8A16", "--description", "Explicitly eligible for ProjectWeave"]:
-    if mode == "label_write":
-        fail("label write denied")
-    state["label"] = True
-    state_file.write_text(json.dumps(state))
-    if mode == "label_lost":
-        fail("response lost")
-    sys.exit(0)
 fail("Unexpected gh operation: " + repr(args))

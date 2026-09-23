@@ -91,11 +91,12 @@ ProjectWeave should reuse existing project and source-control systems wherever p
 For a project hosted on GitHub, existing primitives may already provide:
 
 ```text
-Issue        → Task
-Priority     → Work priority
-Label        → Eligibility / classification
-Pull Request → Proposed result
-Git          → Artifacts and history
+Issue         → Task
+Priority      → Work priority
+Project field → Eligibility (`AI execution`)
+Label         → Classification
+Pull Request  → Proposed result
+Git           → Artifacts and history
 ```
 
 ProjectWeave should stay focused on the control layer between project-management infrastructure, AI resource constraints, and executors.
@@ -172,8 +173,8 @@ Or explicitly create one with `--create-project "First Run"`; use
 `--project-owner LOGIN` for a different user/organization owner. Init writes
 human-editable files in `.projectweave/` without overwriting existing files.
 Capacity starts at zero and provider/model configuration remains a human action.
-Follow the printed steps to add a chosen Issue to the Project, label it ready,
-and run. See [initialization and recovery](docs/usage.md#initialize-a-repository)
+Follow the printed steps to add a chosen Issue to the Project, set its
+`AI execution` field to `Ready`, and run. See [initialization and recovery](docs/usage.md#initialize-a-repository)
 for prerequisites, compatibility rules, and live Run limitations.
 
 For manual setup, configure the project, resource amounts, and executor paths in
