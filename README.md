@@ -179,6 +179,8 @@ projectweave --help
 A non-editable `python3 -m pip install .` copies the current state and needs
 reinstalling after each update.
 
+Validate the canonical and example graphs and run the tests:
+
 ```sh
 python3 -m projectweave validate --graph projectweave/templates/graph.json
 python3 -m projectweave validate --graph examples/review-fix.json
