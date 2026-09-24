@@ -461,6 +461,11 @@ class InitTests(unittest.TestCase):
         self.assertEqual(code, 0, report)
         self.assertEqual(self.read("gitweave.json"), worker)
         self.assertFalse(any("bypassPermissions" in a for a in report["human_actions"]))
+        del worker["nodes"]["work"]["permission_mode"]
+        self.write("gitweave.json", worker)
+        code, report, calls = self.invoke()
+        self.assertEqual(code, 0, report)
+        self.assertTrue(any("no permission_mode" in a for a in report["human_actions"]))
 
     def test_old_placeholder_workspace_still_reports_missing_choice(self):
         worker = templates(self.root)["gitweave.json"]

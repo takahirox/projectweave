@@ -162,9 +162,11 @@ def initialize(args):
         for name, default in expected.items():
             value = read_file(workspace / name)
             if value is not None:
-                if name == "gitweave.json":
+                if name == "gitweave.json" and (args.provider or args.model):
                     # Explicit choices must match an existing file; it is never rewritten to follow them.
-                    work = value.get("nodes", {}).get("work", {}) if isinstance(value.get("nodes"), dict) else {}
+                    nodes = value.get("nodes")
+                    work = nodes.get("work") if isinstance(nodes, dict) else None
+                    work = work if isinstance(work, dict) else {}
                     require(args.provider is None or work.get("provider") == args.provider,
                             f"Existing gitweave.json provider conflicts with --provider {args.provider}; edit it manually or omit the flag")
                     require(args.model is None or work.get("model") == args.model,
@@ -235,7 +237,9 @@ def initialize(args):
         ]
         report["human_actions"] = ([
             "Claude is configured with permission_mode bypassPermissions: the agent may edit files and run commands in its GitWeave worktree without asking. Remove it from gitweave.json to restrict Claude (it may then be unable to implement Issues)."]
-            if worker.get("permission_mode") == "bypassPermissions" else []) + [
+            if worker.get("permission_mode") == "bypassPermissions" else [
+            "Claude has no permission_mode in gitweave.json, so a non-interactive Run may be unable to edit files or run commands; choose one deliberately."]
+            if worker["provider"] == "claude" and "permission_mode" not in worker else []) + [
             f"gitweave.json runs provider {worker['provider']} with " + (f"model {worker['model']}" if worker.get("model") else "the provider's native default model")
             + ". Install and authenticate that provider CLI yourself. To change provider/model later, edit gitweave.json (init never rewrites it).",
             f"Before each Run, record the provider subscription's remaining usage as resources.json {SUBSCRIPTION}.remaining_percent (0-100) for the provider chosen in gitweave.json. No Task starts while it is unknown or at/below stop_at_remaining_percent (default 20; adjust deliberately). ProjectWeave does not observe or estimate usage itself; every Run reloads the file.",
