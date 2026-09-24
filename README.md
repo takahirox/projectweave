@@ -196,7 +196,8 @@ mkdir my-project && cd my-project
 projectweave init --project-owner my-team --project-number 7
 ```
 
-Or explicitly create one with `--create-project "First Run"`. Init writes
+Or explicitly create one with `--create-project "First Run"`; add
+`--link-repository OWNER/REPO` (repeatable) to also link repositories to it. Init writes
 human-editable files into the workspace without overwriting existing files; Task
 repositories are cloned into its `repos/` only when a Run executes their Issues.
 It defaults to Codex with its native default model; pass `--provider claude`

@@ -476,6 +476,64 @@ class InitTests(unittest.TestCase):
         self.assertIn("Explicit provider and model in gitweave.json", report["missing"])
         self.assertEqual(self.read("gitweave.json"), worker)
 
+    def test_link_repositories_opt_in_and_idempotent(self):
+        self.state.write_text(json.dumps({"projects": 0, "linked": ["o/Already"]}))
+        code, report, calls = self.invoke("--project-number", "7", "--link-repository", "o/r",
+                                          "--link-repository", "O/R", "--link-repository", "o/already")
+        self.assertEqual(code, 0, report)
+        self.assertIn("Repository link o/r", report["created"])
+        self.assertIn("Repository link o/already", report["existing"])
+        self.assertEqual(json.loads(self.state.read_text())["linked"], ["o/Already", "o/r"])
+        links = [c for c in calls if c["request"] and "linkProjectV2ToRepository(" in c["request"]["query"]]
+        self.assertEqual(len(links), 1)  # Duplicates are collapsed case-insensitively.
+        reads = [c for c in calls if c["request"] and "repositories(first:" in c["request"]["query"]]
+        self.assertEqual([c["request"]["variables"]["cursor"] for c in reads], [None, "last"])
+        # Linking is not Task scope: nothing is saved in the workspace and init never selects Issues.
+        self.assertNotIn("repository", self.read("project.json"))
+        self.assertFalse(any("o/r" in path.read_text() for path in self.root.iterdir()))
+        code, report, calls = self.invoke("--link-repository", "o/r")
+        self.assertEqual(code, 0, report)
+        self.assertIn("Repository link o/r", report["existing"])
+        self.assertFalse(any(c["request"] and "linkProjectV2ToRepository(" in c["request"]["query"] for c in calls))
+
+    def test_without_link_option_output_and_calls_are_unchanged(self):
+        code, report, calls = self.invoke("--project-number", "7")
+        self.assertEqual(code, 0, report)
+        self.assertFalse(any(c["request"] and "repositor" in c["request"]["query"] for c in calls))
+        self.assertFalse(any("link" in entry.lower() for key in ("created", "existing", "missing", "human_actions", "next_commands")
+                             for entry in report[key]))
+
+    def test_invalid_or_foreign_link_rejected_before_github(self):
+        for repository in ("other/r", "o", "o/..", "o/r/x"):
+            with self.subTest(repository=repository):
+                code, report, calls = self.invoke("--project-number", "7", "--link-repository", repository)
+                self.assertEqual(code, 2)
+                self.assertIn("--link-repository", report["failure"]["message"])
+                self.assertFalse(any(c["name"] == "gh" for c in calls))
+                self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_link_failures_report_completed_pieces_and_rerun_recovers(self):
+        for mode, state in (("link_read", {}), ("link_write", {}), ("success", {"absent_repositories": ["o/r"]})):
+            with self.subTest(mode=mode):
+                for path in self.root.iterdir():
+                    path.unlink()
+                self.state.write_text(json.dumps({"projects": 0, **state}))
+                code, report, calls = self.invoke("--create-project", "New", "--link-repository", "o/r", mode=mode)
+                self.assertEqual(code, 2, report)
+                self.assertFalse(report["initialized"])
+                self.assertIn("Linked repository o/r", report["missing"])
+                self.assertIn("Rerun init", report["failure"]["action"])
+                self.assertIn("exists", report["failure"]["action"])
+                if mode != "link_read":
+                    self.assertIn("Cannot link o/r", report["failure"]["message"])
+                self.assertIn("Project o #9", report["created"])
+                self.assertIn("AI execution field (Ready/Not ready)", report["created"])
+                self.state.write_text(json.dumps(dict(json.loads(self.state.read_text()), absent_repositories=[])))
+                code, report, calls = self.invoke("--link-repository", "o/r")
+                self.assertEqual(code, 0, report)
+                self.assertIn("Repository link o/r", report["created"])
+                self.assertEqual(json.loads(self.state.read_text())["projects"], 1)
+
     def test_multi_repository_selection_and_optional_saved_filter(self):
         self.assertEqual(self.invoke("--project-number", "7")[0], 0)
         backend = GitHub(self.read("project.json"))

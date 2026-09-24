@@ -62,8 +62,30 @@ projectweave init --project-owner my-team --create-project "First Run"
 GitHub determines whether that login is a user or organization; both Projects v2
 owner types work. An existing `project.json` is reused, including when rerunning
 with `--create-project`. Conflicting explicit selections fail. No candidate is
-chosen when selection is missing. Enterprise hosts are unsupported. Init names,
-inspects and clones no repository.
+chosen when selection is missing. Enterprise hosts are unsupported. Init clones
+no repository, and names or inspects one only when you pass `--link-repository`.
+
+### Optionally link repositories
+
+Linking shows the Project in a repository's Projects tab and makes adding its
+Issues easy. It is not required by the runtime. Opt in with one or more
+repositories owned by the Project owner:
+
+```sh
+projectweave init --project-owner my-team --create-project "First Run" \
+  --link-repository my-team/app --link-repository my-team/api
+```
+
+Only the named repositories are linked (nothing is inferred from the current
+directory or Project items). Init reads every page of the Project's linked
+repositories first; an already-linked repository (compared case-insensitively)
+is reported under `existing`, and init never unlinks. A repository with a
+different owner is rejected before any GitHub change. Linking does not affect
+Task selection, add Issues, mark anything `Ready`, or write anything to the
+workspace files; the link lives in GitHub. It needs permission to link the
+repository. A failed link is an init failure (exit 2) reported like field
+creation: completed pieces stay in the report, and rerunning init with the same
+option reuses them. Without the option, init's behavior and output are unchanged.
 
 ### Quick start: provider and model
 

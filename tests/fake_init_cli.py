@@ -59,6 +59,29 @@ if request:
             {"__typename": "ProjectV2Field", "name": "Status", "dataType": "TEXT"}])
         emit({"data": {"node": {"fields": {"nodes": fields,
             "pageInfo": {"hasNextPage": cursor is None, "endCursor": "last" if cursor is None else None}}}}})
+    if "repositories(first:" in query:
+        # Linked repositories; the first page is deliberately empty so every page must be read.
+        cursor = request["variables"]["cursor"]
+        if mode == "link_read":
+            fail("repository read denied")
+        nodes = [{"nameWithOwner": name} for name in state.get("linked", [])] if cursor else []
+        emit({"data": {"node": {"repositories": {"nodes": nodes,
+            "pageInfo": {"hasNextPage": cursor is None, "endCursor": "last" if cursor is None else None}}}}})
+    if "repository(owner:" in query:
+        name = request["variables"]["owner"] + "/" + request["variables"]["name"]
+        if name in state.get("absent_repositories", []):
+            # Real gh prints the GraphQL NOT_FOUND error and exits 1.
+            fail("GraphQL: Could not resolve to a Repository with the name '" + name + "'.")
+        emit({"data": {"repository": {"id": "R:" + name}}})
+    if "linkProjectV2ToRepository(" in query:
+        name = request["variables"]["repository"].removeprefix("R:")
+        assert request["variables"]["project"] == "P"
+        assert name.lower() not in [n.lower() for n in state.get("linked", [])], "duplicate link"
+        if mode == "link_write":
+            fail("link denied")
+        state.setdefault("linked", []).append(name)
+        state_file.write_text(json.dumps(state))
+        emit({"data": {"linkProjectV2ToRepository": {"repository": {"nameWithOwner": name}}}})
     if "createProjectV2Field(" in query:
         assert query.startswith("mutation($input:CreateProjectV2FieldInput!)")
         field_input = request["variables"]["input"]
