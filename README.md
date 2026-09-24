@@ -154,8 +154,32 @@ See [Issue #1](https://github.com/takahirox/projectweave/issues/1) for the full 
 ## Run the first runtime
 
 Requires Python 3.11+ on Linux or macOS. No Python runtime dependencies.
-Use `python3 -m projectweave` from this checkout, or install with
-`python3 -m pip install .` to use the `projectweave` command.
+
+For developing or dogfooding ProjectWeave from a checkout, use an editable
+install in a virtual environment:
+
+```sh
+cd /path/to/projectweave
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -e .
+projectweave --help
+```
+
+- `python3 -m MODULE` runs the named module with that Python interpreter
+  (for example `python3 -m projectweave` works from the checkout without installing).
+- `pip install -e .` is an editable install: the `projectweave` command uses the
+  checkout's source, so pulled or edited code takes effect without reinstalling
+  in the normal case.
+- Reinstall (`python3 -m pip install -e .`) after packaging or dependency
+  metadata changes, such as edits to `pyproject.toml`.
+- The virtual environment keeps ProjectWeave out of your system Python; run
+  `source .venv/bin/activate` in new shells before using `projectweave`.
+
+A non-editable `python3 -m pip install .` copies the current state and needs
+reinstalling after each update.
+
+Validate the canonical and example graphs and run the tests:
 
 ```sh
 python3 -m projectweave validate --graph projectweave/templates/graph.json
