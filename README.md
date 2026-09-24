@@ -199,9 +199,11 @@ projectweave init --project-owner my-team --project-number 7
 Or explicitly create one with `--create-project "First Run"`. Init writes
 human-editable files into the workspace without overwriting existing files; Task
 repositories are cloned into its `repos/` only when a Run executes their Issues.
-Remaining subscription usage starts unknown (nothing runs until you record it
-against the default 20% stop line) and provider/model configuration remains a
-human action.
+It defaults to Codex with its native default model; pass `--provider claude`
+(which also enables Claude's `bypassPermissions` mode: the agent edits files and
+runs commands without asking) or `--model MODEL` to
+override. Remaining subscription usage starts unknown: nothing runs until you
+record it against the default 20% stop line.
 Follow the printed steps to add a chosen Issue to the Project, set its
 `AI execution` field to `Ready`, and run. See [initialization and recovery](docs/usage.md#initialize-a-project-workspace)
 for prerequisites, compatibility rules, and live Run limitations.

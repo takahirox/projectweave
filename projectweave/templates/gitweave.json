@@ -5,8 +5,7 @@
   "nodes": {
     "work": {
       "kind": "agent",
-      "provider": "CONFIGURE_PROVIDER",
-      "model": "CONFIGURE_MODEL",
+      "provider": "codex",
       "workspace_base": 0,
       "instruction": "Implement only the selected Issue in the supplied ProjectWeave request. Follow repository development instructions, run relevant checks, and summarize the result. Leave artifacts in the assigned worktree. Do not publish, push, merge, or change GitHub state. Do not reset usage limits, buy allowance, or switch models/providers; stop on a usage limit."
     }

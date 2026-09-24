@@ -15,6 +15,7 @@ from .resources import Resources
 
 PRIORITIES = ["P0", "P1", "P2"]
 FILES = ("project.json", "resources.json", "graph.json", "gitweave.json")
+PROVIDERS = ("codex", "claude")
 # The one subscription templates/graph.json checks; ProjectWeave never infers providers from gitweave.json.
 SUBSCRIPTION = "subscription"
 
@@ -68,19 +69,28 @@ def add_init_arguments(parser):
     choice = parser.add_mutually_exclusive_group()
     choice.add_argument("--project-number", type=int, help="Use this existing Project v2")
     choice.add_argument("--create-project", metavar="TITLE", help="Explicitly create a Project, unless saved configuration exists")
+    parser.add_argument("--provider", choices=PROVIDERS, help="GitWeave provider (default codex; claude also enables bypassPermissions)")
+    parser.add_argument("--model", help="Explicit model (default: the provider's native default model)")
 
 
 def template(name):
     return decode(files("projectweave").joinpath("templates", name).read_text())
 
 
-def templates(workspace):
+def templates(workspace, provider=None, model=None):
     """The canonical default workflow pair and resources, materialized for one workspace."""
     graph = template("graph.json")
     # The packaged graph names gitweave.json relative to the workspace; generated files use an absolute path.
     graph["nodes"]["execute"]["executor"]["graph"] = str(workspace / "gitweave.json")
-    return {"resources.json": template("resources.json"), "graph.json": validate(graph),
-            "gitweave.json": template("gitweave.json")}
+    worker = template("gitweave.json")
+    node = worker["nodes"]["work"]
+    node["provider"] = provider or node["provider"]
+    if model:
+        node["model"] = model
+    if node["provider"] == "claude":
+        # Non-interactive Claude cannot edit or run commands without it; opted into via --provider claude.
+        node["permission_mode"] = "bypassPermissions"
+    return {"resources.json": template("resources.json"), "graph.json": validate(graph), "gitweave.json": worker}
 
 
 def read_file(path):
@@ -107,13 +117,15 @@ def compatible(name, value, expected):
     elif name == "graph.json":
         validate(candidate)
     elif name == "gitweave.json":
-        node = candidate["nodes"]["work"]
-        for key in ("provider", "model", "instruction"):
+        node, expected = candidate["nodes"]["work"], deepcopy(expected)
+        default = expected["nodes"]["work"]
+        for key in ("provider", "instruction"):
             require(text(node[key]), f"{key} must be nonblank")
-            node[key] = expected["nodes"]["work"][key]
-        for key in ("effort", "sandbox", "permission_mode"):
+            node[key] = default[key]
+        for key in ("model", "effort", "sandbox", "permission_mode"):
             if key in node:
                 require(text(node.pop(key)), f"{key} must be nonblank")
+            default.pop(key, None)
     require(equal(candidate, expected), f"Incompatible {name}; review manually (never overwritten)")
 
 
@@ -124,7 +136,8 @@ def initialize(args):
     # The current directory is the Project workspace: configuration here, Task checkouts under repos/.
     workspace = Path.cwd().resolve()
     try:
-        expected = templates(workspace)
+        require(args.model is None or text(args.model), "--model must be nonblank")
+        expected = templates(workspace, args.provider, args.model)
         saved = read_file(workspace / "project.json")
         owner = args.project_owner or (saved.get("owner") if isinstance(saved, dict) else None)
         require(owner is not None, "Choose --project-owner LOGIN for the GitHub Project")
@@ -149,6 +162,15 @@ def initialize(args):
         for name, default in expected.items():
             value = read_file(workspace / name)
             if value is not None:
+                if name == "gitweave.json" and (args.provider or args.model):
+                    # Explicit choices must match an existing file; it is never rewritten to follow them.
+                    nodes = value.get("nodes")
+                    work = nodes.get("work") if isinstance(nodes, dict) else None
+                    work = work if isinstance(work, dict) else {}
+                    require(args.provider is None or work.get("provider") == args.provider,
+                            f"Existing gitweave.json provider conflicts with --provider {args.provider}; edit it manually or omit the flag")
+                    require(args.model is None or work.get("model") == args.model,
+                            f"Existing gitweave.json model conflicts with --model {args.model}; edit it manually or omit the flag")
                 try:
                     compatible(name, value, default)
                 except (Failure, KeyError, TypeError) as exc:
@@ -156,7 +178,8 @@ def initialize(args):
                 report["existing"].append(str(workspace / name))
             values[name] = value if value is not None else default
         worker = values["gitweave.json"]["nodes"]["work"]
-        if worker["provider"] == "CONFIGURE_PROVIDER" or worker["model"] == "CONFIGURE_MODEL":
+        # Workspaces generated before the quick-start defaults may still hold placeholders.
+        if worker["provider"] == "CONFIGURE_PROVIDER" or worker.get("model") == "CONFIGURE_MODEL":
             report["missing"].append("Explicit provider and model in gitweave.json")
         if values["resources.json"][SUBSCRIPTION].get("remaining_percent") is None:
             report["missing"].append(f"Observed usage: set resources.json {SUBSCRIPTION}.remaining_percent (0-100) before each Run")
@@ -212,8 +235,13 @@ def initialize(args):
             f'GH_HOST=github.com gh project item-add {project["number"]} --owner {q(owner)} --url "$ISSUE_URL"',
             "projectweave run --graph graph.json --project project.json --resources resources.json"
         ]
-        report["human_actions"] = [
-            "Choose provider/model explicitly in gitweave.json; review instruction and any effort/permission settings. Install and authenticate that provider yourself.",
+        report["human_actions"] = ([
+            "Claude is configured with permission_mode bypassPermissions: the agent may edit files and run commands in its GitWeave worktree without asking. Remove it from gitweave.json to restrict Claude (it may then be unable to implement Issues)."]
+            if worker.get("permission_mode") == "bypassPermissions" else [
+            "Claude has no permission_mode in gitweave.json, so a non-interactive Run may be unable to edit files or run commands; choose one deliberately."]
+            if worker["provider"] == "claude" and "permission_mode" not in worker else []) + [
+            f"gitweave.json runs provider {worker['provider']} with " + (f"model {worker['model']}" if worker.get("model") else "the provider's native default model")
+            + ". Install and authenticate that provider CLI yourself. To change provider/model later, edit gitweave.json (init never rewrites it).",
             f"Before each Run, record the provider subscription's remaining usage as resources.json {SUBSCRIPTION}.remaining_percent (0-100) for the provider chosen in gitweave.json. No Task starts while it is unknown or at/below stop_at_remaining_percent (default 20; adjust deliberately). ProjectWeave does not observe or estimate usage itself; every Run reloads the file.",
             f"Choose an open Issue from any repository and add it to the Project using the commands below, then set its {ELIGIBILITY_FIELD} field to {READY} in the Project. No Issue has been selected or changed.",
             "A Run clones the selected Issue's repository lazily into repos/OWNER/REPO under this workspace with `gh repo clone`, fetches origin, and executes the remote default branch tip (origin/HEAD); push changes you want included. Fetch uses Git credentials: for HTTPS run `gh auth setup-git` or use SSH. Init clones nothing.",

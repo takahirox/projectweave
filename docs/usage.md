@@ -65,6 +65,34 @@ with `--create-project`. Conflicting explicit selections fail. No candidate is
 chosen when selection is missing. Enterprise hosts are unsupported. Init names,
 inspects and clones no repository.
 
+### Quick start: provider and model
+
+Without further flags, init sets up **Codex with its native default model** (no
+`model` entry), so the first Run needs no provider/model/graph/instruction edits.
+The quick-start flow is: init → add an Issue to the Project and set
+`AI execution` = `Ready` → record `remaining_percent` in `resources.json` →
+`projectweave run`. Optional overrides:
+
+```sh
+projectweave init --project-owner my-team --project-number 7 --provider claude
+projectweave init --project-owner my-team --project-number 7 --model MODEL
+```
+
+- `--provider codex|claude` selects the GitWeave provider (default `codex`).
+- `--model MODEL` writes an explicit model; without it no model is written and
+  the provider's native default applies.
+- **`--provider claude` also writes `"permission_mode": "bypassPermissions"`.**
+  Non-interactive Claude otherwise cannot edit files or run commands, so the Run
+  could not implement the Issue. With it, the agent edits files and runs commands
+  in its GitWeave worktree without asking; init's output repeats this. Remove the
+  setting from `gitweave.json` if you want to restrict Claude. Codex runs with
+  GitWeave's default Codex sandbox (`danger-full-access`).
+
+Install and authenticate the chosen provider CLI yourself. Flags only shape a new
+`gitweave.json`: if one exists with a different provider or model, init reports
+the conflict and leaves it unchanged. Without flags, an existing file's provider,
+model and permission edits are reused.
+
 Init creates four ordinary JSON files in the current directory (the workspace).
 `graph.json`, `gitweave.json` and `resources.json` are copies of the packaged
 templates; only the GitWeave graph path in `graph.json` is made absolute:
@@ -74,7 +102,7 @@ templates; only the GitWeave graph path in `graph.json` is made absolute:
 | `project.json` | Project owner/type/number, standard Priority order `P0`, `P1`, `P2` |
 | `resources.json` | One `subscription` entry with `stop_at_remaining_percent: 20` and **no** `remaining_percent`; record the observed remaining usage before each Run |
 | `graph.json` | Load, select an eligible Issue from any repository in the Project (or return `no_work`), check the subscription threshold, execute GitWeave in that Issue's repository, comment the result |
-| `gitweave.json` | One implementation agent; explicitly replace `CONFIGURE_PROVIDER` and `CONFIGURE_MODEL`, review the instruction and optional effort/permission settings |
+| `gitweave.json` | One implementation agent: Codex with its native default model, or the `--provider`/`--model` choices (Claude adds `bypassPermissions`) |
 
 The default workflow retains the standard Priority order **P0, P1, P2**.
 Init reads every page of Project fields before deciding Priority is missing. It
@@ -96,10 +124,10 @@ a human choice. Draft Issues are not Tasks. An optional `repository` setting in
 accepts it in an existing `project.json` as deliberate policy.
 
 Both graphs receive static validation, including the public `gitweave validate`
-command, which runs no agents. Provider/model placeholders are deliberate:
-GitWeave's static validator accepts them, but its runtime rejects the unconfigured
-provider. Omitting the model would allow native defaults, so replace **both**
-placeholders explicitly. Static validity is not live execution readiness.
+command, which runs no agents. Static validity is not live execution readiness.
+Workspaces created before the quick-start defaults may still contain
+`CONFIGURE_PROVIDER`/`CONFIGURE_MODEL`; init reports them in `missing` until you
+set a provider and either a model or no `model` entry.
 
 Init prints JSON with `initialized`, `ready`, `created`, `existing`, `missing`,
 `failure`, `human_actions`, and `next_commands`. Exit 0 means mechanical setup
@@ -107,7 +135,7 @@ completed; exit 2 means incomplete setup. `ready` stays false: shallow checks ca
 certify provider credentials, Issue comment permission, future Issue eligibility,
 or provenance publication access. Remaining configuration blockers are listed in
 `missing`; access/operational checks are listed in `human_actions`, even after the
-model and remaining usage are configured. Init requires working `gh` and GitWeave
+remaining usage is recorded. Init requires working `gh` and GitWeave
 commands, `gh` authentication and Project read access.
 Project or missing field creation needs Project write access. Failure reports give the current check
 and a concrete recovery action. A field read failure stops creation; after a field
@@ -122,8 +150,8 @@ not migrate files or change existing field types/options. The field mutation use
 GitHub's [Projects GraphQL contract](https://docs.github.com/en/graphql/reference/projects#createprojectv2fieldinput)
 with explicit single-select option names, neutral colors and empty descriptions.
 
-After reviewing/editing the files and installing/authenticating your chosen
-provider yourself, follow the printed commands. For example:
+After installing/authenticating your provider CLI yourself and recording
+`remaining_percent`, follow the printed commands. For example:
 
 ```sh
 # From the workspace; replace 7, my-team, and the Issue URL with your choices.
@@ -177,7 +205,7 @@ Rerun `projectweave init` in the workspace to reuse saved Project selection.
 Files are never overwritten; missing files are generated. The small compatibility
 check accepts this fixed scaffold with edited `remaining_percent` /
 `stop_at_remaining_percent` and GitWeave
-provider/model/instruction plus optional `effort`, `sandbox`, `permission_mode`.
+provider/instruction plus optional `model`, `effort`, `sandbox`, `permission_mode`.
 Other graph or policy edits are reported as incompatible with this initializer,
 not repaired or treated as invalid for the runtime. Continue managing a customized
 setup manually. Symlinked setup files are rejected.
@@ -243,7 +271,9 @@ from the order returned by GitHub.
 
 The template's GitWeave graph path `gitweave.json` is relative, so run from the
 workspace (or make it absolute). Init manages only files it generated: in a
-hand-copied workspace it reports this relative path as incompatible. Set provider/model in `gitweave.json` and
+hand-copied workspace it reports this relative path as incompatible. The template
+uses Codex with its native default model; edit `gitweave.json` for another
+provider/model (Claude needs a `permission_mode`, see above), and set
 `remaining_percent` in `resources.json`. The workspace is the
 directory containing the `--project` file; each Task's checkout is resolved under
 its `repos/` as described above.
