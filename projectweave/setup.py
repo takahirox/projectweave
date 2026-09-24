@@ -7,6 +7,7 @@ import re
 import shlex
 import tempfile
 
+from .checkout import valid_repository
 from .contracts import Failure, decode, equal, require, text
 from .executors import process
 from .github import ELIGIBILITY_FIELD, ELIGIBILITY_OPTIONS, READY, GitHub, validate_project
@@ -64,6 +65,30 @@ def ensure_fields(backend, report):
     report["fields"] = f"Priority and {ELIGIBILITY_FIELD} verified; Status unchanged (no filter or update)"
 
 
+def link_repositories(backend, report, repositories):
+    """Link explicitly named repositories; already-linked ones are reused and nothing is unlinked."""
+    entries = [f"Linked repository {repository}" for repository in repositories]
+    report["missing"].extend(entries)
+    # Exhaust pagination before deciding a repository is not linked yet.
+    linked = {node["nameWithOwner"].lower() for node in
+              backend.pages(backend.resolve(), "ProjectV2", "repositories", "nameWithOwner")}
+    for repository, entry in zip(repositories, entries):
+        if repository.lower() in linked:
+            report["existing"].append(f"Repository link {repository}")
+        else:
+            owner, name = repository.split("/")
+            found = backend.query("query($owner:String!,$name:String!) { repository(owner:$owner,name:$name) { id } }",
+                                  {"owner": owner, "name": name})["repository"]
+            require(isinstance(found, dict) and text(found.get("id")), f"Repository {repository} not found or inaccessible")
+            response = backend.query("""mutation($project:ID!,$repository:ID!) {
+              linkProjectV2ToRepository(input:{projectId:$project,repositoryId:$repository}) {
+                repository { nameWithOwner } } }""", {"project": backend.resolve(), "repository": found["id"]})
+            require(response["linkProjectV2ToRepository"]["repository"]["nameWithOwner"].lower() == repository.lower(),
+                    f"Unexpected link response for {repository}; rerun to inspect linked repositories")
+            report["created"].append(f"Repository link {repository}")
+        report["missing"].remove(entry)
+
+
 def add_init_arguments(parser):
     parser.add_argument("--project-owner", help="Project owner login (required unless saved in project.json)")
     choice = parser.add_mutually_exclusive_group()
@@ -71,6 +96,8 @@ def add_init_arguments(parser):
     choice.add_argument("--create-project", metavar="TITLE", help="Explicitly create a Project, unless saved configuration exists")
     parser.add_argument("--provider", choices=PROVIDERS, help="GitWeave provider (default codex; claude also enables bypassPermissions)")
     parser.add_argument("--model", help="Explicit model (default: the provider's native default model)")
+    parser.add_argument("--link-repository", action="append", default=[], metavar="OWNER/REPO",
+                        help="Link this repository to the Project (repeatable; same owner as the Project)")
 
 
 def template(name):
@@ -142,6 +169,13 @@ def initialize(args):
         owner = args.project_owner or (saved.get("owner") if isinstance(saved, dict) else None)
         require(owner is not None, "Choose --project-owner LOGIN for the GitHub Project")
         require(bool(re.fullmatch(r"[A-Za-z0-9_-]+", owner)), "Invalid --project-owner")
+        links = []
+        for repository in args.link_repository:
+            require(valid_repository(repository), f"--link-repository must be OWNER/REPO: {repository!r}")
+            require(repository.split("/")[0].lower() == owner.lower(),
+                    f"--link-repository {repository}: only repositories owned by the Project owner {owner} can be linked")
+            if repository.lower() not in (link.lower() for link in links):
+                links.append(repository)
         number = args.project_number
         if saved is not None:
             validate_project(saved)
@@ -225,6 +259,10 @@ def initialize(args):
                      "review incompatible fields manually. Rerun init to read all fields and reuse any "
                      "field created before a failure; existing fields are never repaired")
         ensure_fields(backend, report)
+        if links:
+            operation = (f"Check that you may link repositories to Project {owner} #{project['number']} "
+                         "(repository admin/write access). Rerun init to reuse links already made; init never unlinks")
+            link_repositories(backend, report, links)
         report["initialized"] = True
         q = shlex.quote
         report["next_commands"] = [
