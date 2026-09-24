@@ -173,7 +173,9 @@ def initialize(args):
         operation = review_files
         expected = templates(workspace, args.provider, args.model)
         saved = read_file(workspace / "project.json")
-        operation = "Pass --project-owner LOGIN (letters, digits, - or _) naming the GitHub Project owner"
+        # Without the flag the owner comes from project.json, so a bad value is a file problem.
+        operation = (review_files if args.project_owner is None and saved is not None
+                     else "Pass --project-owner LOGIN (letters, digits, - or _) naming the GitHub Project owner")
         owner = args.project_owner or (saved.get("owner") if isinstance(saved, dict) else None)
         require(owner is not None, "Choose --project-owner LOGIN for the GitHub Project")
         require(bool(re.fullmatch(r"[A-Za-z0-9_-]+", owner)), "Invalid --project-owner")
