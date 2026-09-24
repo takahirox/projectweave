@@ -70,7 +70,8 @@ if request:
     if "repository(owner:" in query:
         name = request["variables"]["owner"] + "/" + request["variables"]["name"]
         if name in state.get("absent_repositories", []):
-            emit({"data": {"repository": None}, "errors": [{"message": "Could not resolve to a Repository"}]})
+            # Real gh prints the GraphQL NOT_FOUND error and exits 1.
+            fail("GraphQL: Could not resolve to a Repository with the name '" + name + "'.")
         emit({"data": {"repository": {"id": "R:" + name}}})
     if "linkProjectV2ToRepository(" in query:
         name = request["variables"]["repository"].removeprefix("R:")

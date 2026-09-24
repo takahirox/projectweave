@@ -523,6 +523,9 @@ class InitTests(unittest.TestCase):
                 self.assertFalse(report["initialized"])
                 self.assertIn("Linked repository o/r", report["missing"])
                 self.assertIn("Rerun init", report["failure"]["action"])
+                self.assertIn("exists", report["failure"]["action"])
+                if mode != "link_read":
+                    self.assertIn("Cannot link o/r", report["failure"]["message"])
                 self.assertIn("Project o #9", report["created"])
                 self.assertIn("AI execution field (Ready/Not ready)", report["created"])
                 self.state.write_text(json.dumps(dict(json.loads(self.state.read_text()), absent_repositories=[])))

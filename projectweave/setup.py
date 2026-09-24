@@ -77,14 +77,18 @@ def link_repositories(backend, report, repositories):
             report["existing"].append(f"Repository link {repository}")
         else:
             owner, name = repository.split("/")
-            found = backend.query("query($owner:String!,$name:String!) { repository(owner:$owner,name:$name) { id } }",
-                                  {"owner": owner, "name": name})["repository"]
-            require(isinstance(found, dict) and text(found.get("id")), f"Repository {repository} not found or inaccessible")
-            response = backend.query("""mutation($project:ID!,$repository:ID!) {
-              linkProjectV2ToRepository(input:{projectId:$project,repositoryId:$repository}) {
-                repository { nameWithOwner } } }""", {"project": backend.resolve(), "repository": found["id"]})
-            require(response["linkProjectV2ToRepository"]["repository"]["nameWithOwner"].lower() == repository.lower(),
-                    f"Unexpected link response for {repository}; rerun to inspect linked repositories")
+            try:
+                # GitHub answers a missing or invisible repository with a GraphQL error (gh exits nonzero).
+                found = backend.query("query($owner:String!,$name:String!) { repository(owner:$owner,name:$name) { id } }",
+                                      {"owner": owner, "name": name})["repository"]
+                require(isinstance(found, dict) and text(found.get("id")), "repository not found")
+                response = backend.query("""mutation($project:ID!,$repository:ID!) {
+                  linkProjectV2ToRepository(input:{projectId:$project,repositoryId:$repository}) {
+                    repository { nameWithOwner } } }""", {"project": backend.resolve(), "repository": found["id"]})
+                require(response["linkProjectV2ToRepository"]["repository"]["nameWithOwner"].lower() == repository.lower(),
+                        "unexpected link response; rerun to inspect linked repositories")
+            except (Failure, KeyError, TypeError) as exc:
+                raise Failure("setup", f"Cannot link {repository}: {exc}") from exc
             report["created"].append(f"Repository link {repository}")
         report["missing"].remove(entry)
 
@@ -260,8 +264,8 @@ def initialize(args):
                      "field created before a failure; existing fields are never repaired")
         ensure_fields(backend, report)
         if links:
-            operation = (f"Check that you may link repositories to Project {owner} #{project['number']} "
-                         "(repository admin/write access). Rerun init to reuse links already made; init never unlinks")
+            operation = (f"Check that each --link-repository exists, is visible to you, and that you may link it to Project "
+                         f"{owner} #{project['number']} (repository admin/write access). Rerun init to reuse links already made; init never unlinks")
             link_repositories(backend, report, links)
         report["initialized"] = True
         q = shlex.quote
