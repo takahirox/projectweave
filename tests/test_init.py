@@ -542,6 +542,8 @@ class InitTests(unittest.TestCase):
                     else self.invoke(*flags)
                 self.assertEqual(code, 2)
                 self.assertIn("incompatible files", report["failure"]["action"])
+                if flags:
+                    self.assertIn("conflicts with explicit Project selection", report["failure"]["message"])
 
     def test_link_failures_report_completed_pieces_and_rerun_recovers(self):
         for mode, state in (("link_read", {}), ("link_write", {}), ("success", {"absent_repositories": ["o/r"]})):
