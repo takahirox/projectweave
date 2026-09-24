@@ -163,16 +163,23 @@ def compatible(name, value, expected):
 def initialize(args):
     report = {"initialized": False, "ready": False, "created": [], "existing": [],
               "missing": [], "next_commands": [], "human_actions": [], "failure": None}
-    operation = "Review incompatible files manually; init never overwrites files"
+    review_files = "Review incompatible files manually; init never overwrites files"
     # The current directory is the Project workspace: configuration here, Task checkouts under repos/.
     workspace = Path.cwd().resolve()
     try:
+        # Argument checks name the argument in their recovery action; file checks keep review_files.
+        operation = "Pass a nonblank --model MODEL, or omit it to use the provider's native default model"
         require(args.model is None or text(args.model), "--model must be nonblank")
+        operation = review_files
         expected = templates(workspace, args.provider, args.model)
         saved = read_file(workspace / "project.json")
+        # Without the flag the owner comes from project.json, so a bad value is a file problem.
+        operation = (review_files if args.project_owner is None and saved is not None
+                     else "Pass --project-owner LOGIN (letters, digits, - or _) naming the GitHub Project owner")
         owner = args.project_owner or (saved.get("owner") if isinstance(saved, dict) else None)
         require(owner is not None, "Choose --project-owner LOGIN for the GitHub Project")
         require(bool(re.fullmatch(r"[A-Za-z0-9_-]+", owner)), "Invalid --project-owner")
+        operation = "Pass --link-repository as OWNER/REPO owned by the Project owner, or omit it"
         links = []
         for repository in args.link_repository:
             require(valid_repository(repository), f"--link-repository must be OWNER/REPO: {repository!r}")
@@ -180,15 +187,18 @@ def initialize(args):
                     f"--link-repository {repository}: only repositories owned by the Project owner {owner} can be linked")
             if repository.lower() not in (link.lower() for link in links):
                 links.append(repository)
+        operation = review_files
         number = args.project_number
         if saved is not None:
             validate_project(saved)
             require(saved["owner"].lower() == owner.lower() and (number is None or saved["number"] == number),
                     "Existing project.json conflicts with explicit Project selection")
             number = saved["number"]
+        operation = "Pass a positive --project-number NUMBER for an existing Project, or --create-project TITLE"
         require(number is None or number > 0, "--project-number must be positive")
         require(number is not None or text(args.create_project),
                 "Choose --project-number NUMBER or explicitly --create-project TITLE; no Project is auto-selected")
+        operation = review_files
         project = {"owner": owner, "owner_type": saved["owner_type"] if saved else "user",
                    "number": number or 1, "priority_order": PRIORITIES}
         if saved is not None:

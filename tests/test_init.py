@@ -512,6 +512,39 @@ class InitTests(unittest.TestCase):
                 self.assertFalse(any(c["name"] == "gh" for c in calls))
                 self.assertEqual(list(self.root.iterdir()), [])
 
+    def test_argument_failures_report_argument_recovery_actions(self):
+        cases = [((("--project-number", "7", "--link-repository", "other/r"), True), "--link-repository",
+                  "only repositories owned by the Project owner"),
+                 ((("--project-number", "7", "--link-repository", "o"), True), "--link-repository", "must be OWNER/REPO"),
+                 ((("--project-number", "7", "--model", " "), True), "--model", "--model must be nonblank"),
+                 ((("--project-number", "7"), False), "--project-owner", "Choose --project-owner"),
+                 ((("--project-number", "7", "--project-owner", "bad owner"), True), "--project-owner", "Invalid --project-owner"),
+                 ((("--project-number", "0"), True), "--project-number", "--project-number must be positive"),
+                 (((), True), "--create-project", "Choose --project-number")]
+        for (flags, owner), argument, message in cases:
+            with self.subTest(flags=flags):
+                code, report, calls = self.invoke(*flags, owner=owner)
+                self.assertEqual(code, 2)
+                self.assertIn(message, report["failure"]["message"])
+                self.assertIn(argument, report["failure"]["action"])
+                self.assertNotIn("incompatible files", report["failure"]["action"])
+                self.assertEqual(report["human_actions"], [report["failure"]["action"]])
+                self.assertEqual(calls, [])
+                self.assertEqual(list(self.root.iterdir()), [])
+        # File problems keep the file-review action, including an invalid owner read from project.json
+        # and a saved Project that conflicts with an explicit selection.
+        for saved, flags in (({"owner": "o"}, ()), ({"owner": "bad owner"}, ()), ({"owner": 5}, ()), ({"owner": None}, ()),
+                             ({"owner": "o", "owner_type": "organization", "number": 7,
+                               "priority_order": ["P0", "P1", "P2"]}, ("--project-number", "8"))):
+            with self.subTest(saved=saved):
+                self.write("project.json", saved)
+                code, report, calls = self.invoke("--project-number", "7", *flags, owner=False) if not flags \
+                    else self.invoke(*flags)
+                self.assertEqual(code, 2)
+                self.assertIn("incompatible files", report["failure"]["action"])
+                if flags:
+                    self.assertIn("conflicts with explicit Project selection", report["failure"]["message"])
+
     def test_link_failures_report_completed_pieces_and_rerun_recovers(self):
         for mode, state in (("link_read", {}), ("link_write", {}), ("success", {"absent_repositories": ["o/r"]})):
             with self.subTest(mode=mode):
