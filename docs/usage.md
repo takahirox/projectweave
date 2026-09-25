@@ -8,7 +8,7 @@ init copies and these docs describe:
 | File | Layer |
 | --- | --- |
 | [`projectweave/templates/graph.json`](../projectweave/templates/graph.json) | ProjectWeave graph: how the Project is operated |
-| [`projectweave/templates/gitweave.json`](../projectweave/templates/gitweave.json) | GitWeave Task graph: how one selected repository Issue is implemented |
+| [`projectweave/templates/gitweave.json`](../projectweave/templates/gitweave.json) | GitWeave Task graph: how one selected repository Issue is implemented, reviewed and merged |
 | [`projectweave/templates/resources.json`](../projectweave/templates/resources.json) | The subscription stop line the Project graph checks |
 
 The Project graph runs:
@@ -16,9 +16,33 @@ The Project graph runs:
 ```text
 load → select ─┬─ no Task → no_work Result
                └─ Task → subscription check ─┬─ below/at stop line or unknown → stop
-                                             └─ above → execute (GitWeave in the
-                                                Task's workspace checkout) → writeback
+                                             └─ above → execute (GitWeave, Issue mode)
+                                                        → writeback
 ```
+
+The GitWeave Task graph runs, entirely inside GitWeave:
+
+```text
+implement → publish PR → review ─┬─ approved → merge → close_issue
+                ▲                └─ findings → fix ─┐
+                └───────────────────────────────────┘
+```
+
+- `implement` implements the Issue and commits with a human-readable message.
+- `publish` opens (or updates) a PR that says `Closes #N`.
+- `review` checks the PR against the Issue for missing and unnecessary scope,
+  correctness and tests.
+- `fix` addresses the findings, and the PR is updated again.
+- `merge` merges only the reviewed head, **with a merge commit** so GitWeave's
+  checkpoint notes stay in the branch history, and never bypasses required checks.
+- `close_issue` makes sure the Issue is closed once merged.
+- `max_steps: 30` bounds the loop. With `retries: 0`, a failed or exhausted Run
+  stops without merging and leaves the PR for a human.
+
+**This merges into the default branch without a human review** once the review
+agent approves. Agents push, open PRs and merge with your `gh` and Git
+credentials. Edit `gitweave.json` (for example the `merge` instruction) if you
+want a human to merge.
 
 Task selection can be changed by editing a copy; the template is the recommended
 minimal workflow. [`examples/`](../examples/) contains specialized feature
@@ -32,14 +56,13 @@ Issues from one or more repositories. A single-repository Project is simply the
 case where every Task belongs to one repository.
 
 Each Project has one local **workspace**: the directory containing `project.json`.
-It holds the Project configuration and graphs; Task repositories are cloned into it
-on demand:
+It holds the Project configuration and graphs, and GitWeave's Run data:
 
 ```text
 workspace/
 ├─ project.json  resources.json  graph.json  gitweave.json
-└─ repos/
-   └─ OWNER/REPO/   (cloned when a Task from OWNER/REPO first runs)
+├─ .gitweave/runs/<run-id>/   (GitWeave's per-Run repository store)
+└─ repos/OWNER/REPO/          (only for command executors, cloned on demand)
 ```
 
 Install ProjectWeave, `gh`, and GitWeave on PATH first. From an empty directory
@@ -100,6 +123,8 @@ projectweave init --project-owner my-team --project-number 7 --provider claude
 projectweave init --project-owner my-team --project-number 7 --model MODEL
 ```
 
+These choices apply to **every agent node** of the GitWeave Task graph.
+
 - `--provider codex|claude` selects the GitWeave provider (default `codex`).
 - `--model MODEL` writes an explicit model; without it no model is written and
   the provider's native default applies.
@@ -123,8 +148,8 @@ templates; only the GitWeave graph path in `graph.json` is made absolute:
 | --- | --- |
 | `project.json` | Project owner/type/number, standard Priority order `P0`, `P1`, `P2` |
 | `resources.json` | One `subscription` entry with `stop_at_remaining_percent: 20` and **no** `remaining_percent`; record the observed remaining usage before each Run |
-| `graph.json` | Load, select an eligible Issue from any repository in the Project (or return `no_work`), check the subscription threshold, execute GitWeave in that Issue's repository, comment the result |
-| `gitweave.json` | One implementation agent: Codex with its native default model, or the `--provider`/`--model` choices (Claude adds `bypassPermissions`) |
+| `graph.json` | Load, select an eligible Issue from any repository in the Project (or return `no_work`), check the subscription threshold, run GitWeave in Issue mode for that Issue, comment the result |
+| `gitweave.json` | The six-node Task graph (implement → PR → review/fix → merge → close_issue); every agent node uses Codex with its native default model, or the `--provider`/`--model` choices (Claude adds `bypassPermissions`) |
 
 The default workflow retains the standard Priority order **P0, P1, P2**.
 Init reads every page of Project fields before deciding Priority is missing. It
@@ -199,32 +224,40 @@ observe provider usage, estimate it, or infer the provider. The file is reloaded
 each Run. Renaming the entry (for example to `codex`) or checking several
 subscriptions is a custom graph/resources edit that init's compatibility check
 reports as incompatible; manage such a setup manually.
-It does not reset `AI execution` or close the Issue afterward; set the field to
+The ProjectWeave graph itself does not reset `AI execution` or close the Issue
+(the default GitWeave Task graph closes it after a merge); set the field to
 `Not ready` manually when appropriate to avoid selecting it again.
 
-Before executing, the Run resolves the selected Issue's repository
+The GitWeave executor runs `gitweave run --graph gitweave.json --repo OWNER/REPO
+--issue N` for the selected Task, with the workspace as its working directory.
+In this Issue mode GitWeave fetches the repository's default branch HEAD itself
+into `.gitweave/runs/<run-id>/` (retained per Run; see GitWeave's runtime docs
+and takahirox/gitweave#96 for reusing fetched objects). Its nodes receive
+`run_input` (`{"kind":"issue","number":N}`) and `github_repository`, and read
+the Issue themselves. ProjectWeave clones nothing for GitWeave; push the changes
+you want included to the default branch. GitWeave's Git transport and the agents'
+pushes use your Git credentials, so for HTTPS run `gh auth setup-git` or use SSH.
+
+For **command executors**, the Run instead resolves the selected Issue's repository
 (`task.repository`) to `<workspace>/repos/OWNER/REPO`. The first Task from a
 repository clones it with `gh repo clone`; later Runs reuse the directory only if
 it is itself a Git checkout (not merely inside another repository) whose `origin`
 is that repository on github.com (HTTPS or SSH form, case-insensitive). An existing directory that is not such a checkout is never
 overwritten or repurposed: the Run fails. Every execution then runs `git fetch
-origin` and GitWeave executes the **remote default branch tip (`origin/HEAD`)**,
-not a local branch or uncommitted edits; push changes you want included. Plain
-`git fetch` (and GitWeave's provenance push) use your Git credentials, so for
-HTTPS run `gh auth setup-git` or use SSH. If `origin/HEAD` is missing or the
+origin`, and the command receives the checkout path to work against the **remote
+default branch tip (`origin/HEAD`)**. If `origin/HEAD` is missing or the
 default branch was renamed, run `git remote set-head origin --auto` in the
 checkout. Clone,
 fetch or origin failures are `checkout` Runtime Failures before the executor
 launches, with no Issue comment. The graph file path is absolute; a moved
-workspace needs it updated. The default GitWeave agent is instructed to commit
-its changes with a concise, human-readable message referencing the Issue; GitWeave
+workspace needs it updated. The default GitWeave agents are instructed to commit
+their changes with a concise, human-readable message referencing the Issue; GitWeave
 then adds its `GitWeave RUN_ID …` checkpoint commit on top, so the history shows
 both what changed and the execution record. If the agent leaves changes
 uncommitted, the checkpoint still captures them; only the readable message is
-missing. GitWeave may automatically push provenance
-refs/notes to origin during a live Run.
-If the workspace is itself a Git repository, ignore `repos/`.
-The default graph contains no PR publication or merge action. Review your Git
+missing. GitWeave pushes provenance refs/notes to the Task's repository during a
+live Run. If the workspace is itself a Git repository, ignore `.gitweave/` and
+`repos/`. Review your Git
 identity, permissions and provenance destination before executing; init neither
 runs a probe agent nor promises live Run success.
 
@@ -235,10 +268,10 @@ check accepts this fixed scaffold with edited `remaining_percent` /
 provider/instruction plus optional `model`, `effort`, `sandbox`, `permission_mode`.
 Other graph or policy edits are reported as incompatible with this initializer,
 not repaired or treated as invalid for the runtime. Continue managing a customized
-setup manually. Symlinked setup files are rejected. Because `instruction` is a
-human-editable field, a `gitweave.json` from an earlier template (for example one
-that only leaves artifacts in the worktree without committing) is reused unchanged;
-copy the current template's instruction into it to adopt the new wording.
+setup manually. Symlinked setup files are rejected. In `gitweave.json` the
+editable fields are per agent node. A single-node `gitweave.json` from an earlier
+template is reported as incompatible: regenerate the workspace (there is no
+migration).
 
 Partial failures leave ordinary files and GitHub state in place, with completed
 pieces in the report. The Project identity is saved first, before field creation,
@@ -260,7 +293,7 @@ belong to one repository. To migrate:
    point `graph` at the workspace's `gitweave.json`.
 3. Optionally delete `"repository"` from `project.json` to select Issues from all
    repositories in the Project; keeping it remains a supported filter.
-4. Run from the workspace. The first Run clones the repository into `repos/`;
+4. Run from the workspace. GitWeave fetches the repository itself (Issue mode);
    the old checkout is no longer used.
 
 Alternatively run `projectweave init --project-owner OWNER --project-number N` in
@@ -305,8 +338,8 @@ hand-copied workspace it reports this relative path as incompatible. The templat
 uses Codex with its native default model; edit `gitweave.json` for another
 provider/model (Claude needs a `permission_mode`, see above), and set
 `remaining_percent` in `resources.json`. The workspace is the
-directory containing the `--project` file; each Task's checkout is resolved under
-its `repos/` as described above.
+directory containing the `--project` file; GitWeave runs there in Issue mode, and
+command executors get a checkout under its `repos/`, as described above.
 Use a GitWeave installation matching its documented v0 `run` CLI contract. The
 adapter reads stdout JSON only; it does not import GitWeave. Its graph owns task
 instructions, model choices, artifact handling, and any publication actions.
@@ -371,8 +404,10 @@ Use a conditional branch to select that node only when the executor's structured
 outcome warrants it. A GitWeave task verdict can be selected at
 `/results/execute/data/outputs/0/data/approved` if its graph returns that field.
 The runtime does not equate GitWeave completion with task approval. The canonical
-template comments outcomes without choosing a Status policy. PR URLs can be
-returned in Result references and will appear in the Issue comment.
+template comments outcomes without choosing a Status policy. With the default Task
+graph, the terminal output's data carries `pr` (number, URL, head), `merged`,
+`merge_commit` when merged, and `closed`, so the Issue comment names the pull
+request, including when it was left open for a human.
 
 ## Review/fix loop
 
@@ -428,8 +463,8 @@ or:
 {"type":"gitweave","graph":"/path/to/graph.json","timeout":3600}
 ```
 
-GitWeave receives the selected Task's resolved checkout as `--repo` and
-`origin/HEAD` as `--commit`; `repo` and `commit` are not configurable.
+GitWeave receives the selected Task's `OWNER/REPO` as `--repo` and its Issue
+number as `--issue`, and runs from the workspace; `repo` is not configurable.
 
 The timeout is positive seconds; default 3600. GitHub requests each have a
 120-second timeout. Timeout terminates the direct process group; descendants

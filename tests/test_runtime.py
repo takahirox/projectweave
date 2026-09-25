@@ -451,3 +451,26 @@ class SubscriptionTests(unittest.TestCase):
                 g["nodes"]["check"]["config"]["subscriptions"] = names
                 with self.assertRaises(Failure):
                     validate(g)
+
+    def test_gitweave_runs_in_issue_mode_from_workspace_without_checkout(self):
+        g = graph()
+        g["nodes"]["work"]["executor"] = {"type": "gitweave", "graph": "g"}
+        for task, failure in ((dict(TASK, number=7), None), (TASK, "input"), (dict(TASK, number=7, repository="../x"), "input")):
+            with self.subTest(task=task):
+                backend = Mock()
+                backend.load.return_value = [task]
+                backend.select.side_effect = GitHub(PROJECT).select
+                backend.writeback.return_value = result("posted")
+                execute, checkout = Mock(return_value=result("Done")), Mock()
+                record = Runtime(g, PROJECT, envelope(), backend, execute, checkout=checkout, workspace="/ws").run()
+                checkout.assert_not_called()  # GitWeave fetches the repository itself.
+                if failure:
+                    self.assertEqual(record["failure"]["kind"], failure)
+                    execute.assert_not_called()
+                else:
+                    self.assertIsNone(record["failure"])
+                    config, request, workspace = execute.call_args.args
+                    self.assertEqual((workspace, request["task"]["number"]), ("/ws", 7))
+                    self.assertNotIn("checkout", request)
+        record = Runtime(g, PROJECT, envelope(), backend, Mock()).run()
+        self.assertEqual(record["failure"]["kind"], "checkout")

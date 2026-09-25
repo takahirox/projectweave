@@ -9,7 +9,7 @@ name = Path(sys.argv[0]).name
 args = sys.argv[1:]
 request = json.load(sys.stdin) if name == "worker" or (name == "gh" and args[:2] == ["api", "graphql"]) else None
 with open(os.environ["FAKE_LOG"], "a") as log:
-    log.write(json.dumps({"command": name, "argv": args, "request": request}) + "\n")
+    log.write(json.dumps({"command": name, "argv": args, "request": request, "cwd": os.getcwd()}) + "\n")
 if name == "gh" and args[:2] == ["repo", "clone"]:
     # A clone records its origin in a marker file that the fake git reads back.
     if mode == "clone_failure":
@@ -39,7 +39,9 @@ if name in ("gitweave", "worker") and mode == "executor_failure":
 if name == "gitweave":
     print(json.dumps({"run_id": "GW", "status": "completed", "repository": "/repo", "run_ref": "refs/gitweave/GW/run",
                       "notes_ref": "refs/notes/gitweave/GW", "outputs": [
-                          {"commit": "abc123", "message": "Task rejected", "data": {"approved": False}}]}))
+                          {"commit": "abc123", "message": "Merged and closed", "data": {
+                              "pr": {"number": 12, "url": "https://github.com/o/r/pull/12", "head_sha": "def456"},
+                              "merged": True, "merge_commit": "fed789", "closed": True}}]}))
     sys.exit(0)
 if name == "worker":
     print(json.dumps({"message": "Agent finished", "data": {"approved": True}, "references": ["artifact"], "usage": {}}))

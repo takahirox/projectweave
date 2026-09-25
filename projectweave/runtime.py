@@ -5,17 +5,20 @@ from .contracts import Failure, require, pointer, equal, result, check_result
 from .graph import validate
 from .resources import Resources
 from .github import GitHub
+from .checkout import valid_repository
 from .executors import invoke
 
 
 class Runtime:
-    def __init__(self, graph, project, envelope, backend=None, executor=invoke, checkout=None):
+    def __init__(self, graph, project, envelope, backend=None, executor=invoke, checkout=None, workspace=None):
         self.graph = validate(graph)
         self.resources = Resources(envelope)
         self.backend = backend or GitHub(project)
         self.executor = executor
         # Maps a Task repository to its prepared local checkout path (see checkout.resolve).
         self.checkout = checkout
+        # GitWeave runs in Issue mode from the Project workspace and fetches the repository itself.
+        self.workspace = workspace
         self.context = {"run_id": uuid.uuid4().hex, "project": project,
                         "resources": self.resources.state, "results": {}, "last": None}
         self.steps = 0
@@ -33,14 +36,22 @@ class Runtime:
             if not self.resources.reserve(allocation):
                 return result("Required resources unavailable; executor was not launched",
                               {"status": "resource_exhausted", "required": allocation})
-            require(self.checkout is not None, "Execution needs a Project workspace", "checkout")
-            checkout = self.checkout(inputs["task"].get("repository"))
-            request = {"task": inputs["task"], "checkout": checkout, "context": inputs.get("context", {}),
+            task = inputs["task"]
+            request = {"task": task, "context": inputs.get("context", {}),
                        "resources": deepcopy(self.resources.state), "allocation": allocation,
                        "instruction": node.get("instruction"), "run_id": self.context["run_id"]}
+            gitweave = node["executor"]["type"] == "gitweave"
+            if gitweave:
+                require(self.workspace is not None, "Execution needs a Project workspace", "checkout")
+                require(valid_repository(task.get("repository")) and type(task.get("number")) is int
+                        and task["number"] > 0, "GitWeave execution needs the Task repository and Issue number", "input")
+            else:
+                require(self.checkout is not None, "Execution needs a Project workspace", "checkout")
+                request["checkout"] = self.checkout(task.get("repository"))
             output = None
             try:
-                output = check_result(self.executor(node["executor"], deepcopy(request)))
+                args = (node["executor"], deepcopy(request)) + ((self.workspace,) if gitweave else ())
+                output = check_result(self.executor(*args))
                 self.resources.settle(allocation, output["usage"])
             except Failure as exc:
                 if output is not None:

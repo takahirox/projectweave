@@ -82,14 +82,22 @@ class InitTests(unittest.TestCase):
             self.assertEqual(self.read(name), json.loads((ROOT / "projectweave/templates" / name).read_text()))
         self.assertNotIn("requires", graph["nodes"]["execute"])
         self.assertTrue(any("remaining_percent" in entry for entry in report["missing"]))
-        work = self.read("gitweave.json")["nodes"]["work"]
-        self.assertEqual(work["provider"], "codex")  # Quick-start default: Codex with its native default model.
-        self.assertNotIn("model", work)
-        self.assertNotIn("permission_mode", work)
-        # The agent commits its own work with a readable message but still never publishes.
-        self.assertIn("commit your changes in the assigned worktree", work["instruction"])
-        self.assertIn("referencing the Issue", work["instruction"])
-        self.assertIn("Do not publish, push, merge, or change GitHub state", work["instruction"])
+        nodes = self.read("gitweave.json")["nodes"]
+        self.assertEqual(list(nodes), ["implement", "publish", "review", "fix", "merge", "close_issue"])
+        for node in nodes.values():  # Quick-start default: Codex with its native default model everywhere.
+            self.assertEqual(node["provider"], "codex")
+            self.assertNotIn("model", node)
+            self.assertNotIn("permission_mode", node)
+        self.assertIn("commit your changes in the assigned worktree", nodes["implement"]["instruction"])
+        self.assertIn("Do not push, open pull requests, merge", nodes["implement"]["instruction"])
+        self.assertIn("Closes #N", nodes["publish"]["instruction"])
+        self.assertIn("missing scope", nodes["review"]["instruction"])
+        self.assertIn("with a merge commit", nodes["merge"]["instruction"])
+        self.assertIn("Do not bypass required checks", nodes["merge"]["instruction"])
+        self.assertIn("If inputs[0].data.merged is true", nodes["close_issue"]["instruction"])
+        # The terminal output names the PR so ProjectWeave's Issue comment includes it.
+        self.assertEqual(nodes["close_issue"]["schema"]["required"], ["pr", "merged", "closed"])
+        self.assertTrue(any("MERGES it into the default branch" in a for a in report["human_actions"]))
         self.assertFalse(any("provider and model" in entry for entry in report["missing"]))
         self.assertEqual([e for e in report["missing"] if "remaining_percent" not in e], [])
         self.assertTrue(any("native default model" in a for a in report["human_actions"]))
@@ -127,7 +135,7 @@ class InitTests(unittest.TestCase):
     def test_human_model_capacity_edits_reused_missing_file_restored(self):
         self.invoke("--project-number", "7")
         worker = self.read("gitweave.json")
-        worker["nodes"]["work"].update(provider="codex", model="human-selected", effort="medium")
+        worker["nodes"]["implement"].update(provider="codex", model="human-selected", effort="medium")
         self.write("gitweave.json", worker)
         capacity = self.read("resources.json")
         capacity["subscription"].update(remaining_percent=45, stop_at_remaining_percent=30)
@@ -413,7 +421,9 @@ class InitTests(unittest.TestCase):
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
         launch = next(c for c in calls if c["command"] == "gitweave")
         self.assertEqual(launch["argv"][2], str(self.directory / "gitweave.json"))
-        self.assertEqual(launch["argv"][4:7], [str(self.root / "repos" / "o" / "r"), "--commit", "origin/HEAD"])
+        self.assertEqual(launch["argv"][3:7], ["--repo", "o/r", "--issue", "7"])  # GitWeave Issue mode fetches itself.
+        self.assertEqual(Path(launch["cwd"]).resolve(), self.root)
+        self.assertFalse(any(c["command"] == "git" or c["argv"][:2] == ["repo", "clone"] for c in calls))
         mutations = [c for c in calls if c["command"] == "gh" and c["request"] and c["request"]["query"].startswith("mutation")]
         self.assertEqual(len(mutations), 1)
         self.assertIn("addComment(", mutations[0]["request"]["query"])
@@ -421,8 +431,8 @@ class InitTests(unittest.TestCase):
     def test_provider_and_model_overrides(self):
         code, report, calls = self.invoke("--project-number", "7", "--provider", "claude", "--model", "opus")
         self.assertEqual(code, 0, report)
-        work = self.read("gitweave.json")["nodes"]["work"]
-        self.assertEqual((work["provider"], work["model"], work["permission_mode"]), ("claude", "opus", "bypassPermissions"))
+        for work in self.read("gitweave.json")["nodes"].values():
+            self.assertEqual((work["provider"], work["model"], work["permission_mode"]), ("claude", "opus", "bypassPermissions"))
         self.assertTrue(any("bypassPermissions" in a for a in report["human_actions"]))
         self.assertTrue(any("model opus" in a for a in report["human_actions"]))
         # Same explicit choices, or no flags, reuse the file unchanged.
@@ -432,9 +442,9 @@ class InitTests(unittest.TestCase):
                 code, report, calls = self.invoke(*flags)
                 self.assertEqual(code, 0, report)
                 self.assertEqual((self.directory / "gitweave.json").read_bytes(), before)
-        work = templates(self.root, "codex", "gpt-x")["gitweave.json"]["nodes"]["work"]
-        self.assertEqual((work["provider"], work["model"]), ("codex", "gpt-x"))
-        self.assertNotIn("permission_mode", work)
+        for work in templates(self.root, "codex", "gpt-x")["gitweave.json"]["nodes"].values():
+            self.assertEqual((work["provider"], work["model"]), ("codex", "gpt-x"))
+            self.assertNotIn("permission_mode", work)
 
     def test_conflicting_explicit_provider_or_model_is_reported_not_overwritten(self):
         self.assertEqual(self.invoke("--project-number", "7")[0], 0)
@@ -459,33 +469,43 @@ class InitTests(unittest.TestCase):
     def test_human_provider_model_edits_without_flags_are_reused(self):
         self.assertEqual(self.invoke("--project-number", "7")[0], 0)
         worker = self.read("gitweave.json")
-        worker["nodes"]["work"].update(provider="claude", model="human-selected", permission_mode="acceptEdits")
+        worker["nodes"]["review"].update(provider="claude", model="human-selected", permission_mode="acceptEdits")
         self.write("gitweave.json", worker)
         code, report, calls = self.invoke()
         self.assertEqual(code, 0, report)
         self.assertEqual(self.read("gitweave.json"), worker)
         self.assertFalse(any("bypassPermissions" in a for a in report["human_actions"]))
-        del worker["nodes"]["work"]["permission_mode"]
+        del worker["nodes"]["review"]["permission_mode"]
         self.write("gitweave.json", worker)
         code, report, calls = self.invoke()
         self.assertEqual(code, 0, report)
         self.assertTrue(any("no permission_mode" in a for a in report["human_actions"]))
+        worker["nodes"]["fix"].update(provider="claude", permission_mode="bypassPermissions")
+        self.write("gitweave.json", worker)
+        code, report, calls = self.invoke()  # Mixed Claude nodes get both warnings.
+        self.assertTrue(any("no permission_mode" in a for a in report["human_actions"]))
+        self.assertTrue(any("permission_mode bypassPermissions" in a for a in report["human_actions"]))
 
-    def test_earlier_template_instruction_is_reused_unchanged(self):
+    def test_edited_instruction_reused_and_old_single_node_graph_incompatible(self):
         worker = templates(self.root)["gitweave.json"]
-        worker["nodes"]["work"]["instruction"] = (
-            "Implement only the selected Issue in the supplied ProjectWeave request. Follow repository development "
-            "instructions, run relevant checks, and summarize the result. Leave artifacts in the assigned worktree. "
-            "Do not publish, push, merge, or change GitHub state. Do not reset usage limits, buy allowance, or switch "
-            "models/providers; stop on a usage limit.")
+        worker["nodes"]["merge"]["instruction"] = "Do not merge; report the PR for a human to merge."
         self.write("gitweave.json", worker)
         code, report, calls = self.invoke("--project-number", "7")
         self.assertEqual(code, 0, report)
         self.assertEqual(self.read("gitweave.json"), worker)
+        old = {"version": 1, "retries": 0, "max_steps": 1, "nodes": {"work": {
+            "kind": "agent", "provider": "codex", "workspace_base": 0, "instruction": "Implement the Issue."}}, "flow": ["work"]}
+        self.write("gitweave.json", old)
+        code, report, calls = self.invoke()
+        self.assertEqual(code, 2)
+        self.assertIn("Incompatible gitweave.json", report["failure"]["message"])
+        self.assertIn("regenerate the workspace", report["failure"]["message"])
+        self.assertEqual(self.read("gitweave.json"), old)
+        self.assertEqual(self.mutations(calls), [])
 
     def test_old_placeholder_workspace_still_reports_missing_choice(self):
         worker = templates(self.root)["gitweave.json"]
-        worker["nodes"]["work"].update(provider="CONFIGURE_PROVIDER", model="CONFIGURE_MODEL")
+        worker["nodes"]["implement"].update(provider="CONFIGURE_PROVIDER", model="CONFIGURE_MODEL")
         self.write("gitweave.json", worker)
         code, report, calls = self.invoke("--project-number", "7")
         self.assertEqual(code, 0, report)

@@ -5,14 +5,10 @@ import signal
 import subprocess
 from .contracts import Failure, decode, check_result, result, require
 
-# Checkout preparation fetches origin, so executors run against the remote default branch tip.
-BASE = "origin/HEAD"
-
-
-def process(argv, stdin, timeout):
+def process(argv, stdin, timeout, cwd=None):
     try:
-        child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE, text=True, start_new_session=True)
+        child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 text=True, start_new_session=True, cwd=cwd)
     except OSError as exc:
         raise Failure("launch", f"Cannot launch {argv[0]}: {exc}") from exc
     try:
@@ -31,17 +27,19 @@ def process(argv, stdin, timeout):
     return stdout
 
 
-def invoke(config, request):
+def invoke(config, request, workspace=None):
     timeout = config.get("timeout", 3600)
     if config["type"] == "command":
         raw = process(config["argv"], json.dumps(request, allow_nan=False), timeout)
         return check_result(decode(raw))
-    argv = ["gitweave", "run", "--graph", config["graph"], "--repo", request["checkout"],
-            "--commit", BASE]
+    # Issue mode: GitWeave fetches the repository's default branch itself and exposes run_input to nodes.
+    task = request["task"]
+    argv = ["gitweave", "run", "--graph", config["graph"], "--repo", task["repository"],
+            "--issue", str(task["number"])]
     if "provenance_remote" in config:
         argv += ["--provenance-remote", config["provenance_remote"]]
-    argv += ["Execute the supplied task and instruction. Execution inputs (data):\n" + json.dumps(request)]
-    record = decode(process(argv, None, timeout))
+    argv += ["ProjectWeave request for the selected Task (data):\n" + json.dumps(request)]
+    record = decode(process(argv, None, timeout, workspace))
     require(isinstance(record, dict) and record.get("status") == "completed"
             and isinstance(record.get("outputs"), list) and record["outputs"],
             "GitWeave did not return a completed Run with outputs", "executor")
