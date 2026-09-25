@@ -52,8 +52,14 @@ class CLITests(unittest.TestCase):
         calls = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
         return completed.returncode, record, calls
 
+    def add_writeback(self, status):
+        # The canonical graph has no writeback; custom graphs can still add one after execute.
+        self.graph["nodes"]["writeback"] = {"kind": "action", "action": "writeback", "config": {"status": status},
+                                            "inputs": {"task": "/results/select/data/task", "result": "/results/execute"}}
+        # The subscription check's "available" branch: start → execute (→ writeback).
+        self.graph["flow"][2]["if"]["else"][1]["if"]["then"].append("writeback")
+
     def test_gitweave_end_to_end_pagination_and_literal_request(self):
-        self.graph["nodes"]["writeback"]["config"] = {"status": "Done"}
         code, record, calls = self.run_cli()
         self.assertEqual(code, 0, record)
         self.assertEqual(record["results"]["select"]["data"]["task"]["priority"], "P0")
@@ -70,16 +76,22 @@ class CLITests(unittest.TestCase):
         self.assertTrue(record["results"]["execute"]["data"]["outputs"][0]["data"]["merged"])
         for field in ("items", "labels", "fieldValues", "fields"):
             pages = [c for c in calls if c["command"] == "gh" and c["request"] and field + "(first:" in c["request"]["query"]]
-            # Project fields are read once for In Progress and once for the writeback Status.
-            self.assertEqual([p["request"]["variables"]["cursor"] for p in pages], [None, "next"] * (2 if field == "fields" else 1))
+            self.assertEqual([p["request"]["variables"]["cursor"] for p in pages], [None, "next"])
+        # The canonical graph only marks the Task In Progress before launch; the GitWeave graph comments the
+        # outcome itself, so ProjectWeave posts no raw result comment.
+        self.assertEqual(self.mutation_options(calls), ["PROGRESS"])
+        self.assertLess(calls.index(next(c for c in calls if c["request"] and "mutation" in c["request"]["query"])),
+                        calls.index(launch[0]))
+        self.assertEqual(list(record["results"])[-1], "execute")
+
+    def test_custom_writeback_comments_and_sets_status(self):
+        self.add_writeback("Done")
+        code, record, calls = self.run_cli()
+        self.assertEqual(code, 0, record)
         mutations = [c for c in calls if c["command"] == "gh" and c["request"] and c["request"]["query"].startswith("mutation")]
-        self.assertEqual(len(mutations), 3)
-        # In Progress is set before GitWeave launches, then the comment and the configured Status follow.
-        self.assertEqual(mutations[0]["request"]["variables"]["option"], "PROGRESS")
-        self.assertLess(calls.index(mutations[0]), calls.index(launch[0]))
+        self.assertEqual(self.mutation_options(calls), ["PROGRESS", "comment", "DONE"])
         self.assertIn(record["run_id"], mutations[1]["request"]["variables"]["body"])
         self.assertIn("https://github.com/o/r/pull/12", mutations[1]["request"]["variables"]["body"])
-        self.assertEqual(mutations[2]["request"]["variables"]["option"], "DONE")
 
     def use_command_agent(self):
         self.graph["nodes"]["execute"] = {"kind": "agent", "instruction": "Implement the selected task.",
@@ -206,7 +218,7 @@ class CLITests(unittest.TestCase):
         self.assertEqual(self.mutation_options(calls), [])
 
     def test_partial_writeback_preserves_result(self):
-        self.graph["nodes"]["writeback"]["config"] = {"status": "Done"}
+        self.add_writeback("Done")
         code, record, _ = self.run_cli("writeback_failure")
         self.assertEqual(code, 1)
         self.assertEqual(record["failure"]["kind"], "writeback")
@@ -214,7 +226,7 @@ class CLITests(unittest.TestCase):
         self.assertIn("execute", record["results"])
 
     def test_missing_status_preflight_does_not_comment(self):
-        self.graph["nodes"]["writeback"]["config"] = {"status": "Unknown"}
+        self.add_writeback("Unknown")
         code, record, calls = self.run_cli()
         self.assertEqual(code, 1)
         self.assertEqual(record["failure"]["kind"], "writeback")

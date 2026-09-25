@@ -53,14 +53,6 @@
       "inputs": {
         "task": "/results/select/data/task"
       }
-    },
-    "writeback": {
-      "kind": "action",
-      "action": "writeback",
-      "inputs": {
-        "task": "/results/select/data/task",
-        "result": "/results/execute"
-      }
     }
   },
   "flow": [
@@ -81,8 +73,7 @@
               "equals": true,
               "then": [
                 "start",
-                "execute",
-                "writeback"
+                "execute"
               ],
               "else": []
             }

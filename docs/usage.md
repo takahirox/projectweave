@@ -18,7 +18,6 @@ load → select ─┬─ no Task → no_work Result
                └─ Task → subscription check ─┬─ below/at stop line or unknown → stop
                                              └─ above → start (Status = In Progress)
                                                         → execute (GitWeave, Issue mode)
-                                                        → writeback
 ```
 
 The GitWeave Task graph runs, entirely inside GitWeave:
@@ -151,7 +150,7 @@ templates; only the GitWeave graph path in `graph.json` is made absolute:
 | --- | --- |
 | `project.json` | Project owner/type/number, standard Priority order `P0`, `P1`, `P2`, `eligible_statuses: ["Todo"]` |
 | `resources.json` | One `subscription` entry with only `stop_at_remaining_percent: 20`; remaining usage is observed each Run |
-| `graph.json` | Load, select an eligible Issue whose Status is `Todo` from any repository in the Project (or return `no_work`), check the subscription threshold, set its Status to `In Progress`, run GitWeave in Issue mode for that Issue, comment the result |
+| `graph.json` | Load, select an eligible Issue whose Status is `Todo` from any repository in the Project (or return `no_work`), check the subscription threshold, set its Status to `In Progress`, run GitWeave in Issue mode for that Issue (the GitWeave graph comments the outcome; there is no writeback) |
 | `gitweave.json` | The six-node Task graph (implement → PR → review/fix → merge → close_issue); every agent node uses Codex with its native default model, or the `--provider`/`--model` choices (Claude adds `bypassPermissions`) |
 
 The default workflow retains the standard Priority order **P0, P1, P2**.
@@ -312,7 +311,8 @@ a new workspace and reapply your provider/model edits. Init now emits the
 subscription threshold policy instead of `gitweave` run capacity; an old
 `resources.json` with `gitweave` capacity keeps working with its old graph but is
 reported as incompatible by init. Likewise a `graph.json` generated before the
-canonical template (node names `capacity`/`comment`, no `no_work` branch) keeps
+canonical template (node names `capacity`/`comment`, no `no_work` branch, or one
+still ending in a `writeback` node) keeps
 running but is reported as incompatible; replace it with a fresh copy of the
 template if you want init to manage it.
 
@@ -330,8 +330,9 @@ and there is no fallback. For an existing setup:
 
 Install Python 3.11+, GitHub CLI (`gh`), and the chosen executor. Authenticate `gh`
 with access to the project and its Issues: project read access for loading,
-project write access for Status updates, and Issue comment permission for
-writeback. The runtime targets github.com, including user and organization
+project write access for Status updates, and Issue comment permission (the
+GitWeave graph's `close_issue` comments the outcome; a custom writeback node also
+comments). The runtime targets github.com, including user and organization
 Projects v2; classic Projects and enterprise hosts are not supported.
 
 Copy `projectweave/templates/graph.json`, `gitweave.json`, `resources.json`
@@ -411,16 +412,21 @@ observed. It is checked only by this action, so branch on
 `data.available` before executing. No task returns null from select; graphs should branch before
 executing, as the canonical template does. Missing pointer targets are Runtime Failures.
 
-To change Project Status, give a writeback node `"config":{"status":"Done"}`.
+To change Project Status after execution, add a writeback node with
+`"config":{"status":"Done"}`.
 Use a conditional branch to select that node only when the executor's structured
 outcome warrants it. A GitWeave task verdict can be selected at
 `/results/execute/data/outputs/0/data/approved` if its graph returns that field.
 The runtime does not equate GitWeave completion with task approval. The canonical
 template marks the Task `In Progress` with a `status` node before executing and
-comments the outcome without setting a final Status. With the default Task
-graph, the terminal output's data carries `pr` (number, URL, head), `merged`,
-`merge_commit` when merged, and `closed`, so the Issue comment names the pull
-request, including when it was left open for a human.
+has **no writeback node**: the GitWeave Task graph's `close_issue` node comments
+the outcome on the Issue, and Status needs no final update (a merged PR closes
+the Issue and GitHub sets `Done`; otherwise the Task stays `In Progress`). A custom
+graph can still add a writeback node after `execute`; with the default Task graph
+the terminal output's data carries `pr` (number, URL, head), `merged`,
+`merge_commit` when merged, and `closed`. Writeback posts the full JSON Result,
+which can include local paths such as GitWeave's store, so consider that before
+using it on public Issues.
 
 ## Review/fix loop
 

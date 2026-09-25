@@ -171,7 +171,8 @@ class InitTests(unittest.TestCase):
         self.invoke("--project-number", "7")
         old = self.read("graph.json")
         old["nodes"]["capacity"] = old["nodes"].pop("subscription")
-        old["nodes"]["comment"] = old["nodes"].pop("writeback")
+        old["nodes"]["comment"] = {"kind": "action", "action": "writeback", "inputs": {
+            "task": "/results/select/data/task", "result": "/results/execute"}}
         del old["nodes"]["no_work"]
         old["flow"] = ["load", "select", {"if": {"path": "/results/select/data/task", "equals": None, "then": [],
             "else": ["capacity", {"if": {"path": "/results/capacity/data/available", "equals": True,
@@ -432,7 +433,7 @@ class InitTests(unittest.TestCase):
         self.assertEqual(self.read("project.json"), project)
         self.assertEqual(self.mutations(calls), [])
 
-    def test_generated_workflow_executes_and_only_comments_using_external_fixtures(self):
+    def test_generated_workflow_executes_without_projectweave_comment_using_external_fixtures(self):
         # Quick start: nothing is edited; remaining usage is observed from the (fake) Codex app-server.
         self.assertEqual(self.invoke("--project-number", "7")[0], 0)
         for name in ("gh", "gitweave", "git", "codex"):
@@ -445,7 +446,7 @@ class InitTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         record = json.loads(result.stdout)
-        self.assertEqual(record["results"]["writeback"]["data"]["status"], None)
+        self.assertEqual(list(record["results"])[-1], "execute")  # No writeback in the canonical graph.
         self.assertEqual(record["results"]["subscription"]["data"]["observations"], {"codex": {"remaining_percent": 50}})
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
         launch = next(c for c in calls if c["command"] == "gitweave")
@@ -454,10 +455,9 @@ class InitTests(unittest.TestCase):
         self.assertEqual(Path(launch["cwd"]).resolve(), self.root)
         self.assertFalse(any(c["command"] == "git" or c["argv"][:2] == ["repo", "clone"] for c in calls))
         mutations = [c for c in calls if c["command"] == "gh" and c["request"] and c["request"]["query"].startswith("mutation")]
-        self.assertEqual(len(mutations), 2)
-        self.assertEqual(mutations[0]["request"]["variables"]["option"], "PROGRESS")  # In Progress before launch.
+        self.assertEqual(len(mutations), 1)  # Only In Progress, before launch; no raw result comment.
+        self.assertEqual(mutations[0]["request"]["variables"]["option"], "PROGRESS")
         self.assertLess(calls.index(mutations[0]), calls.index(launch))
-        self.assertIn("addComment(", mutations[1]["request"]["query"])
 
     def test_provider_and_model_overrides(self):
         code, report, calls = self.invoke("--project-number", "7", "--provider", "claude", "--model", "opus")
