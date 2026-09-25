@@ -221,9 +221,11 @@ copies and the docs describe:
 - [projectweave/templates/gitweave.json](projectweave/templates/gitweave.json),
   the **GitWeave Task graph** (how one selected Issue is carried to a merge):
   implement → open a PR (`Closes #N`) → review ⇄ fix until approved → merge with
-  a merge commit → make sure the Issue is closed. **It merges without a human
-  review** once the review agent approves; edit it if you want a human to merge. With
-  [resources.json](projectweave/templates/resources.json) for its stop line.
+  a merge commit → make sure the Issue is closed and comment the outcome on it.
+  **It merges without a human review** once the review agent approves; edit it
+  if you want a human to merge.
+- [projectweave/templates/resources.json](projectweave/templates/resources.json),
+  the subscription stop line the ProjectWeave graph checks.
 
 [examples/](examples/) holds specialized feature examples such as the
 [review/fix loop](examples/review-fix.json) and a manual
