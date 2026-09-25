@@ -62,7 +62,7 @@ It holds the Project configuration and graphs, and GitWeave's Run data:
 workspace/
 ├─ project.json  resources.json  graph.json  gitweave.json
 ├─ .gitweave/repos/OWNER/REPO.git   (GitWeave's shared store per GitHub repository)
-└─ repos/OWNER/REPO/          (only for command executors, cloned on demand)
+└─ repos/OWNER/REPO/                (only for command executors, cloned on demand)
 ```
 
 Install ProjectWeave, `gh`, and GitWeave on PATH first. From an empty directory
