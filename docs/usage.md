@@ -36,7 +36,9 @@ implement → publish PR → review ─┬─ approved → merge → close_issue
 - `fix` addresses the findings, and the PR is updated again.
 - `merge` merges only the reviewed head, **with a merge commit** so GitWeave's
   checkpoint notes stay in the branch history, and never bypasses required checks.
-- `close_issue` makes sure the Issue is closed once merged.
+- `close_issue` makes sure the Issue is closed once merged, and comments the
+  outcome on the Issue whether or not the PR was merged (in whatever form the
+  repository's conventions suggest).
 - `max_steps: 30` bounds the loop. With `retries: 0`, a failed or exhausted Run
   stops without merging and leaves the PR for a human.
 
