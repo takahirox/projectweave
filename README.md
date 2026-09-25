@@ -216,8 +216,8 @@ copies and the docs describe:
   **ProjectWeave graph** (how the Project is operated): load the Project → select
   a `Ready` repository Issue whose Status is `Todo` (or return `no_work`) → check
   the subscription stop line → set its Status to `In Progress` so it is not
-  selected again → run GitWeave for the Issue (`--repo OWNER/REPO --issue N`) →
-  comment the Result on the Issue.
+  selected again → run GitWeave for the Issue (`--repo OWNER/REPO --issue N`).
+  ProjectWeave posts no comment itself; the GitWeave graph reports the outcome.
 - [projectweave/templates/gitweave.json](projectweave/templates/gitweave.json),
   the **GitWeave Task graph** (how one selected Issue is carried to a merge):
   implement → open a PR (`Closes #N`) → review ⇄ fix until approved → merge with
