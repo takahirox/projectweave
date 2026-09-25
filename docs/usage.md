@@ -216,8 +216,11 @@ default branch was renamed, run `git remote set-head origin --auto` in the
 checkout. Clone,
 fetch or origin failures are `checkout` Runtime Failures before the executor
 launches, with no Issue comment. The graph file path is absolute; a moved
-workspace needs it updated. GitWeave retains work as commits and may
-automatically push provenance refs/notes to origin during a live Run.
+workspace needs it updated. The default GitWeave agent commits its changes with
+a concise, human-readable message referencing the Issue; GitWeave then adds its
+`GitWeave RUN_ID …` checkpoint commit on top, so the history shows both what
+changed and the execution record. GitWeave may automatically push provenance
+refs/notes to origin during a live Run.
 If the workspace is itself a Git repository, ignore `repos/`.
 The default graph contains no PR publication or merge action. Review your Git
 identity, permissions and provenance destination before executing; init neither
@@ -230,7 +233,10 @@ check accepts this fixed scaffold with edited `remaining_percent` /
 provider/instruction plus optional `model`, `effort`, `sandbox`, `permission_mode`.
 Other graph or policy edits are reported as incompatible with this initializer,
 not repaired or treated as invalid for the runtime. Continue managing a customized
-setup manually. Symlinked setup files are rejected.
+setup manually. Symlinked setup files are rejected. Because `instruction` is a
+human-editable field, a `gitweave.json` from an earlier template (for example one
+that only leaves artifacts in the worktree without committing) is reused unchanged;
+copy the current template's instruction into it to adopt the new wording.
 
 Partial failures leave ordinary files and GitHub state in place, with completed
 pieces in the report. The Project identity is saved first, before field creation,

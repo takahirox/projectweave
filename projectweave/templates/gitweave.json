@@ -7,7 +7,7 @@
       "kind": "agent",
       "provider": "codex",
       "workspace_base": 0,
-      "instruction": "Implement only the selected Issue in the supplied ProjectWeave request. Follow repository development instructions, run relevant checks, and summarize the result. Leave artifacts in the assigned worktree. Do not publish, push, merge, or change GitHub state. Do not reset usage limits, buy allowance, or switch models/providers; stop on a usage limit."
+      "instruction": "Implement only the selected Issue in the supplied ProjectWeave request. Follow repository development instructions, run relevant checks, and summarize the result. When done, commit your changes in the assigned worktree with a concise, human-readable commit message describing what changed and why, following the repository's commit message conventions and referencing the Issue. Do not publish, push, merge, or change GitHub state. Do not reset usage limits, buy allowance, or switch models/providers; stop on a usage limit."
     }
   },
   "flow": [
