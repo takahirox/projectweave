@@ -216,10 +216,12 @@ default branch was renamed, run `git remote set-head origin --auto` in the
 checkout. Clone,
 fetch or origin failures are `checkout` Runtime Failures before the executor
 launches, with no Issue comment. The graph file path is absolute; a moved
-workspace needs it updated. The default GitWeave agent commits its changes with
-a concise, human-readable message referencing the Issue; GitWeave then adds its
-`GitWeave RUN_ID …` checkpoint commit on top, so the history shows both what
-changed and the execution record. GitWeave may automatically push provenance
+workspace needs it updated. The default GitWeave agent is instructed to commit
+its changes with a concise, human-readable message referencing the Issue; GitWeave
+then adds its `GitWeave RUN_ID …` checkpoint commit on top, so the history shows
+both what changed and the execution record. If the agent leaves changes
+uncommitted, the checkpoint still captures them; only the readable message is
+missing. GitWeave may automatically push provenance
 refs/notes to origin during a live Run.
 If the workspace is itself a Git repository, ignore `repos/`.
 The default graph contains no PR publication or merge action. Review your Git
