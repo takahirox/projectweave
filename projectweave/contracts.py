@@ -30,8 +30,13 @@ def text(value):
 
 def keys(value, allowed, required=()):
     require(isinstance(value, dict), "Expected an object")
-    require(set(required) <= value.keys() and value.keys() <= set(allowed),
-            f"Expected fields {sorted(required)}; allowed {sorted(allowed)}")
+    # Name the offending fields; the required/allowed lists are context.
+    problems = [(label + ("s" if len(names) > 1 else "") + ": " + ", ".join(map(str, names)))
+                for label, names in (("Missing field", sorted(set(required) - value.keys(), key=str)),
+                                     ("Unexpected field", sorted(value.keys() - set(allowed), key=str)))
+                if names]
+    context = ([f"required {sorted(required)}"] if required else []) + [f"allowed {sorted(allowed)}"]
+    require(not problems, "; ".join(problems) + f" ({'; '.join(context)})")
 
 
 def decode(raw):
