@@ -33,7 +33,7 @@ def main(argv=None):
         # The directory containing project.json is the Project workspace.
         workspace = args.project.absolute().parent
         record = Runtime(graph, decode(args.project.read_text()), decode(args.resources.read_text()),
-                         checkout=partial(resolve, workspace)).run()
+                         checkout=partial(resolve, workspace), workspace=str(workspace)).run()
         print(json.dumps(record, ensure_ascii=False, allow_nan=False, indent=2))
         return 1 if record["failure"] else 0
     except (Failure, OSError, UnicodeError, RecursionError) as exc:

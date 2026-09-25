@@ -108,19 +108,26 @@ def template(name):
     return decode(files("projectweave").joinpath("templates", name).read_text())
 
 
+def agents(worker):
+    nodes = worker.get("nodes") if isinstance(worker, dict) else None
+    return [node for node in (nodes.values() if isinstance(nodes, dict) else [])
+            if isinstance(node, dict) and node.get("kind", "agent") == "agent"]
+
+
 def templates(workspace, provider=None, model=None):
     """The canonical default workflow pair and resources, materialized for one workspace."""
     graph = template("graph.json")
     # The packaged graph names gitweave.json relative to the workspace; generated files use an absolute path.
     graph["nodes"]["execute"]["executor"]["graph"] = str(workspace / "gitweave.json")
     worker = template("gitweave.json")
-    node = worker["nodes"]["work"]
-    node["provider"] = provider or node["provider"]
-    if model:
-        node["model"] = model
-    if node["provider"] == "claude":
-        # Non-interactive Claude cannot edit or run commands without it; opted into via --provider claude.
-        node["permission_mode"] = "bypassPermissions"
+    # Provider/model choices apply to every agent node of the Task graph.
+    for node in agents(worker):
+        node["provider"] = provider or node["provider"]
+        if model:
+            node["model"] = model
+        if node["provider"] == "claude":
+            # Non-interactive Claude cannot edit or run commands without it; opted into via --provider claude.
+            node["permission_mode"] = "bypassPermissions"
     return {"resources.json": template("resources.json"), "graph.json": validate(graph), "gitweave.json": worker}
 
 
@@ -148,15 +155,19 @@ def compatible(name, value, expected):
     elif name == "graph.json":
         validate(candidate)
     elif name == "gitweave.json":
-        node, expected = candidate["nodes"]["work"], deepcopy(expected)
-        default = expected["nodes"]["work"]
-        for key in ("provider", "instruction"):
-            require(text(node[key]), f"{key} must be nonblank")
-            node[key] = default[key]
-        for key in ("model", "effort", "sandbox", "permission_mode"):
-            if key in node:
-                require(text(node.pop(key)), f"{key} must be nonblank")
-            default.pop(key, None)
+        expected = deepcopy(expected)
+        require(isinstance(candidate.get("nodes"), dict) and candidate["nodes"].keys() == expected["nodes"].keys(),
+                f"nodes must be {', '.join(expected['nodes'])}")
+        # Per agent node, provider/instruction and the optional model/permission knobs are human-editable.
+        for node_id, default in expected["nodes"].items():
+            node = candidate["nodes"][node_id]
+            for key in ("provider", "instruction"):
+                require(text(node[key]), f"{node_id}.{key} must be nonblank")
+                node[key] = default[key]
+            for key in ("model", "effort", "sandbox", "permission_mode"):
+                if key in node:
+                    require(text(node.pop(key)), f"{node_id}.{key} must be nonblank")
+                default.pop(key, None)
     require(equal(candidate, expected), f"Incompatible {name}; review manually (never overwritten)")
 
 
@@ -212,12 +223,10 @@ def initialize(args):
             if value is not None:
                 if name == "gitweave.json" and (args.provider or args.model):
                     # Explicit choices must match an existing file; it is never rewritten to follow them.
-                    nodes = value.get("nodes")
-                    work = nodes.get("work") if isinstance(nodes, dict) else None
-                    work = work if isinstance(work, dict) else {}
-                    require(args.provider is None or work.get("provider") == args.provider,
+                    existing = agents(value)
+                    require(args.provider is None or all(node.get("provider") == args.provider for node in existing),
                             f"Existing gitweave.json provider conflicts with --provider {args.provider}; edit it manually or omit the flag")
-                    require(args.model is None or work.get("model") == args.model,
+                    require(args.model is None or all(node.get("model") == args.model for node in existing),
                             f"Existing gitweave.json model conflicts with --model {args.model}; edit it manually or omit the flag")
                 try:
                     compatible(name, value, default)
@@ -225,9 +234,11 @@ def initialize(args):
                     raise Failure("setup", f"Incompatible {name}: {exc}") from exc
                 report["existing"].append(str(workspace / name))
             values[name] = value if value is not None else default
-        worker = values["gitweave.json"]["nodes"]["work"]
+        workers = agents(values["gitweave.json"])
+        choices = sorted({node["provider"] + (f" with model {node['model']}" if node.get("model") else " with its native default model")
+                          for node in workers})
         # Workspaces generated before the quick-start defaults may still hold placeholders.
-        if worker["provider"] == "CONFIGURE_PROVIDER" or worker.get("model") == "CONFIGURE_MODEL":
+        if any(node["provider"] == "CONFIGURE_PROVIDER" or node.get("model") == "CONFIGURE_MODEL" for node in workers):
             report["missing"].append("Explicit provider and model in gitweave.json")
         if values["resources.json"][SUBSCRIPTION].get("remaining_percent") is None:
             report["missing"].append(f"Observed usage: set resources.json {SUBSCRIPTION}.remaining_percent (0-100) before each Run")
@@ -289,15 +300,16 @@ def initialize(args):
         ]
         report["human_actions"] = ([
             "Claude is configured with permission_mode bypassPermissions: the agent may edit files and run commands in its GitWeave worktree without asking. Remove it from gitweave.json to restrict Claude (it may then be unable to implement Issues)."]
-            if worker.get("permission_mode") == "bypassPermissions" else [
+            if any(node.get("permission_mode") == "bypassPermissions" for node in workers) else [
             "Claude has no permission_mode in gitweave.json, so a non-interactive Run may be unable to edit files or run commands; choose one deliberately."]
-            if worker["provider"] == "claude" and "permission_mode" not in worker else []) + [
-            f"gitweave.json runs provider {worker['provider']} with " + (f"model {worker['model']}" if worker.get("model") else "the provider's native default model")
+            if any(node["provider"] == "claude" and "permission_mode" not in node for node in workers) else []) + [
+            "The GitWeave Task graph implements the Issue, opens a pull request whose body says Closes #N, iterates review and fix until the review agent approves, then MERGES it into the default branch with a merge commit and closes the Issue, without a human review. Agents push, open and merge PRs with your gh and Git credentials. Edit gitweave.json first if you want a human to review before merging.",
+            "gitweave.json agents run " + "; ".join(choices)
             + ". Install and authenticate that provider CLI yourself. To change provider/model later, edit gitweave.json (init never rewrites it).",
             f"Before each Run, record the provider subscription's remaining usage as resources.json {SUBSCRIPTION}.remaining_percent (0-100) for the provider chosen in gitweave.json. No Task starts while it is unknown or at/below stop_at_remaining_percent (default 20; adjust deliberately). ProjectWeave does not observe or estimate usage itself; every Run reloads the file.",
             f"Choose an open Issue from any repository and add it to the Project using the commands below, then set its {ELIGIBILITY_FIELD} field to {READY} in the Project. No Issue has been selected or changed.",
-            "A Run clones the selected Issue's repository lazily into repos/OWNER/REPO under this workspace with `gh repo clone`, fetches origin, and executes the remote default branch tip (origin/HEAD); push changes you want included. Fetch uses Git credentials: for HTTPS run `gh auth setup-git` or use SSH. Init clones nothing.",
-            "Run readiness is not certified: provider credentials, repository clone access, Issue comment permission, Project item-add access, Git identity and provenance push access need human verification. A live GitWeave Run may push refs/notes to origin; init never runs AI or pushes.",
+            "A Run invokes `gitweave run --repo OWNER/REPO --issue N` from this workspace. GitWeave fetches the repository's default branch into .gitweave/runs/<run-id>/ here (retained) and pushes provenance refs/notes to the repository. Git transport uses your Git credentials: for HTTPS run `gh auth setup-git` or use SSH. Init fetches nothing.",
+            "Run readiness is not certified: provider credentials, repository access, push/PR/merge permission, Issue comment permission, Project item-add access and Git identity need human verification. Init never runs AI or pushes.",
             f"Set {ELIGIBILITY_FIELD} back to Not ready manually after processing if the Issue should not run again; this workflow comments results and does not change Status or {ELIGIBILITY_FIELD}."
         ]
     except (Failure, OSError, UnicodeError, KeyError, TypeError, AttributeError, RecursionError) as exc:

@@ -9,7 +9,7 @@ name = Path(sys.argv[0]).name
 args = sys.argv[1:]
 request = json.load(sys.stdin) if name == "worker" or (name == "gh" and args[:2] == ["api", "graphql"]) else None
 with open(os.environ["FAKE_LOG"], "a") as log:
-    log.write(json.dumps({"command": name, "argv": args, "request": request}) + "\n")
+    log.write(json.dumps({"command": name, "argv": args, "request": request, "cwd": os.getcwd()}) + "\n")
 if name == "gh" and args[:2] == ["repo", "clone"]:
     # A clone records its origin in a marker file that the fake git reads back.
     if mode == "clone_failure":

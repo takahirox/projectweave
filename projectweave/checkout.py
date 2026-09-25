@@ -3,7 +3,10 @@ import os
 from pathlib import Path
 import re
 from .contracts import Failure, require
-from .executors import BASE, process
+from .executors import process
+
+# Command executors run against the fetched remote default branch tip, never a local working branch.
+BASE = "origin/HEAD"
 
 REPOSITORY = re.compile(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+")
 ORIGIN = re.compile(r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+/[^/]+?)(?:\.git)?/?")

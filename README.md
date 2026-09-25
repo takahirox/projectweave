@@ -198,8 +198,7 @@ projectweave init --project-owner my-team --project-number 7
 
 Or explicitly create one with `--create-project "First Run"`; add
 `--link-repository OWNER/REPO` (repeatable) to also link repositories to it. Init writes
-human-editable files into the workspace without overwriting existing files; Task
-repositories are cloned into its `repos/` only when a Run executes their Issues.
+human-editable files into the workspace without overwriting existing files.
 It defaults to Codex with its native default model; pass `--provider claude`
 (which also enables Claude's `bypassPermissions` mode: the agent edits files and
 runs commands without asking) or `--model MODEL` to
@@ -215,10 +214,13 @@ copies and the docs describe:
 - [projectweave/templates/graph.json](projectweave/templates/graph.json), the
   **ProjectWeave graph** (how the Project is operated): load the Project → select
   a `Ready` repository Issue (or return `no_work`) → check the subscription stop
-  line → resolve `task.repository` in the workspace → run GitWeave → comment the
+  line → run GitWeave for the Issue (`--repo OWNER/REPO --issue N`) → comment the
   Result on the Issue.
 - [projectweave/templates/gitweave.json](projectweave/templates/gitweave.json),
-  the **GitWeave Task graph** (how one selected Issue is implemented), with
+  the **GitWeave Task graph** (how one selected Issue is carried to a merge):
+  implement → open a PR (`Closes #N`) → review ⇄ fix until approved → merge with
+  a merge commit → make sure the Issue is closed. **It merges without a human
+  review** once the review agent approves; edit it if you want a human to merge. With
   [resources.json](projectweave/templates/resources.json) for its stop line.
 
 [examples/](examples/) holds specialized feature examples such as the
