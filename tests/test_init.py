@@ -98,6 +98,7 @@ class InitTests(unittest.TestCase):
         # The terminal output names the PR so ProjectWeave's Issue comment includes it.
         self.assertEqual(nodes["close_issue"]["schema"]["required"], ["pr", "merged", "closed"])
         self.assertTrue(any("MERGES it into the default branch" in a for a in report["human_actions"]))
+        self.assertTrue(any(".gitweave/repos/OWNER/REPO.git" in a for a in report["human_actions"]))
         self.assertFalse(any("provider and model" in entry for entry in report["missing"]))
         self.assertEqual([e for e in report["missing"] if "remaining_percent" not in e], [])
         self.assertTrue(any("native default model" in a for a in report["human_actions"]))
