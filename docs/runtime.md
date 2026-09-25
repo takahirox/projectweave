@@ -54,18 +54,34 @@ Failure routing is not supported; subsequent graph operations are not executed.
 
 ### Subscription thresholds (default policy)
 
-A subscription entry is
-`{"type":"subscription","remaining_percent":45,"stop_at_remaining_percent":20}`.
-`remaining_percent` is the provider's observed remaining usage normalized to
-0–100; for now it is supplied in the `--resources` file (updated by a human or a
-future provider adapter). `stop_at_remaining_percent` (0–100) is the Project stop
-line. A `resources` action names the subscriptions it checks in
-`config.subscriptions`; `data.available` is true only if every named subscription
-exists and has `remaining_percent > stop_at_remaining_percent`. At or below the
-stop line, or with `remaining_percent` absent/null (unknown), new work is not
-admitted. This is an ordinary admission outcome, not a Runtime Failure. Graphs
-branch on it before executing. ProjectWeave never estimates usage from tokens,
-attributes usage to Tasks, or inspects GitWeave graphs to infer providers.
+A subscription entry holds only the Project stop line:
+`{"type":"subscription","stop_at_remaining_percent":20}` (0–100). Remaining usage
+is never configured; it is **observed** once per Run, the first time a `resources`
+action names subscriptions in `config.subscriptions`:
+
+1. The runtime reads every GitWeave Task graph the Run's graph executes
+   (`executor.graph`) and collects the providers/models of its agent nodes.
+2. `projectweave/usage.py` observes each provider, read-only and without a model
+   call:
+   - **Claude**: `claude -p --output-format json /usage`. Remaining is the smallest
+     `100 − N` of `Current session` and `Current week (all models)`, plus
+     `Current week (Fable)` if any Claude node runs Fable (its `model` contains
+     `fable`, or it has no `model`, because the native default is unknown).
+   - **Codex**: `codex app-server` (experimental) `initialize` → `initialized` →
+     `account/rateLimits/read`; remaining is `100 − rateLimits.primary.usedPercent`.
+     Other windows and fields are ignored for now.
+3. `data.available` is true only if every named subscription exists and **every**
+   observed provider's remaining percentage is above its stop line.
+
+Any observation failure (launch failure, nonzero exit, timeout, unexpected output,
+a missing line or value, an unknown provider, or no providers at all) is recorded as
+unknown and admits nothing. `data.observations` records each provider's
+`remaining_percent` or `error` in the Run receipt. Not being admitted is an
+ordinary outcome, not a Runtime Failure; graphs branch on it before executing.
+ProjectWeave never estimates usage from tokens, attributes usage to Tasks,
+monitors usage during a Run, or redeems rate-limit reset credits. The Claude
+observer parses human-readable output and the Codex API is experimental; either
+may break with a new CLI version, which then stops safely as unknown.
 Subscription entries are never reserved or charged: naming one in `requires` is an
 `accounting` Runtime Failure.
 

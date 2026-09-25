@@ -1,20 +1,24 @@
 """Bounded single-run graph interpreter."""
 from copy import deepcopy
 import uuid
-from .contracts import Failure, require, pointer, equal, result, check_result
+from .contracts import Failure, decode, require, pointer, equal, result, check_result
 from .graph import validate
 from .resources import Resources
 from .github import GitHub
 from .checkout import valid_repository
 from .executors import invoke
+from . import usage
 
 
 class Runtime:
-    def __init__(self, graph, project, envelope, backend=None, executor=invoke, checkout=None, workspace=None):
+    def __init__(self, graph, project, envelope, backend=None, executor=invoke, checkout=None, workspace=None,
+                 observe=usage.observe):
         self.graph = validate(graph)
         self.resources = Resources(envelope)
         self.backend = backend or GitHub(project)
         self.executor = executor
+        self.observe = observe
+        self.observations = None
         # Maps a Task repository to its prepared local checkout path (see checkout.resolve).
         self.checkout = checkout
         # GitWeave runs in Issue mode from the Project workspace and fetches the repository itself.
@@ -65,15 +69,35 @@ class Runtime:
             return result("Task selected" if task else "No eligible tasks", {"task": task})
         if action == "resources":
             config = node.get("config", {})
-            available = (self.resources.admits(config.get("requires", {}))
-                         and all(self.resources.subscribed(k) for k in config.get("subscriptions", [])))
-            return result("Resource state", {"resources": deepcopy(self.resources.state), "available": available})
+            names = config.get("subscriptions", [])
+            data = {"resources": deepcopy(self.resources.state)}
+            if names:
+                data["observations"] = deepcopy(self.observed())
+            data["available"] = (self.resources.admits(config.get("requires", {}))
+                                 and all(self.resources.subscribed(k, data["observations"]) for k in names))
+            return result("Resource state", data)
         if action == "status":
             return self.backend.set_status(inputs["task"], node["config"]["status"])
         if action == "writeback":
             return self.backend.writeback(inputs["task"], inputs["result"], self.context["run_id"],
                                           node.get("config", {}).get("status"))
         return deepcopy(node["config"])
+
+    def observed(self):
+        """Observe provider usage once per Run for the agent nodes of every GitWeave graph used."""
+        if self.observations is None:
+            nodes = []
+            try:
+                for node in self.graph["nodes"].values():
+                    if node.get("executor", {}).get("type") == "gitweave":
+                        with open(node["executor"]["graph"]) as source:
+                            task_graph = decode(source.read())
+                        nodes += [n for n in task_graph["nodes"].values()
+                                  if isinstance(n, dict) and n.get("kind", "agent") == "agent"]
+                self.observations = self.observe(nodes)
+            except (Failure, OSError, UnicodeError, KeyError, TypeError, AttributeError) as exc:
+                self.observations = {"(graph)": {"error": f"Cannot read GitWeave agent providers: {exc}"}}
+        return self.observations
 
     def activate(self, name):
         self.active = name

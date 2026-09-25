@@ -1,5 +1,6 @@
 import copy
 import json
+from pathlib import Path
 import unittest
 import unittest.mock
 from unittest.mock import Mock
@@ -374,7 +375,7 @@ class CheckoutTests(unittest.TestCase):
 
 
 class SubscriptionTests(unittest.TestCase):
-    def subscription_graph(self, subscriptions=("codex",)):
+    def subscription_graph(self, subscriptions=("subscription",)):
         g = graph()
         g["nodes"]["check"] = {"kind": "action", "action": "resources", "config": {"subscriptions": list(subscriptions)}}
         del g["nodes"]["work"]["requires"]
@@ -382,70 +383,97 @@ class SubscriptionTests(unittest.TestCase):
                                                          "then": ["work", "post"], "else": []}}]
         return g
 
-    def run_graph(self, env, g=None):
+    def run_graph(self, observations, env=None, g=None):
         backend = Mock()
         backend.load.return_value = [TASK]
         backend.select.side_effect = GitHub(PROJECT).select
         backend.writeback.return_value = result("posted", references=["comment"])
         execute = Mock(return_value=result("Done"))
+        observe = Mock(return_value=observations)
+        env = env if env is not None else {"subscription": {"type": "subscription", "stop_at_remaining_percent": 20}}
         record = Runtime(g or self.subscription_graph(), PROJECT, env, backend, execute,
-                         checkout=lambda repository: "/workspace/repos/" + repository).run()
-        return record, execute
+                         checkout=lambda repository: "/workspace/repos/" + repository, observe=observe).run()
+        return record, execute, observe
 
     def test_threshold_boundary_and_unknown_values(self):
-        cases = [({"remaining_percent": 21}, True), ({"remaining_percent": 20}, False),
-                 ({"remaining_percent": 0}, False), ({"remaining_percent": None}, False), ({}, False),
-                 ({"remaining_percent": 100, "stop_at_remaining_percent": 100}, False),
-                 ({"remaining_percent": 0.5, "stop_at_remaining_percent": 0}, True)]
-        for extra, expected in cases:
-            with self.subTest(extra=extra):
-                env = {"codex": {"type": "subscription", "stop_at_remaining_percent": 20, **extra}}
-                record, execute = self.run_graph(env)
+        cases = [({"remaining_percent": 21}, 20, True), ({"remaining_percent": 20}, 20, False),
+                 ({"remaining_percent": 0}, 20, False), ({"error": "timed out"}, 20, False),
+                 ({"remaining_percent": 100}, 100, False), ({"remaining_percent": 0.5}, 0, True)]
+        for seen, stop, expected in cases:
+            with self.subTest(seen=seen, stop=stop):
+                env = {"subscription": {"type": "subscription", "stop_at_remaining_percent": stop}}
+                record, execute, _ = self.run_graph({"codex": seen}, env)
                 self.assertIsNone(record["failure"])
                 self.assertIs(record["results"]["check"]["data"]["available"], expected)
+                self.assertEqual(record["results"]["check"]["data"]["observations"], {"codex": seen})  # In the receipt.
                 self.assertEqual(execute.called, expected)
                 self.assertEqual(record["resources"], env)  # Subscriptions are observed, never charged.
 
-    def test_every_named_subscription_must_admit_and_missing_names_do_not(self):
-        env = {"codex": {"type": "subscription", "remaining_percent": 80, "stop_at_remaining_percent": 20},
-               "claude": {"type": "subscription", "remaining_percent": 30, "stop_at_remaining_percent": 30}}
-        for names, expected in ((["codex"], True), (["codex", "claude"], False), (["other"], False), ([], True)):
-            with self.subTest(names=names):
-                record, execute = self.run_graph(env, self.subscription_graph(names))
+    def test_every_observed_provider_and_named_subscription_must_admit(self):
+        both = {"claude": {"remaining_percent": 80}, "codex": {"remaining_percent": 30}}
+        for observations, names, expected in ((both, ["subscription"], True),
+                                              (dict(both, codex={"remaining_percent": 10}), ["subscription"], False),
+                                              (dict(both, codex={"error": "x"}), ["subscription"], False),
+                                              ({}, ["subscription"], False), (both, ["other"], False)):
+            with self.subTest(observations=observations, names=names):
+                record, execute, _ = self.run_graph(observations, g=self.subscription_graph(names))
                 self.assertIs(record["results"]["check"]["data"]["available"], expected)
                 self.assertEqual(execute.called, expected)
+        record, execute, observe = self.run_graph(both, g=self.subscription_graph([]))
+        self.assertTrue(record["results"]["check"]["data"]["available"])
+        observe.assert_not_called()  # Nothing to observe without named subscriptions.
+
+    def test_observes_gitweave_agent_nodes_once_per_run(self):
+        import json, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gitweave.json"
+            path.write_text(json.dumps({"version": 1, "nodes": {
+                "a": {"kind": "agent", "provider": "claude"}, "b": {"provider": "codex", "model": "m"},
+                "c": {"kind": "command", "argv": ["x"]}}, "flow": ["a"]}))
+            g = self.subscription_graph()
+            g["nodes"]["check2"] = dict(g["nodes"]["check"])
+            g["nodes"]["exec"] = {"kind": "action", "action": "execute", "executor": {"type": "gitweave", "graph": str(path)},
+                                  "inputs": {"task": "/results/select/data/task"}}
+            g["flow"] = ["load", "select", "check", "check2"]
+            record, _, observe = self.run_graph({"codex": {"remaining_percent": 50}}, g=g)
+            observe.assert_called_once_with([{"kind": "agent", "provider": "claude"}, {"provider": "codex", "model": "m"}])
+            self.assertTrue(record["results"]["check2"]["data"]["available"])
+        g["nodes"]["exec"]["executor"]["graph"] = "/nonexistent/gitweave.json"
+        record, _, observe = self.run_graph({"codex": {"remaining_percent": 50}}, g=g)
+        observe.assert_not_called()
+        self.assertFalse(record["results"]["check"]["data"]["available"])
+        self.assertIn("error", record["results"]["check"]["data"]["observations"]["(graph)"])
 
     def test_numeric_resources_still_combine_with_subscriptions(self):
         g = self.subscription_graph()
         g["nodes"]["check"]["config"]["requires"] = {"ai": 1}
         g["nodes"]["work"]["requires"] = {"ai": 1}
-        env = {**envelope(1), "codex": {"type": "subscription", "remaining_percent": 50, "stop_at_remaining_percent": 20}}
-        record, execute = self.run_graph(env, g)
+        env = {**envelope(1), "subscription": {"type": "subscription", "stop_at_remaining_percent": 20}}
+        record, execute, _ = self.run_graph({"codex": {"remaining_percent": 50}}, env, g)
         execute.assert_called_once()
         self.assertEqual(record["resources"]["ai"]["charged"], 1)
         env["ai"]["available"] = 0
-        record, execute = self.run_graph(env, g)
+        record, execute, _ = self.run_graph({"codex": {"remaining_percent": 50}}, env, g)
         execute.assert_not_called()
 
     def test_subscription_cannot_be_reserved(self):
         g = self.subscription_graph()
-        g["nodes"]["work"]["requires"] = {"codex": 1}
-        env = {"codex": {"type": "subscription", "remaining_percent": 50, "stop_at_remaining_percent": 20}}
-        record, execute = self.run_graph(env, g)
+        g["nodes"]["work"]["requires"] = {"subscription": 1}
+        record, execute, _ = self.run_graph({"codex": {"remaining_percent": 50}}, g=g)
         self.assertEqual(record["failure"]["kind"], "accounting")
         execute.assert_not_called()
 
     def test_invalid_subscription_envelopes_and_graphs(self):
         for value in ({"type": "subscription"}, {"type": "subscription", "stop_at_remaining_percent": 101},
                       {"type": "subscription", "stop_at_remaining_percent": -1},
-                      {"type": "subscription", "stop_at_remaining_percent": 20, "remaining_percent": "45"},
-                      {"type": "subscription", "stop_at_remaining_percent": 20, "remaining_percent": True},
+                      {"type": "subscription", "stop_at_remaining_percent": 20, "remaining_percent": 45},
+                      {"type": "subscription", "stop_at_remaining_percent": True},
                       {"type": "subscription", "stop_at_remaining_percent": 20, "available": 1},
                       {"type": "credits", "stop_at_remaining_percent": 20}):
             with self.subTest(value=value):
                 with self.assertRaises(Failure):
-                    Resources({"codex": value})
-        for names in ("codex", ["codex", "codex"], [""], [1]):
+                    Resources({"subscription": value})
+        for names in ("subscription", ["subscription", "subscription"], [""], [1]):
             with self.subTest(names=names):
                 g = self.subscription_graph()
                 g["nodes"]["check"]["config"]["subscriptions"] = names

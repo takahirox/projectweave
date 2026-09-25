@@ -202,8 +202,9 @@ human-editable files into the workspace without overwriting existing files.
 It defaults to Codex with its native default model; pass `--provider claude`
 (which also enables Claude's `bypassPermissions` mode: the agent edits files and
 runs commands without asking) or `--model MODEL` to
-override. Remaining subscription usage starts unknown: nothing runs until you
-record it against the default 20% stop line.
+override. Each Run observes the providers' remaining subscription usage itself
+(Claude `/usage`, Codex app-server) and starts nothing at or below the default 20%
+stop line or when usage cannot be observed.
 Follow the printed steps to add a chosen Issue to the Project, set its
 `AI execution` field to `Ready`, and run. See [initialization and recovery](docs/usage.md#initialize-a-project-workspace)
 for prerequisites, compatibility rules, and live Run limitations.

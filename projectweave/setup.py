@@ -156,7 +156,6 @@ def compatible(name, value, expected):
         Resources(candidate)
         require(isinstance(candidate.get(SUBSCRIPTION), dict) and candidate[SUBSCRIPTION].get("type") == "subscription",
                 f"default setup uses a {SUBSCRIPTION} threshold entry, not gitweave run capacity")
-        candidate[SUBSCRIPTION].pop("remaining_percent", None)
         candidate[SUBSCRIPTION]["stop_at_remaining_percent"] = expected[SUBSCRIPTION]["stop_at_remaining_percent"]
     elif name == "graph.json":
         validate(candidate)
@@ -246,8 +245,6 @@ def initialize(args):
         # Workspaces generated before the quick-start defaults may still hold placeholders.
         if any(node["provider"] == "CONFIGURE_PROVIDER" or node.get("model") == "CONFIGURE_MODEL" for node in workers):
             report["missing"].append("Explicit provider and model in gitweave.json")
-        if values["resources.json"][SUBSCRIPTION].get("remaining_percent") is None:
-            report["missing"].append(f"Observed usage: set resources.json {SUBSCRIPTION}.remaining_percent (0-100) before each Run")
         # GitWeave's public validator does not run agents or access the network.
         operation = "Install GitWeave with its public validate/run CLI on PATH; review gitweave.json if validation fails"
         with tempfile.TemporaryDirectory(prefix="projectweave-validate-") as tmp:
@@ -312,7 +309,7 @@ def initialize(args):
             "The GitWeave Task graph implements the Issue, opens a pull request whose body says Closes #N, iterates review and fix until the review agent approves, then MERGES it into the default branch with a merge commit and closes the Issue, without a human review. Agents push, open and merge PRs with your gh and Git credentials. Edit gitweave.json first if you want a human to review before merging.",
             "gitweave.json agents run " + "; ".join(choices)
             + ". Install and authenticate that provider CLI yourself. To change provider/model later, edit gitweave.json (init never rewrites it).",
-            f"Before each Run, record the provider subscription's remaining usage as resources.json {SUBSCRIPTION}.remaining_percent (0-100) for the provider chosen in gitweave.json. No Task starts while it is unknown or at/below stop_at_remaining_percent (default 20; adjust deliberately). ProjectWeave does not observe or estimate usage itself; every Run reloads the file.",
+            "Each Run observes the remaining subscription usage of every provider used in gitweave.json before starting a Task (Claude: `claude -p --output-format json /usage`; Codex: `codex app-server` account/rateLimits/read). Both are read-only and use no model. A Task starts only if every provider is above resources.json stop_at_remaining_percent (default 20; adjust deliberately); an observation failure counts as unknown and starts nothing.",
             f"Choose an open Issue from any repository and add it to the Project using the commands below, then set its {ELIGIBILITY_FIELD} field to {READY} and its Status to Todo in the Project. Only Todo Tasks are selected. No Issue has been selected or changed.",
             "A Run invokes `gitweave run --repo OWNER/REPO --issue N` from this workspace. GitWeave fetches the repository's default branch into its shared per-repository store .gitweave/repos/OWNER/REPO.git here (reused across Runs, so only new objects are fetched) and pushes provenance refs/notes to the repository. Git transport uses your Git credentials: for HTTPS run `gh auth setup-git` or use SSH. Init fetches nothing.",
             "Run readiness is not certified: provider credentials, repository access, push/PR/merge permission, Issue comment permission, Project item-add access and Git identity need human verification. Init never runs AI or pushes.",

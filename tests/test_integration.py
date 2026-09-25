@@ -19,17 +19,20 @@ class CLITests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.directory = Path(self.tmp.name)
-        for name in ("gh", "gitweave", "worker", "git"):
+        for name in ("gh", "gitweave", "worker", "git", "claude", "codex"):
             path = self.directory / name
             path.write_text(f"#!{sys.executable}\n" + (ROOT / "tests/fake_cli.py").read_text())
             path.chmod(0o755)
         self.log = self.directory / "calls.jsonl"
-        self.env = dict(os.environ, PATH=str(self.directory) + os.pathsep + os.environ["PATH"], FAKE_LOG=str(self.log))
-        # The canonical default workflow, with remaining usage recorded above its stop line.
+        # Observed Codex usage (fake app-server) starts at 50% used, above the 20% stop line.
+        self.env = dict(os.environ, PATH=str(self.directory) + os.pathsep + os.environ["PATH"], FAKE_LOG=str(self.log),
+                        FAKE_CODEX_USED="50")
+        # The canonical default workflow; the observer reads providers from its GitWeave Task graph.
+        self.task_graph = self.directory / "gitweave.json"
+        self.task_graph.write_text((ROOT / "projectweave/templates/gitweave.json").read_text())
         self.graph = json.loads((ROOT / "projectweave/templates/graph.json").read_text())
-        self.graph["nodes"]["execute"]["executor"]["graph"] = "/path/to/gitweave-graph.json"
+        self.graph["nodes"]["execute"]["executor"]["graph"] = str(self.task_graph)
         self.resources = json.loads((ROOT / "projectweave/templates/resources.json").read_text())
-        self.resources["subscription"]["remaining_percent"] = 50
         self.project = json.loads((ROOT / "examples/project.json").read_text())
 
     @staticmethod
@@ -56,7 +59,8 @@ class CLITests(unittest.TestCase):
         self.assertEqual(record["results"]["select"]["data"]["task"]["priority"], "P0")
         launch = [c for c in calls if c["command"] == "gitweave"]
         self.assertEqual(len(launch), 1)
-        self.assertEqual(launch[0]["argv"][:7], ["run", "--graph", "/path/to/gitweave-graph.json",
+        self.assertEqual(record["results"]["subscription"]["data"]["observations"], {"codex": {"remaining_percent": 50}})
+        self.assertEqual(launch[0]["argv"][:7], ["run", "--graph", str(self.task_graph),
                                                  "--repo", "o/r", "--issue", "7"])
         self.assertEqual(Path(launch[0]["cwd"]).resolve(), self.directory.resolve())  # The workspace holds .gitweave/.
         # GitWeave fetches the repository itself; ProjectWeave clones and fetches nothing.
@@ -81,6 +85,8 @@ class CLITests(unittest.TestCase):
         self.graph["nodes"]["execute"] = {"kind": "agent", "instruction": "Implement the selected task.",
                                           "executor": {"type": "command", "argv": ["worker"]},
                                           "inputs": {"task": "/results/select/data/task"}}
+        # A command executor has no GitWeave providers to observe, so these tests skip the subscription check.
+        self.graph["nodes"]["subscription"]["config"] = {}
 
     def test_agent_command_path(self):
         self.use_command_agent()
@@ -107,15 +113,21 @@ class CLITests(unittest.TestCase):
         self.assertTrue(all(c["command"] == "gh" and not c["request"]["query"].startswith("mutation") for c in calls))
 
     def test_subscription_at_stop_line_or_unknown_starts_nothing(self):
-        for remaining in (20, None):
-            with self.subTest(remaining=remaining):
+        for extra in ({"FAKE_CODEX_USED": "80"}, {"FAKE_USAGE": "codex_error"}):
+            with self.subTest(extra=extra):
                 self.log.unlink(missing_ok=True)
-                self.resources["subscription"]["remaining_percent"] = remaining
+                self.env.update(extra)
                 code, record, calls = self.run_cli()
+                self.env.pop("FAKE_USAGE", None)
+                self.env["FAKE_CODEX_USED"] = "50"
                 self.assertEqual(code, 0)
-                self.assertFalse(record["results"]["subscription"]["data"]["available"])
+                data = record["results"]["subscription"]["data"]
+                self.assertFalse(data["available"])
+                self.assertEqual(list(data["observations"]), ["codex"])  # Observed (or failed) value in the receipt.
                 self.assertNotIn("execute", record["results"])
-                self.assertTrue(all(c["command"] == "gh" and c["request"] for c in calls))  # No clone or fetch.
+                # Only GitHub reads and the Codex observation; no clone, fetch, GitWeave or Claude.
+                self.assertEqual({c["command"] for c in calls}, {"gh", "codex"})
+                calls = [c for c in calls if c["command"] == "gh"]
                 self.assertFalse(any(c["request"]["query"].startswith("mutation") for c in calls))
                 self.assertFalse((self.directory / "repos").exists())
 
@@ -215,7 +227,7 @@ class CLITests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
     def test_invalid_input_exits_before_io(self):
-        self.resources["subscription"]["remaining_percent"] = 101
+        self.resources["subscription"]["stop_at_remaining_percent"] = 101
         code, _, calls = self.run_cli()
         self.assertEqual(code, 2)
         self.assertEqual(calls, [])

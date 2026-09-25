@@ -81,7 +81,6 @@ class InitTests(unittest.TestCase):
         for name in ("gitweave.json", "resources.json"):
             self.assertEqual(self.read(name), json.loads((ROOT / "projectweave/templates" / name).read_text()))
         self.assertNotIn("requires", graph["nodes"]["execute"])
-        self.assertTrue(any("remaining_percent" in entry for entry in report["missing"]))
         nodes = self.read("gitweave.json")["nodes"]
         self.assertEqual(list(nodes), ["implement", "publish", "review", "fix", "merge", "close_issue"])
         for node in nodes.values():  # Quick-start default: Codex with its native default model everywhere.
@@ -100,7 +99,8 @@ class InitTests(unittest.TestCase):
         self.assertTrue(any("MERGES it into the default branch" in a for a in report["human_actions"]))
         self.assertTrue(any(".gitweave/repos/OWNER/REPO.git" in a for a in report["human_actions"]))
         self.assertFalse(any("provider and model" in entry for entry in report["missing"]))
-        self.assertEqual([e for e in report["missing"] if "remaining_percent" not in e], [])
+        self.assertEqual(report["missing"], [])  # Remaining usage is observed each Run; nothing to record.
+        self.assertTrue(any("observes the remaining subscription usage" in a for a in report["human_actions"]))
         self.assertTrue(any("native default model" in a for a in report["human_actions"]))
         self.assertFalse(any("bypassPermissions" in a for a in report["human_actions"]))
         self.assertTrue(any("item-add 7 --owner o" in c for c in report["next_commands"]))
@@ -142,7 +142,7 @@ class InitTests(unittest.TestCase):
         worker["nodes"]["implement"].update(provider="codex", model="human-selected", effort="medium")
         self.write("gitweave.json", worker)
         capacity = self.read("resources.json")
-        capacity["subscription"].update(remaining_percent=45, stop_at_remaining_percent=30)
+        capacity["subscription"]["stop_at_remaining_percent"] = 30
         self.write("resources.json", capacity)
         (self.directory / "graph.json").unlink()
         code, report, calls = self.invoke()
@@ -424,13 +424,11 @@ class InitTests(unittest.TestCase):
         self.assertEqual(self.mutations(calls), [])
 
     def test_generated_workflow_executes_and_only_comments_using_external_fixtures(self):
-        # Quick start: only remaining_percent is entered; model, graph, instruction and threshold stay untouched.
+        # Quick start: nothing is edited; remaining usage is observed from the (fake) Codex app-server.
         self.assertEqual(self.invoke("--project-number", "7")[0], 0)
-        capacity = self.read("resources.json")
-        capacity["subscription"]["remaining_percent"] = 21
-        self.write("resources.json", capacity)
-        for name in ("gh", "gitweave", "git"):
+        for name in ("gh", "gitweave", "git", "codex"):
             (self.bin / name).write_text(f"#!{sys.executable}\n" + (ROOT / "tests/fake_cli.py").read_text())
+            (self.bin / name).chmod(0o755)
         self.log.unlink()
         args = [sys.executable, "-m", "projectweave", "run", "--graph", str(self.directory / "graph.json"),
                 "--project", str(self.directory / "project.json"), "--resources", str(self.directory / "resources.json")]
@@ -439,6 +437,7 @@ class InitTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         record = json.loads(result.stdout)
         self.assertEqual(record["results"]["writeback"]["data"]["status"], None)
+        self.assertEqual(record["results"]["subscription"]["data"]["observations"], {"codex": {"remaining_percent": 50}})
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
         launch = next(c for c in calls if c["command"] == "gitweave")
         self.assertEqual(launch["argv"][2], str(self.directory / "gitweave.json"))
