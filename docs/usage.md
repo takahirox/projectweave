@@ -16,7 +16,8 @@ The Project graph runs:
 ```text
 load → select ─┬─ no Task → no_work Result
                └─ Task → subscription check ─┬─ below/at stop line or unknown → stop
-                                             └─ above → execute (GitWeave, Issue mode)
+                                             └─ above → start (Status = In Progress)
+                                                        → execute (GitWeave, Issue mode)
                                                         → writeback
 ```
 
@@ -146,7 +147,7 @@ templates; only the GitWeave graph path in `graph.json` is made absolute:
 
 | File | Purpose / human input |
 | --- | --- |
-| `project.json` | Project owner/type/number, standard Priority order `P0`, `P1`, `P2` |
+| `project.json` | Project owner/type/number, standard Priority order `P0`, `P1`, `P2`, `eligible_statuses: ["Todo"]` |
 | `resources.json` | One `subscription` entry with `stop_at_remaining_percent: 20` and **no** `remaining_percent`; record the observed remaining usage before each Run |
 | `graph.json` | Load, select an eligible Issue from any repository in the Project (or return `no_work`), check the subscription threshold, run GitWeave in Issue mode for that Issue, comment the result |
 | `gitweave.json` | The six-node Task graph (implement → PR → review/fix → merge → close_issue); every agent node uses Codex with its native default model, or the `--provider`/`--model` choices (Claude adds `bypassPermissions`) |
@@ -157,14 +158,16 @@ reuses a `Priority` single-select field containing each required option name
 exactly once (additional options and any display order are allowed), or creates
 that field with P0/P1/P2 options when absent. An incompatible type, missing or
 ambiguous required options, or ambiguous field name is reported without repair.
-No Status filter or update is needed: Status fields and policy are left unchanged.
+Init also verifies that the Project's `Status` field (GitHub's built-in one) is a
+single-select with `Todo` and `In Progress` options. It never creates or repairs
+Status: a missing field or option is reported for you to add in the Project.
 Init verifies/creates the `AI execution` single-select field with `Ready` and
 `Not ready` options in the same way (other options are allowed; incompatible
 fields are reported, never repaired). Init creates no repository labels.
 Init never selects Issues, adds Project items, assigns priorities, marks items
 ready, runs AI, installs tools, changes auth, or pushes. Selection at Run time uses
 open, nonarchived Project Issues from any repository whose `AI execution` is
-`Ready`, ranked by P0/P1/P2, then oldest Issue and existing tie-breakers. Unknown
+`Ready` and whose Status is `Todo`, ranked by P0/P1/P2, then oldest Issue and existing tie-breakers. Unknown
 or unset Priority values sort below those three; setting an Issue priority remains
 a human choice. Draft Issues are not Tasks. An optional `repository` setting in
 `project.json` restricts selection to one repository; init does not emit it but
@@ -219,14 +222,19 @@ of the provider subscription used by `gitweave.json`, for example 45. The graph
 starts a Task only while `remaining_percent > stop_at_remaining_percent` (default
 20; edit it deliberately). With the value absent or null (unknown), at or below
 the stop line, or with no eligible Issue, this graph neither launches GitWeave nor
-posts a comment. The name `subscription` is only a label; ProjectWeave does not
+posts a comment, and the Task's Status is left unchanged. The name
+`subscription` is only a label; ProjectWeave does not
 observe provider usage, estimate it, or infer the provider. The file is reloaded
 each Run. Renaming the entry (for example to `codex`) or checking several
 subscriptions is a custom graph/resources edit that init's compatibility check
 reports as incompatible; manage such a setup manually.
-The ProjectWeave graph itself does not reset `AI execution` or close the Issue
-(the default GitWeave Task graph closes it after a merge); set the field to
-`Not ready` manually when appropriate to avoid selecting it again.
+Once the threshold check passes, the `start` node sets the Task's Status to
+`In Progress` **before** GitWeave launches. A Task is therefore never selected
+again, even if the Run then fails or leaves the PR open; set its Status back to
+`Todo` to retry it. ProjectWeave never sets `Done`: GitHub's built-in Project
+workflows do when the Issue is closed (the default GitWeave Task graph closes it
+after a merge). `AI execution` is never changed. If the Status update itself
+fails, the Run stops with a `status` Runtime Failure before launching anything.
 
 The GitWeave executor runs `gitweave run --graph gitweave.json --repo OWNER/REPO
 --issue N` for the selected Task, with the workspace as its working directory.
@@ -379,6 +387,7 @@ pointers into the Run context. No templating or shell evaluation occurs.
 | `action: resources` | optional `config.requires` allocation and/or `config.subscriptions` names | `resources` snapshot and `available` admission boolean |
 | `action: execute` | `executor`, `inputs.task`; optional nonempty `requires`, `inputs.context` | executor's Result data |
 | `kind: agent` | same as execute plus `instruction`; omit action | executor's Result data |
+| `action: status` | `inputs.task`, `config.status` (an existing Status option) | the Status name set; no comment |
 | `action: writeback` | `inputs.task`, `inputs.result`; optional `config.status` | updated Status name or null; comment URL in references |
 | `action: result` | `config` containing a complete Result | literal Result, useful for terminal no-work branches |
 
@@ -406,7 +415,8 @@ Use a conditional branch to select that node only when the executor's structured
 outcome warrants it. A GitWeave task verdict can be selected at
 `/results/execute/data/outputs/0/data/approved` if its graph returns that field.
 The runtime does not equate GitWeave completion with task approval. The canonical
-template comments outcomes without choosing a Status policy. With the default Task
+template marks the Task `In Progress` with a `status` node before executing and
+comments the outcome without setting a final Status. With the default Task
 graph, the terminal output's data carries `pr` (number, URL, head), `merged`,
 `merge_commit` when merged, and `closed`, so the Issue comment names the pull
 request, including when it was left open for a human.

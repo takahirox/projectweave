@@ -54,9 +54,10 @@ if request:
         cursor = request["variables"]["cursor"]
         if mode == "field_read" or (mode == "field_page" and cursor):
             fail("field read denied")
-        # Priority is deliberately on the final page. Status is unrelated.
+        # Priority is deliberately on the final page; GitHub's built-in Status is on the first.
         fields = state.get("fields", []) if cursor else state.get("first_fields", [
-            {"__typename": "ProjectV2Field", "name": "Status", "dataType": "TEXT"}])
+            {"__typename": "ProjectV2SingleSelectField", "name": "Status", "dataType": "SINGLE_SELECT",
+             "options": [{"name": n} for n in ("Todo", "In Progress", "Done")]}])
         emit({"data": {"node": {"fields": {"nodes": fields,
             "pageInfo": {"hasNextPage": cursor is None, "endCursor": "last" if cursor is None else None}}}}})
     if "repositories(first:" in query:

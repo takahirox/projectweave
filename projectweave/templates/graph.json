@@ -33,6 +33,16 @@
         ]
       }
     },
+    "start": {
+      "kind": "action",
+      "action": "status",
+      "inputs": {
+        "task": "/results/select/data/task"
+      },
+      "config": {
+        "status": "In Progress"
+      }
+    },
     "execute": {
       "kind": "action",
       "action": "execute",
@@ -70,6 +80,7 @@
               "path": "/results/subscription/data/available",
               "equals": true,
               "then": [
+                "start",
                 "execute",
                 "writeback"
               ],

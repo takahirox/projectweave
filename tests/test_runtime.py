@@ -474,3 +474,25 @@ class SubscriptionTests(unittest.TestCase):
                     self.assertNotIn("checkout", request)
         record = Runtime(g, PROJECT, envelope(), backend, Mock()).run()
         self.assertEqual(record["failure"]["kind"], "checkout")
+
+    def test_status_action_validation_and_dispatch(self):
+        node = {"kind": "action", "action": "status", "inputs": {"task": "/results/select/data/task"},
+                "config": {"status": "In Progress"}}
+        for bad in ({"config": {}}, {"config": {"status": " "}}, {"inputs": {}}, {"config": {"status": "X", "extra": 1}}):
+            with self.subTest(bad=bad):
+                g = graph()
+                g["nodes"]["mark"] = {**node, **bad}
+                with self.assertRaises(Failure):
+                    validate(g)
+        g = graph()
+        g["nodes"]["mark"] = node
+        g["flow"] = ["load", "select", "mark", "work"]
+        backend = Mock()
+        backend.load.return_value = [TASK]
+        backend.select.side_effect = GitHub(PROJECT).select
+        backend.set_status.return_value = result("Status set", {"status": "In Progress"})
+        execute = Mock(return_value=result("Done"))
+        record = Runtime(g, PROJECT, envelope(), backend, execute, checkout=lambda r: "/c").run()
+        self.assertIsNone(record["failure"])
+        backend.set_status.assert_called_once_with(TASK, "In Progress")
+        backend.writeback.assert_not_called()
