@@ -37,7 +37,7 @@ def validate(graph):
             require(text(node.get("instruction")) and "action" not in node,
                     "Agents require instruction and no action")
         else:
-            require(node.get("action") in ("load", "select", "resources", "execute", "writeback", "result"),
+            require(node.get("action") in ("load", "select", "resources", "execute", "status", "writeback", "result"),
                     "Unknown action")
             require("instruction" not in node, "instruction is only valid for agents")
         cfg = node.get("config", {})
@@ -54,7 +54,11 @@ def validate(graph):
         else:
             require("executor" not in node and "requires" not in node, "Nonexecution node cannot allocate")
             action = node["action"]
-            if action == "writeback":
+            if action == "status":
+                keys(cfg, {"status"}, {"status"})
+                require(text(cfg["status"]), "status must be nonblank")
+                require("task" in inputs, "status needs a task input")
+            elif action == "writeback":
                 keys(cfg, {"status"})
                 require("status" not in cfg or text(cfg["status"]), "status must be nonblank")
                 require({"task", "result"} <= inputs.keys(), "writeback needs task and result")

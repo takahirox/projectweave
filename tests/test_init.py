@@ -68,7 +68,7 @@ class InitTests(unittest.TestCase):
         self.assertEqual(len(report["created"]), 6)
         self.assertEqual(len(self.mutations(calls)), 2)
         self.assertEqual(self.read("project.json"), {"owner": "o", "owner_type": "organization", "number": 7,
-                         "priority_order": ["P0", "P1", "P2"]})
+                         "priority_order": ["P0", "P1", "P2"], "eligible_statuses": ["Todo"]})
         graph = validate(self.read("graph.json"))
         executor = graph["nodes"]["execute"]["executor"]
         self.assertEqual(executor, {"type": "gitweave", "graph": str(self.root / "gitweave.json")})
@@ -106,10 +106,13 @@ class InitTests(unittest.TestCase):
         self.assertTrue(any("item-add 7 --owner o" in c for c in report["next_commands"]))
         self.assertIn("projectweave run --graph graph.json --project project.json --resources resources.json", report["next_commands"])
         self.assertIn("AI execution field (Ready/Not ready)", report["created"])
+        self.assertIn("Status field (Todo/In Progress)", report["existing"])
+        self.assertIn("start", graph["nodes"])  # Marks the Task In Progress between the threshold check and execute.
+        self.assertTrue(any("Status to Todo" in a for a in report["human_actions"]))
         self.assertFalse(any("label" in c for c in report["next_commands"]))
         self.assertTrue(any("AI execution field to Ready" in a for a in report["human_actions"]))
         task = {"id": "I", "item_id": "ITEM", "project_id": "P", "state": "OPEN", "labels": [], "ai_execution": "Ready",
-                "priority": None, "status": None, "created_at": "2026", "url": "url", "repository": "o/r"}
+                "priority": None, "status": "Todo", "created_at": "2026", "url": "url", "repository": "o/r"}
         with patch.object(GitHub, "load", return_value=[task]), patch("projectweave.runtime.invoke") as invoke, patch.object(GitHub, "writeback") as writeback:
             record = Runtime(graph, self.read("project.json"), self.read("resources.json")).run()
         self.assertIsNone(record["failure"])
@@ -272,16 +275,31 @@ class InitTests(unittest.TestCase):
         self.assertEqual(code, 0, report)
         self.assertEqual(json.loads(self.state.read_text())["projects"], 1)
 
-    def test_incompatible_status_policy_is_not_repaired(self):
+    def test_status_policy_required_and_status_field_never_repaired(self):
         code, report, calls = self.invoke("--project-number", "7")
         self.assertEqual(code, 0)
         project = self.read("project.json")
-        project["eligible_statuses"] = ["Todo"]
+        del project["eligible_statuses"]
         self.write("project.json", project)
         code, report, calls = self.invoke()
         self.assertEqual(code, 2)
-        self.assertIn("no Status policy", report["failure"]["message"])
+        self.assertIn('eligible_statuses [\"Todo\"]', report["failure"]["message"])
         self.assertEqual(self.mutations(calls), [])
+        for path in self.root.iterdir():
+            path.unlink()
+        for status in ({"__typename": "ProjectV2Field", "name": "Status", "dataType": "TEXT"},
+                       {"__typename": "ProjectV2SingleSelectField", "name": "Status", "dataType": "SINGLE_SELECT",
+                        "options": [{"name": "Todo"}, {"name": "Done"}]}, None):
+            with self.subTest(status=status):
+                self.state.write_text(json.dumps({"projects": 0, "first_fields": [status] if status else []}))
+                code, report, calls = self.invoke("--project-number", "7")
+                self.assertEqual(code, 2)
+                self.assertIn("Status", report["failure"]["message"])
+                self.assertIn("Verified Status single-select field with Todo/In Progress options", report["missing"])
+                # Status is GitHub's field: init creates or repairs only Priority and AI execution.
+                # Status is verified first, so nothing is created when it is unusable, and it is never repaired.
+                self.assertEqual(self.mutations(calls), [])
+                self.assertIn("Status field", report["failure"]["action"])
 
     def test_compatible_priority_on_later_page_reused_without_changes(self):
         field = {"__typename": "ProjectV2SingleSelectField", "name": "Priority",
@@ -320,7 +338,9 @@ class InitTests(unittest.TestCase):
     def test_ambiguous_priority_across_pages_not_accepted(self):
         field = {"__typename": "ProjectV2SingleSelectField", "name": "Priority",
                  "dataType": "SINGLE_SELECT", "options": [{"name": n} for n in ("P0", "P1", "P2")]}
-        state = {"projects": 0, "first_fields": [field], "fields": [field]}
+        status = {"__typename": "ProjectV2SingleSelectField", "name": "Status", "dataType": "SINGLE_SELECT",
+                  "options": [{"name": n} for n in ("Todo", "In Progress", "Done")]}
+        state = {"projects": 0, "first_fields": [status, field], "fields": [field]}
         self.state.write_text(json.dumps(state))
         code, report, calls = self.invoke("--project-number", "7")
         self.assertEqual(code, 2)
@@ -426,8 +446,10 @@ class InitTests(unittest.TestCase):
         self.assertEqual(Path(launch["cwd"]).resolve(), self.root)
         self.assertFalse(any(c["command"] == "git" or c["argv"][:2] == ["repo", "clone"] for c in calls))
         mutations = [c for c in calls if c["command"] == "gh" and c["request"] and c["request"]["query"].startswith("mutation")]
-        self.assertEqual(len(mutations), 1)
-        self.assertIn("addComment(", mutations[0]["request"]["query"])
+        self.assertEqual(len(mutations), 2)
+        self.assertEqual(mutations[0]["request"]["variables"]["option"], "PROGRESS")  # In Progress before launch.
+        self.assertLess(calls.index(mutations[0]), calls.index(launch))
+        self.assertIn("addComment(", mutations[1]["request"]["query"])
 
     def test_provider_and_model_overrides(self):
         code, report, calls = self.invoke("--project-number", "7", "--provider", "claude", "--model", "opus")
@@ -607,7 +629,7 @@ class InitTests(unittest.TestCase):
     def test_multi_repository_selection_and_optional_saved_filter(self):
         self.assertEqual(self.invoke("--project-number", "7")[0], 0)
         backend = GitHub(self.read("project.json"))
-        old = {"state": "OPEN", "ai_execution": "Ready", "priority": "P2", "created_at": "2025", "url": "url", "item_id": "1", "repository": "O/R"}
+        old = {"state": "OPEN", "ai_execution": "Ready", "status": "Todo", "priority": "P2", "created_at": "2025", "url": "url", "item_id": "1", "repository": "O/R"}
         new = dict(old, priority="P0", created_at="2026")
         foreign = dict(old, priority="P0", created_at="2020", repository="o/other")
         middle = dict(old, priority="P1")

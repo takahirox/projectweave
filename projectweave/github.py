@@ -123,23 +123,46 @@ class GitHub:
         except (KeyError, TypeError, AttributeError) as exc:
             raise Failure("input", "Invalid task selection input") from exc
 
+    def check_task(self, task, kind):
+        require(isinstance(task, dict) and all(text(task.get(k)) for k in ("id", "item_id", "project_id")),
+                f"{kind} requires a selected task", "input")
+        require(task["project_id"] == self.resolve(), "Task belongs to a different project", "input")
+
+    def status_option(self, status, kind):
+        """Resolve a Status option to (field id, option id) before any mutation."""
+        try:
+            fields = list(self.pages(self.resolve(), "ProjectV2", "fields",
+                                    "... on ProjectV2SingleSelectField { id name options { id name } }"))
+            matches = [f for f in fields if f.get("name") == self.config.get("status_field", "Status")]
+            require(len(matches) == 1, "Status field missing or ambiguous", kind)
+            options = [v for v in matches[0]["options"] if v["name"] == status]
+            require(len(options) == 1, f"Unknown Status option: {status}", kind)
+            return matches[0]["id"], options[0]["id"]
+        except (KeyError, TypeError, AttributeError) as exc:
+            raise Failure(kind, "Malformed Status field metadata") from exc
+
+    def update_status(self, task, option, kind):
+        response = self.query("""mutation($project:ID!,$item:ID!,$field:ID!,$option:String!) {
+          updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,
+            value:{singleSelectOptionId:$option}}) { projectV2Item { id } } }""",
+                              {"project": self.resolve(), "item": task["item_id"], "field": option[0], "option": option[1]})
+        require(response["updateProjectV2ItemFieldValue"]["projectV2Item"]["id"] == task["item_id"],
+                "Missing updated item", kind)
+
+    def set_status(self, task, status):
+        """Mark the selected Task (for example In Progress before execution) without commenting."""
+        self.check_task(task, "status")
+        option = self.status_option(status, "status")
+        try:
+            self.update_status(task, option, "status")
+        except (Failure, KeyError, TypeError) as exc:
+            raise Failure("status", f"Status update failed; it may have been applied: {exc}") from exc
+        return result(f"Status set to {status}", {"status": status})
+
     def writeback(self, task, outcome, run_id, status=None):
         check_result(outcome)
-        require(isinstance(task, dict) and all(text(task.get(k)) for k in ("id", "item_id", "project_id")),
-                "writeback requires a selected task", "input")
-        require(task["project_id"] == self.resolve(), "Task belongs to a different project", "input")
-        option = None
-        try:
-            if status is not None:
-                fields = list(self.pages(self.resolve(), "ProjectV2", "fields",
-                                        "... on ProjectV2SingleSelectField { id name options { id name } }"))
-                matches = [f for f in fields if f.get("name") == self.config.get("status_field", "Status")]
-                require(len(matches) == 1, "Status field missing or ambiguous", "writeback")
-                options = [v for v in matches[0]["options"] if v["name"] == status]
-                require(len(options) == 1, f"Unknown Status option: {status}", "writeback")
-                option = (matches[0]["id"], options[0]["id"])
-        except (KeyError, TypeError, AttributeError) as exc:
-            raise Failure("writeback", "Malformed Status field metadata") from exc
+        self.check_task(task, "writeback")
+        option = self.status_option(status, "writeback") if status is not None else None
         completed = []
         try:
             body = f"ProjectWeave Run `{run_id}`\n\n" + json.dumps(outcome, ensure_ascii=False, indent=2)
@@ -149,12 +172,7 @@ class GitHub:
             require(text(url), "Missing comment URL", "writeback")
             completed.append(url)
             if option:
-                response = self.query("""mutation($project:ID!,$item:ID!,$field:ID!,$option:String!) {
-                  updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,
-                    value:{singleSelectOptionId:$option}}) { projectV2Item { id } } }""",
-                                      {"project": self.resolve(), "item": task["item_id"], "field": option[0], "option": option[1]})
-                require(response["updateProjectV2ItemFieldValue"]["projectV2Item"]["id"] == task["item_id"],
-                        "Missing updated item", "writeback")
+                self.update_status(task, option, "writeback")
         except (Failure, KeyError, TypeError) as exc:
             raise Failure("writeback", f"Writeback failed; remote effects may have occurred: {exc}",
                           {"completed_references": completed}) from exc

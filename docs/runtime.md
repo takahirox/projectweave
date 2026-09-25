@@ -110,7 +110,10 @@ single-select field `AI execution`: only nonarchived open Issues whose value is
 `Ready` qualify. Labels play no part and a `label` setting is rejected. Drafts,
 PRs, inaccessible content, and closed Issues are excluded. Rank by configured priority, then oldest
 createdAt, then Issue URL and item ID. Missing/unknown priorities sort last.
-`select` returns task null for empty work. Writeback posts an ordinary Issue
+`select` returns task null for empty work. The `status` action sets the selected
+Task's named Status option (resolved and validated first) without commenting; the
+canonical graph uses it to mark a Task `In Progress` before execution, and its
+failure is a `status` Runtime Failure. Writeback posts an ordinary Issue
 comment with the Run ID and full structured result, then optionally sets a named
 Status option. No automatic semantic interpretation or Issue closure. Validate
 status before commenting. Partial writeback is a failure and records completed

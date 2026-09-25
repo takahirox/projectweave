@@ -68,6 +68,8 @@ class Runtime:
             available = (self.resources.admits(config.get("requires", {}))
                          and all(self.resources.subscribed(k) for k in config.get("subscriptions", [])))
             return result("Resource state", {"resources": deepcopy(self.resources.state), "available": available})
+        if action == "status":
+            return self.backend.set_status(inputs["task"], node["config"]["status"])
         if action == "writeback":
             return self.backend.writeback(inputs["task"], inputs["result"], self.context["run_id"],
                                           node.get("config", {}).get("status"))

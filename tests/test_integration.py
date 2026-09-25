@@ -32,6 +32,11 @@ class CLITests(unittest.TestCase):
         self.resources["subscription"]["remaining_percent"] = 50
         self.project = json.loads((ROOT / "examples/project.json").read_text())
 
+    @staticmethod
+    def mutation_options(calls):
+        return [c["request"]["variables"].get("option", "comment") for c in calls
+                if c["command"] == "gh" and c["request"] and c["request"]["query"].startswith("mutation")]
+
     def run_cli(self, mode="success"):
         for name, value in (("graph", self.graph), ("project", self.project), ("resources", self.resources)):
             (self.directory / (name + ".json")).write_text(json.dumps(value))
@@ -61,12 +66,16 @@ class CLITests(unittest.TestCase):
         self.assertTrue(record["results"]["execute"]["data"]["outputs"][0]["data"]["merged"])
         for field in ("items", "labels", "fieldValues", "fields"):
             pages = [c for c in calls if c["command"] == "gh" and c["request"] and field + "(first:" in c["request"]["query"]]
-            self.assertEqual([p["request"]["variables"]["cursor"] for p in pages], [None, "next"])
+            # Project fields are read once for In Progress and once for the writeback Status.
+            self.assertEqual([p["request"]["variables"]["cursor"] for p in pages], [None, "next"] * (2 if field == "fields" else 1))
         mutations = [c for c in calls if c["command"] == "gh" and c["request"] and c["request"]["query"].startswith("mutation")]
-        self.assertEqual(len(mutations), 2)
-        self.assertIn(record["run_id"], mutations[0]["request"]["variables"]["body"])
-        self.assertIn("https://github.com/o/r/pull/12", mutations[0]["request"]["variables"]["body"])
-        self.assertEqual(mutations[1]["request"]["variables"]["option"], "DONE")
+        self.assertEqual(len(mutations), 3)
+        # In Progress is set before GitWeave launches, then the comment and the configured Status follow.
+        self.assertEqual(mutations[0]["request"]["variables"]["option"], "PROGRESS")
+        self.assertLess(calls.index(mutations[0]), calls.index(launch[0]))
+        self.assertIn(record["run_id"], mutations[1]["request"]["variables"]["body"])
+        self.assertIn("https://github.com/o/r/pull/12", mutations[1]["request"]["variables"]["body"])
+        self.assertEqual(mutations[2]["request"]["variables"]["option"], "DONE")
 
     def use_command_agent(self):
         self.graph["nodes"]["execute"] = {"kind": "agent", "instruction": "Implement the selected task.",
@@ -110,7 +119,7 @@ class CLITests(unittest.TestCase):
                 self.assertFalse(any(c["request"]["query"].startswith("mutation") for c in calls))
                 self.assertFalse((self.directory / "repos").exists())
 
-    def test_executor_failure_stops_without_github_mutation(self):
+    def test_executor_failure_stays_in_progress_without_comment(self):
         for kind, command in (("gitweave", "gitweave"), ("command", "worker")):
             with self.subTest(kind=kind):
                 if kind == "command":
@@ -124,8 +133,8 @@ class CLITests(unittest.TestCase):
                 self.assertEqual(len([c for c in calls if c["command"] == command]), 1)
                 self.assertNotIn("execute", record["results"])
                 self.assertNotIn("writeback", record["results"])
-                self.assertFalse(any(c["command"] == "gh" and
-                                     c["request"] and c["request"]["query"].startswith("mutation") for c in calls))
+                # The Task stays In Progress, so the next Run does not select it again; nothing is commented.
+                self.assertEqual(self.mutation_options(calls), ["PROGRESS"])
 
     def test_existing_checkout_is_reused_after_origin_check(self):
         self.use_command_agent()  # Checkouts are resolved only for command executors.
@@ -164,11 +173,25 @@ class CLITests(unittest.TestCase):
                 self.assertIn("o/r", record["failure"]["message"])
                 self.assertFalse(any(c["command"] == "worker" for c in calls))
                 self.assertNotIn("writeback", record["results"])
-                self.assertFalse(any(c["command"] == "gh" and c["request"] and
-                                     c["request"]["query"].startswith("mutation") for c in calls))
+                self.assertEqual(self.mutation_options(calls), ["PROGRESS"])  # Only In Progress, before launch.
                 if origin is not None:
                     self.assertEqual((checkout / "keep").read_text(), "user data")
                     self.assertFalse(any(c["argv"][:2] == ["repo", "clone"] for c in calls))
+
+    def test_status_update_failure_stops_before_launch(self):
+        code, record, calls = self.run_cli("status_failure")
+        self.assertEqual(code, 1)
+        self.assertEqual(record["failure"]["kind"], "status")
+        self.assertEqual(record["failure"]["node"], "start")
+        self.assertFalse(any(c["command"] == "gitweave" for c in calls))
+        self.assertNotIn("writeback", record["results"])
+
+    def test_non_todo_task_is_not_selected(self):
+        self.project["eligible_statuses"] = ["Done"]
+        code, record, calls = self.run_cli()
+        self.assertEqual(code, 0)
+        self.assertEqual(record["last"]["data"]["status"], "no_work")
+        self.assertEqual(self.mutation_options(calls), [])
 
     def test_partial_writeback_preserves_result(self):
         self.graph["nodes"]["writeback"]["config"] = {"status": "Done"}

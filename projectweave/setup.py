@@ -15,13 +15,15 @@ from .graph import validate
 from .resources import Resources
 
 PRIORITIES = ["P0", "P1", "P2"]
+# Only Todo Tasks are selected; the default graph marks a Task In Progress before executing it.
+STATUSES = ["Todo", "In Progress"]
 FILES = ("project.json", "resources.json", "graph.json", "gitweave.json")
 PROVIDERS = ("codex", "claude")
 # The one subscription templates/graph.json checks; ProjectWeave never infers providers from gitweave.json.
 SUBSCRIPTION = "subscription"
 
 
-def ensure_field(backend, report, fields, name, options):
+def ensure_field(backend, report, fields, name, options, create=True):
     """Reuse a compatible single-select field or create it; incompatible fields are never repaired."""
     summary = f"{name} field ({'/'.join(options)})"
     matches = [field for field in fields if field["name"] == name]
@@ -35,6 +37,7 @@ def ensure_field(backend, report, fields, name, options):
                 f"Incompatible {name} options: require {', '.join(options)} exactly once each; existing options left unchanged")
         report["existing"].append(summary)
     else:
+        require(create, f"Missing {name} field: add a single-select {name} field with {', '.join(options)} in the Project")
         response = backend.query("""mutation($input:CreateProjectV2FieldInput!) {
           createProjectV2Field(input:$input) { projectV2Field {
             ... on ProjectV2SingleSelectField { id name options { name } }
@@ -55,14 +58,17 @@ def pending(name, options):
 
 def ensure_fields(backend, report):
     required = (("Priority", PRIORITIES), (ELIGIBILITY_FIELD, ELIGIBILITY_OPTIONS))
-    report["missing"].extend(pending(name, options) for name, options in required)
+    report["missing"].extend(pending(name, options) for name, options in required + (("Status", STATUSES),))
     # Exhaust pagination before deciding a field is absent (or unambiguous).
     fields = list(backend.pages(backend.resolve(), "ProjectV2", "fields",
         "__typename ... on ProjectV2FieldCommon { name dataType } "
         "... on ProjectV2SingleSelectField { options { name } }"))
+    # GitHub Projects provide Status; init only verifies it (first, so nothing is created
+    # when it is unusable) and never creates or repairs it.
+    ensure_field(backend, report, fields, "Status", STATUSES, create=False)
     for name, options in required:
         ensure_field(backend, report, fields, name, options)
-    report["fields"] = f"Priority and {ELIGIBILITY_FIELD} verified; Status unchanged (no filter or update)"
+    report["fields"] = f"Priority, {ELIGIBILITY_FIELD} and Status (Todo/In Progress) verified"
 
 
 def link_repositories(backend, report, repositories):
@@ -211,11 +217,11 @@ def initialize(args):
                 "Choose --project-number NUMBER or explicitly --create-project TITLE; no Project is auto-selected")
         operation = review_files
         project = {"owner": owner, "owner_type": saved["owner_type"] if saved else "user",
-                   "number": number or 1, "priority_order": PRIORITIES}
+                   "number": number or 1, "priority_order": PRIORITIES, "eligible_statuses": STATUSES[:1]}
         if saved is not None:
             # An explicit repository filter from older setups remains an accepted optional policy.
             unscoped = {key: value for key, value in saved.items() if key != "repository"}
-            require(equal(unscoped, project), "Incompatible project.json; default setup uses Priority order P0/P1/P2 and no Status policy; review manually")
+            require(equal(unscoped, project), "Incompatible project.json; default setup uses Priority order P0/P1/P2 and eligible_statuses [\"Todo\"]; review manually or regenerate")
             report["existing"].append(str(workspace / "project.json"))
         values = {}
         for name, default in expected.items():
@@ -281,7 +287,7 @@ def initialize(args):
                     output.write(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
                 report["created"].append(str(path))
         operation = (f"Check Project field read access and write access for missing Priority/{ELIGIBILITY_FIELD} creation; "
-                     "review incompatible fields manually. Rerun init to read all fields and reuse any "
+                     "add Todo/In Progress options to the Project's Status field if missing; review incompatible fields manually. Rerun init to read all fields and reuse any "
                      "field created before a failure; existing fields are never repaired")
         ensure_fields(backend, report)
         if links:
@@ -307,10 +313,10 @@ def initialize(args):
             "gitweave.json agents run " + "; ".join(choices)
             + ". Install and authenticate that provider CLI yourself. To change provider/model later, edit gitweave.json (init never rewrites it).",
             f"Before each Run, record the provider subscription's remaining usage as resources.json {SUBSCRIPTION}.remaining_percent (0-100) for the provider chosen in gitweave.json. No Task starts while it is unknown or at/below stop_at_remaining_percent (default 20; adjust deliberately). ProjectWeave does not observe or estimate usage itself; every Run reloads the file.",
-            f"Choose an open Issue from any repository and add it to the Project using the commands below, then set its {ELIGIBILITY_FIELD} field to {READY} in the Project. No Issue has been selected or changed.",
+            f"Choose an open Issue from any repository and add it to the Project using the commands below, then set its {ELIGIBILITY_FIELD} field to {READY} and its Status to Todo in the Project. Only Todo Tasks are selected. No Issue has been selected or changed.",
             "A Run invokes `gitweave run --repo OWNER/REPO --issue N` from this workspace. GitWeave fetches the repository's default branch into its shared per-repository store .gitweave/repos/OWNER/REPO.git here (reused across Runs, so only new objects are fetched) and pushes provenance refs/notes to the repository. Git transport uses your Git credentials: for HTTPS run `gh auth setup-git` or use SSH. Init fetches nothing.",
             "Run readiness is not certified: provider credentials, repository access, push/PR/merge permission, Issue comment permission, Project item-add access and Git identity need human verification. Init never runs AI or pushes.",
-            f"Set {ELIGIBILITY_FIELD} back to Not ready manually after processing if the Issue should not run again; this workflow comments results and does not change Status or {ELIGIBILITY_FIELD}."
+            f"Before executing, the workflow sets the Task's Status to In Progress so it is not selected again, even if the Run then fails. ProjectWeave never sets Done: GitHub's Project workflows do when the Issue closes. To retry a Task left In Progress, set its Status back to Todo; {ELIGIBILITY_FIELD} is never changed."
         ]
     except (Failure, OSError, UnicodeError, KeyError, TypeError, AttributeError, RecursionError) as exc:
         report["failure"] = {"message": str(exc), "action": operation}

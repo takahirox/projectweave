@@ -82,11 +82,13 @@ elif "fieldValues(first:" in query:
     connection("fieldValues", [{"field": {"name": f}, "name": v} for f, v in values], variables["cursor"] is None)
 elif "fields(first:" in query:
     connection("fields", [{}] if variables["cursor"] is None else [
-        {"id": "STATUS", "name": "Status", "options": [{"id": "DONE", "name": "Done"}]}], variables["cursor"] is None)
+        {"id": "STATUS", "name": "Status", "options": [{"id": "PROGRESS", "name": "In Progress"}, {"id": "DONE", "name": "Done"}]}], variables["cursor"] is None)
 elif "addComment(" in query:
     print(json.dumps({"data": {"addComment": {"commentEdge": {"node": {"url": "https://github.com/o/r/issues/7#comment"}}}}}))
 elif "updateProjectV2ItemFieldValue(" in query:
-    if mode == "writeback_failure":
+    if mode == "writeback_failure" and variables["option"] == "DONE":
+        print(json.dumps({"errors": [{"message": "update denied"}]}))
+    elif mode == "status_failure" and variables["option"] == "PROGRESS":
         print(json.dumps({"errors": [{"message": "update denied"}]}))
     else:
         print(json.dumps({"data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "ITEM"}}}}))
