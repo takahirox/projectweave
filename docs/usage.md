@@ -311,7 +311,8 @@ a new workspace and reapply your provider/model edits. Init now emits the
 subscription threshold policy instead of `gitweave` run capacity; an old
 `resources.json` with `gitweave` capacity keeps working with its old graph but is
 reported as incompatible by init. Likewise a `graph.json` generated before the
-canonical template (node names `capacity`/`comment`, no `no_work` branch) keeps
+canonical template (node names `capacity`/`comment`, no `no_work` branch, or one
+still ending in a `writeback` node) keeps
 running but is reported as incompatible; replace it with a fresh copy of the
 template if you want init to manage it.
 
@@ -329,8 +330,9 @@ and there is no fallback. For an existing setup:
 
 Install Python 3.11+, GitHub CLI (`gh`), and the chosen executor. Authenticate `gh`
 with access to the project and its Issues: project read access for loading,
-project write access for Status updates, and Issue comment permission for
-writeback. The runtime targets github.com, including user and organization
+project write access for Status updates, and Issue comment permission (the
+GitWeave graph's `close_issue` comments the outcome; a custom writeback node also
+comments). The runtime targets github.com, including user and organization
 Projects v2; classic Projects and enterprise hosts are not supported.
 
 Copy `projectweave/templates/graph.json`, `gitweave.json`, `resources.json`
@@ -410,7 +412,8 @@ observed. It is checked only by this action, so branch on
 `data.available` before executing. No task returns null from select; graphs should branch before
 executing, as the canonical template does. Missing pointer targets are Runtime Failures.
 
-To change Project Status, give a writeback node `"config":{"status":"Done"}`.
+To change Project Status after execution, add a writeback node with
+`"config":{"status":"Done"}`.
 Use a conditional branch to select that node only when the executor's structured
 outcome warrants it. A GitWeave task verdict can be selected at
 `/results/execute/data/outputs/0/data/approved` if its graph returns that field.

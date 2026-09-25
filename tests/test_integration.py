@@ -56,6 +56,7 @@ class CLITests(unittest.TestCase):
         # The canonical graph has no writeback; custom graphs can still add one after execute.
         self.graph["nodes"]["writeback"] = {"kind": "action", "action": "writeback", "config": {"status": status},
                                             "inputs": {"task": "/results/select/data/task", "result": "/results/execute"}}
+        # The subscription check's "available" branch: start → execute (→ writeback).
         self.graph["flow"][2]["if"]["else"][1]["if"]["then"].append("writeback")
 
     def test_gitweave_end_to_end_pagination_and_literal_request(self):
