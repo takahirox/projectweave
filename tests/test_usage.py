@@ -47,9 +47,11 @@ class UsageTests(unittest.TestCase):
     def test_codex_primary_window(self):
         self.env(FAKE_CODEX_USED="95")
         self.assertEqual(usage.codex(), 5)
+        self.env(FAKE_USAGE="codex_server_request")
+        self.assertEqual(usage.codex(), 5)  # The server's own request with id 2 is skipped.
 
     def test_codex_failures_are_unknown(self):
-        for mode in ("codex_error", "codex_no_primary", "codex_hang"):
+        for mode in ("codex_error", "codex_no_primary", "codex_hang", "codex_exit"):
             with self.subTest(mode=mode):
                 self.env(FAKE_USAGE=mode)
                 with self.assertRaises(Failure):
@@ -64,6 +66,11 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(usage.observe(nodes), {"claude": {"remaining_percent": 80}, "codex": {"remaining_percent": 60}})
         observed = usage.observe([{"provider": "claude", "model": "opus"}, {"provider": "claude"}])
         self.assertEqual(observed, {"claude": {"remaining_percent": 10}})  # Any Fable node includes the Fable limit.
+        self.env(FAKE_USAGE="codex_exit")
+        observed = usage.observe([{"provider": "codex"}, {"provider": "claude", "model": "opus"}])
+        self.assertIn("exited without a rate limit response", observed["codex"]["error"])  # Real reason recorded.
+        self.assertEqual(observed["claude"], {"remaining_percent": 80})  # Other providers are unaffected.
+        self.assertIsInstance(observed["claude"]["remaining_percent"], int)
         observed = usage.observe([{"provider": "gemini"}])
         self.assertIn("error", observed["gemini"])
         self.assertIn("error", usage.observe([])["(none)"])

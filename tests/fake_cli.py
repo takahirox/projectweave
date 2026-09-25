@@ -30,7 +30,13 @@ if name == "claude":
 if name == "codex":
     # codex app-server: newline-delimited JSON-RPC; it only answers while stdin stays open.
     assert args == ["app-server"], args
+    if usage == "codex_exit":
+        print("not signed in", file=sys.stderr)
+        sys.exit(1)
     for line in sys.stdin:
+        if usage == "codex_server_request" and json.loads(line).get("id") == 2:
+            # A server-to-client request reusing id 2 must not be mistaken for the response.
+            print(json.dumps({"id": 2, "method": "item/tool/requestUserInput", "params": {}}), flush=True)
         message = json.loads(line)
         if usage == "codex_hang":
             continue

@@ -19,7 +19,7 @@ PRIORITIES = ["P0", "P1", "P2"]
 STATUSES = ["Todo", "In Progress"]
 FILES = ("project.json", "resources.json", "graph.json", "gitweave.json")
 PROVIDERS = ("codex", "claude")
-# The one subscription templates/graph.json checks; ProjectWeave never infers providers from gitweave.json.
+# The one subscription templates/graph.json checks; its stop line applies to every provider observed.
 SUBSCRIPTION = "subscription"
 
 

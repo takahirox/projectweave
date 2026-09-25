@@ -1,5 +1,6 @@
 """Bounded single-run graph interpreter."""
 from copy import deepcopy
+from pathlib import Path
 import uuid
 from .contracts import Failure, decode, require, pointer, equal, result, check_result
 from .graph import validate
@@ -90,7 +91,8 @@ class Runtime:
             try:
                 for node in self.graph["nodes"].values():
                     if node.get("executor", {}).get("type") == "gitweave":
-                        with open(node["executor"]["graph"]) as source:
+                        # Resolve like the GitWeave executor, which runs from the workspace.
+                        with open(Path(self.workspace or ".") / node["executor"]["graph"]) as source:
                             task_graph = decode(source.read())
                         nodes += [n for n in task_graph["nodes"].values()
                                   if isinstance(n, dict) and n.get("kind", "agent") == "agent"]

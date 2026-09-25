@@ -39,7 +39,7 @@ def claude(uses_fable, timeout=TIMEOUT):
     for name in names:
         match = re.search(LINE.format(CLAUDE_LIMITS[name]), record["result"], re.MULTILINE)
         require(match is not None, f"claude /usage has no '{CLAUDE_LIMITS[name]}' line", "usage")
-        values.append(remaining(float(match[1])))
+        values.append(remaining(float(match[1]) if "." in match[1] else int(match[1])))
     return min(values)
 
 
@@ -55,14 +55,22 @@ def codex(timeout=TIMEOUT):
         raise Failure("usage", f"Cannot launch codex: {exc}") from exc
     try:
         # The server exits on end of input before answering, so keep stdin open and read with a deadline.
-        child.stdin.write("".join(json.dumps(m) + "\n" for m in requests).encode())
-        child.stdin.flush()
+        try:
+            child.stdin.write("".join(json.dumps(m) + "\n" for m in requests).encode())
+            child.stdin.flush()
+        except OSError as exc:
+            raise Failure("usage", f"codex app-server closed its input: {exc}") from exc
         response = read_response(child.stdout, 2, time.monotonic() + timeout)
     finally:
         try:
             os.killpg(child.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        except OSError:
+            pass  # Already gone; macOS reports EPERM for a group of zombies.
+        for stream in (child.stdin, child.stdout):
+            try:
+                stream.close()
+            except OSError:
+                pass
         child.wait()
     try:
         return remaining(response["result"]["rateLimits"]["primary"]["usedPercent"])
@@ -81,7 +89,8 @@ def read_response(stream, identity, deadline):
                 message = decode(line.decode())
             except (Failure, UnicodeError):
                 continue
-            if isinstance(message, dict) and message.get("id") == identity:
+            # A server-to-client request can also carry an id; only a response has no method.
+            if isinstance(message, dict) and message.get("id") == identity and "method" not in message:
                 require("error" not in message, f"codex app-server error: {message.get('error')}", "usage")
                 return message
         wait = deadline - time.monotonic()
@@ -115,6 +124,6 @@ def observe(nodes):
             else:
                 raise Failure("usage", f"No usage observer for provider {provider!r}")
             observations[provider] = {"remaining_percent": value}
-        except Failure as exc:
+        except (Failure, OSError) as exc:
             observations[provider] = {"error": str(exc)}
     return observations
