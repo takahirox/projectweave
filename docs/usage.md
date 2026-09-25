@@ -149,7 +149,7 @@ templates; only the GitWeave graph path in `graph.json` is made absolute:
 | --- | --- |
 | `project.json` | Project owner/type/number, standard Priority order `P0`, `P1`, `P2`, `eligible_statuses: ["Todo"]` |
 | `resources.json` | One `subscription` entry with `stop_at_remaining_percent: 20` and **no** `remaining_percent`; record the observed remaining usage before each Run |
-| `graph.json` | Load, select an eligible Issue from any repository in the Project (or return `no_work`), check the subscription threshold, run GitWeave in Issue mode for that Issue, comment the result |
+| `graph.json` | Load, select an eligible Issue whose Status is `Todo` from any repository in the Project (or return `no_work`), check the subscription threshold, set its Status to `In Progress`, run GitWeave in Issue mode for that Issue, comment the result |
 | `gitweave.json` | The six-node Task graph (implement → PR → review/fix → merge → close_issue); every agent node uses Codex with its native default model, or the `--provider`/`--model` choices (Claude adds `bypassPermissions`) |
 
 The default workflow retains the standard Priority order **P0, P1, P2**.
@@ -545,7 +545,9 @@ updated without a receipt; there is no resume or idempotency database.
 Writeback preflights the requested Status option, posts the comment, then updates
 Status. If the second operation fails, the receipt reports the completed comment
 reference and preserves the executor result. If a response is lost, remote effects
-are unknown. A new Run can duplicate comments or execute the same task; inspect
+are unknown. A new Run can duplicate comments, or execute the same task if its
+Status is back to `Todo` (for example after a lost In Progress response or a manual
+reset); inspect
 GitHub and the receipt before rerunning. Failures do not trigger fallback executors.
 
 ## Verification

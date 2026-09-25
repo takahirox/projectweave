@@ -141,20 +141,20 @@ class GitHub:
         except (KeyError, TypeError, AttributeError) as exc:
             raise Failure(kind, "Malformed Status field metadata") from exc
 
-    def update_status(self, task, option):
+    def update_status(self, task, option, kind):
         response = self.query("""mutation($project:ID!,$item:ID!,$field:ID!,$option:String!) {
           updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,
             value:{singleSelectOptionId:$option}}) { projectV2Item { id } } }""",
                               {"project": self.resolve(), "item": task["item_id"], "field": option[0], "option": option[1]})
         require(response["updateProjectV2ItemFieldValue"]["projectV2Item"]["id"] == task["item_id"],
-                "Missing updated item", "writeback")
+                "Missing updated item", kind)
 
     def set_status(self, task, status):
         """Mark the selected Task (for example In Progress before execution) without commenting."""
         self.check_task(task, "status")
         option = self.status_option(status, "status")
         try:
-            self.update_status(task, option)
+            self.update_status(task, option, "status")
         except (Failure, KeyError, TypeError) as exc:
             raise Failure("status", f"Status update failed; it may have been applied: {exc}") from exc
         return result(f"Status set to {status}", {"status": status})
@@ -172,7 +172,7 @@ class GitHub:
             require(text(url), "Missing comment URL", "writeback")
             completed.append(url)
             if option:
-                self.update_status(task, option)
+                self.update_status(task, option, "writeback")
         except (Failure, KeyError, TypeError) as exc:
             raise Failure("writeback", f"Writeback failed; remote effects may have occurred: {exc}",
                           {"completed_references": completed}) from exc

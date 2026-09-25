@@ -63,10 +63,11 @@ def ensure_fields(backend, report):
     fields = list(backend.pages(backend.resolve(), "ProjectV2", "fields",
         "__typename ... on ProjectV2FieldCommon { name dataType } "
         "... on ProjectV2SingleSelectField { options { name } }"))
+    # GitHub Projects provide Status; init only verifies it (first, so nothing is created
+    # when it is unusable) and never creates or repairs it.
+    ensure_field(backend, report, fields, "Status", STATUSES, create=False)
     for name, options in required:
         ensure_field(backend, report, fields, name, options)
-    # GitHub Projects provide Status; init only verifies it and never creates or repairs it.
-    ensure_field(backend, report, fields, "Status", STATUSES, create=False)
     report["fields"] = f"Priority, {ELIGIBILITY_FIELD} and Status (Todo/In Progress) verified"
 
 
@@ -286,7 +287,7 @@ def initialize(args):
                     output.write(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
                 report["created"].append(str(path))
         operation = (f"Check Project field read access and write access for missing Priority/{ELIGIBILITY_FIELD} creation; "
-                     "review incompatible fields manually. Rerun init to read all fields and reuse any "
+                     "add Todo/In Progress options to the Project's Status field if missing; review incompatible fields manually. Rerun init to read all fields and reuse any "
                      "field created before a failure; existing fields are never repaired")
         ensure_fields(backend, report)
         if links:

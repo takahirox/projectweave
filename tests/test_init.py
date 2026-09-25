@@ -297,8 +297,9 @@ class InitTests(unittest.TestCase):
                 self.assertIn("Status", report["failure"]["message"])
                 self.assertIn("Verified Status single-select field with Todo/In Progress options", report["missing"])
                 # Status is GitHub's field: init creates or repairs only Priority and AI execution.
-                created = [c["request"]["variables"]["input"]["name"] for c in self.mutations(calls)]
-                self.assertNotIn("Status", created)
+                # Status is verified first, so nothing is created when it is unusable, and it is never repaired.
+                self.assertEqual(self.mutations(calls), [])
+                self.assertIn("Status field", report["failure"]["action"])
 
     def test_compatible_priority_on_later_page_reused_without_changes(self):
         field = {"__typename": "ProjectV2SingleSelectField", "name": "Priority",
@@ -337,7 +338,9 @@ class InitTests(unittest.TestCase):
     def test_ambiguous_priority_across_pages_not_accepted(self):
         field = {"__typename": "ProjectV2SingleSelectField", "name": "Priority",
                  "dataType": "SINGLE_SELECT", "options": [{"name": n} for n in ("P0", "P1", "P2")]}
-        state = {"projects": 0, "first_fields": [field], "fields": [field]}
+        status = {"__typename": "ProjectV2SingleSelectField", "name": "Status", "dataType": "SINGLE_SELECT",
+                  "options": [{"name": n} for n in ("Todo", "In Progress", "Done")]}
+        state = {"projects": 0, "first_fields": [status, field], "fields": [field]}
         self.state.write_text(json.dumps(state))
         code, report, calls = self.invoke("--project-number", "7")
         self.assertEqual(code, 2)
