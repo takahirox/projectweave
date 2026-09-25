@@ -116,8 +116,8 @@ option reuses them. Without the option, init's behavior and output are unchanged
 Without further flags, init sets up **Codex with its native default model** (no
 `model` entry), so the first Run needs no provider/model/graph/instruction edits.
 The quick-start flow is: init → add an Issue to the Project and set
-`AI execution` = `Ready` → record `remaining_percent` in `resources.json` →
-`projectweave run`. Optional overrides:
+`AI execution` = `Ready` → `projectweave run`. Remaining subscription usage is
+observed automatically. Optional overrides:
 
 ```sh
 projectweave init --project-owner my-team --project-number 7 --provider claude
@@ -148,7 +148,7 @@ templates; only the GitWeave graph path in `graph.json` is made absolute:
 | File | Purpose / human input |
 | --- | --- |
 | `project.json` | Project owner/type/number, standard Priority order `P0`, `P1`, `P2`, `eligible_statuses: ["Todo"]` |
-| `resources.json` | One `subscription` entry with `stop_at_remaining_percent: 20` and **no** `remaining_percent`; record the observed remaining usage before each Run |
+| `resources.json` | One `subscription` entry with only `stop_at_remaining_percent: 20`; remaining usage is observed each Run |
 | `graph.json` | Load, select an eligible Issue whose Status is `Todo` from any repository in the Project (or return `no_work`), check the subscription threshold, set its Status to `In Progress`, run GitWeave in Issue mode for that Issue, comment the result |
 | `gitweave.json` | The six-node Task graph (implement → PR → review/fix → merge → close_issue); every agent node uses Codex with its native default model, or the `--provider`/`--model` choices (Claude adds `bypassPermissions`) |
 
@@ -184,8 +184,7 @@ Init prints JSON with `initialized`, `ready`, `created`, `existing`, `missing`,
 completed; exit 2 means incomplete setup. `ready` stays false: shallow checks cannot
 certify provider credentials, Issue comment permission, future Issue eligibility,
 or provenance publication access. Remaining configuration blockers are listed in
-`missing`; access/operational checks are listed in `human_actions`, even after the
-remaining usage is recorded. Init requires working `gh` and GitWeave
+`missing`; access/operational checks are listed in `human_actions`. Init requires working `gh` and GitWeave
 commands, `gh` authentication and Project read access.
 Project or missing field creation needs Project write access. Failure reports give the current check
 and a concrete recovery action. A field read failure stops creation; after a field
@@ -200,8 +199,8 @@ not migrate files or change existing field types/options. The field mutation use
 GitHub's [Projects GraphQL contract](https://docs.github.com/en/graphql/reference/projects#createprojectv2fieldinput)
 with explicit single-select option names, neutral colors and empty descriptions.
 
-After installing/authenticating your provider CLI yourself and recording
-`remaining_percent`, follow the printed commands. For example:
+After installing/authenticating your provider CLI yourself, follow the printed
+commands. For example:
 
 ```sh
 # From the workspace; replace 7, my-team, and the Issue URL with your choices.
@@ -216,16 +215,16 @@ projectweave run --graph graph.json --project project.json --resources resources
 Adding an Issue to the Project and setting `AI execution` require Project write
 access. Init does neither operation.
 
-The default policy is a subscription stop line. Before each Run, set
-`resources.json` `subscription.remaining_percent` to the remaining usage (0–100)
-of the provider subscription used by `gitweave.json`, for example 45. The graph
-starts a Task only while `remaining_percent > stop_at_remaining_percent` (default
-20; edit it deliberately). With the value absent or null (unknown), at or below
-the stop line, or with no eligible Issue, this graph neither launches GitWeave nor
-posts a comment, and the Task's Status is left unchanged. The name
-`subscription` is only a label; ProjectWeave does not
-observe provider usage, estimate it, or infer the provider. The file is reloaded
-each Run. Renaming the entry (for example to `codex`) or checking several
+The default policy is a subscription stop line. Before starting a Task, each Run
+observes the remaining usage of every provider used in `gitweave.json` (Claude via
+`claude -p --output-format json /usage`, Codex via `codex app-server`; both
+read-only, no model call; see [the runtime notes](runtime.md#subscription-thresholds-default-policy)
+for the exact rules). The graph starts a Task only while every provider is above
+`stop_at_remaining_percent` (default 20; edit it deliberately). If an observation
+fails (unknown), a provider is at or below the stop line, or no Issue is eligible,
+this graph neither launches GitWeave nor posts a comment, and the Task's Status is
+left unchanged. The observed values (or failure reasons) are in the Run receipt
+under `results.subscription.data.observations`. The file is reloaded each Run. Renaming the entry (for example to `codex`) or checking several
 subscriptions is a custom graph/resources edit that init's compatibility check
 reports as incompatible; manage such a setup manually.
 Once the threshold check passes, the `start` node sets the Task's Status to
@@ -273,8 +272,8 @@ runs a probe agent nor promises live Run success.
 
 Rerun `projectweave init` in the workspace to reuse saved Project selection.
 Files are never overwritten; missing files are generated. The small compatibility
-check accepts this fixed scaffold with edited `remaining_percent` /
-`stop_at_remaining_percent` and GitWeave
+check accepts this fixed scaffold with an edited `stop_at_remaining_percent` and
+GitWeave
 provider/instruction plus optional `model`, `effort`, `sandbox`, `permission_mode`.
 Other graph or policy edits are reported as incompatible with this initializer,
 not repaired or treated as invalid for the runtime. Continue managing a customized
@@ -346,8 +345,7 @@ The template's GitWeave graph path `gitweave.json` is relative, so run from the
 workspace (or make it absolute). Init manages only files it generated: in a
 hand-copied workspace it reports this relative path as incompatible. The template
 uses Codex with its native default model; edit `gitweave.json` for another
-provider/model (Claude needs a `permission_mode`, see above), and set
-`remaining_percent` in `resources.json`. The workspace is the
+provider/model (Claude needs a `permission_mode`, see above). The workspace is the
 directory containing the `--project` file; GitWeave runs there in Issue mode, and
 command executors get a checkout under its `repos/`, as described above.
 Use a GitWeave installation matching its documented v0 `run` CLI contract. The
@@ -404,9 +402,10 @@ is not supported, so downstream actions do not run after a Runtime Failure.
 `resources.config.requires` tests whether an entire allocation can be admitted
 without charging it. Actual execution checks again and charges before launching.
 An unavailable allocation returns `data.status: "resource_exhausted"`; it is not a
-launch failure. `resources.config.subscriptions` additionally requires each named
-subscription's `remaining_percent` to be known and above its
-`stop_at_remaining_percent`; it is checked only by this action, so branch on
+launch failure. `resources.config.subscriptions` additionally observes provider
+usage (once per Run) and requires every observed provider to be above each named
+subscription's `stop_at_remaining_percent`; `data.observations` records what was
+observed. It is checked only by this action, so branch on
 `data.available` before executing. No task returns null from select; graphs should branch before
 executing, as the canonical template does. Missing pointer targets are Runtime Failures.
 

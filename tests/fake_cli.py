@@ -10,6 +10,48 @@ args = sys.argv[1:]
 request = json.load(sys.stdin) if name == "worker" or (name == "gh" and args[:2] == ["api", "graphql"]) else None
 with open(os.environ["FAKE_LOG"], "a") as log:
     log.write(json.dumps({"command": name, "argv": args, "request": request, "cwd": os.getcwd()}) + "\n")
+usage = os.environ.get("FAKE_USAGE", "")
+if name == "claude":
+    # claude -p --output-format json /usage: the plan limits as text, no model call.
+    assert args == ["-p", "--output-format", "json", "/usage"], args
+    if usage == "claude_failure":
+        print("not logged in", file=sys.stderr)
+        sys.exit(1)
+    session, week, fable = os.environ.get("FAKE_CLAUDE_USED", "10,20,30").split(",")
+    lines = ["You are currently using your subscription to power your Claude Code usage", "",
+             f"Current session: {session}% used · resets Sep 25 at 4:40pm (Asia/Tokyo)",
+             f"Current week (all models): {week}% used · resets Sep 29 at 12pm (Asia/Tokyo)",
+             f"Current week (Fable): {fable}% used · resets Sep 29 at 12pm (Asia/Tokyo)", "",
+             "What's contributing to your limits usage?", "  94% of your usage came from long sessions"]
+    if usage == "claude_no_week":
+        lines = [line for line in lines if "all models" not in line]
+    print(json.dumps({"type": "result", "is_error": False, "num_turns": 0, "result": "\n".join(lines)}))
+    sys.exit(0)
+if name == "codex":
+    # codex app-server: newline-delimited JSON-RPC; it only answers while stdin stays open.
+    assert args == ["app-server"], args
+    if usage == "codex_exit":
+        print("not signed in", file=sys.stderr)
+        sys.exit(1)
+    for line in sys.stdin:
+        if usage == "codex_server_request" and json.loads(line).get("id") == 2:
+            # A server-to-client request reusing id 2 must not be mistaken for the response.
+            print(json.dumps({"id": 2, "method": "item/tool/requestUserInput", "params": {}}), flush=True)
+        message = json.loads(line)
+        if usage == "codex_hang":
+            continue
+        if message.get("id") == 1:
+            print(json.dumps({"id": 1, "result": {"userAgent": "fake"}}), flush=True)
+            print(json.dumps({"method": "account/updated", "params": {}}), flush=True)
+        elif message.get("method") == "account/rateLimits/read":
+            if usage == "codex_error":
+                reply = {"id": message["id"], "error": {"code": -32000, "message": "not signed in"}}
+            else:
+                primary = None if usage == "codex_no_primary" else {
+                    "usedPercent": float(os.environ.get("FAKE_CODEX_USED", "50")), "windowDurationMins": 10080, "resetsAt": 1}
+                reply = {"id": message["id"], "result": {"rateLimits": {"limitId": "codex", "primary": primary, "secondary": None}}}
+            print(json.dumps(reply), flush=True)
+    sys.exit(0)
 if name == "gh" and args[:2] == ["repo", "clone"]:
     # A clone records its origin in a marker file that the fake git reads back.
     if mode == "clone_failure":
