@@ -86,6 +86,10 @@ class InitTests(unittest.TestCase):
         self.assertEqual(work["provider"], "codex")  # Quick-start default: Codex with its native default model.
         self.assertNotIn("model", work)
         self.assertNotIn("permission_mode", work)
+        # The agent commits its own work with a readable message but still never publishes.
+        self.assertIn("commit your changes in the assigned worktree", work["instruction"])
+        self.assertIn("referencing the Issue", work["instruction"])
+        self.assertIn("Do not publish, push, merge, or change GitHub state", work["instruction"])
         self.assertFalse(any("provider and model" in entry for entry in report["missing"]))
         self.assertEqual([e for e in report["missing"] if "remaining_percent" not in e], [])
         self.assertTrue(any("native default model" in a for a in report["human_actions"]))
@@ -466,6 +470,18 @@ class InitTests(unittest.TestCase):
         code, report, calls = self.invoke()
         self.assertEqual(code, 0, report)
         self.assertTrue(any("no permission_mode" in a for a in report["human_actions"]))
+
+    def test_earlier_template_instruction_is_reused_unchanged(self):
+        worker = templates(self.root)["gitweave.json"]
+        worker["nodes"]["work"]["instruction"] = (
+            "Implement only the selected Issue in the supplied ProjectWeave request. Follow repository development "
+            "instructions, run relevant checks, and summarize the result. Leave artifacts in the assigned worktree. "
+            "Do not publish, push, merge, or change GitHub state. Do not reset usage limits, buy allowance, or switch "
+            "models/providers; stop on a usage limit.")
+        self.write("gitweave.json", worker)
+        code, report, calls = self.invoke("--project-number", "7")
+        self.assertEqual(code, 0, report)
+        self.assertEqual(self.read("gitweave.json"), worker)
 
     def test_old_placeholder_workspace_still_reports_missing_choice(self):
         worker = templates(self.root)["gitweave.json"]
