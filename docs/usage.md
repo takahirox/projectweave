@@ -61,8 +61,8 @@ It holds the Project configuration and graphs, and GitWeave's Run data:
 ```text
 workspace/
 ├─ project.json  resources.json  graph.json  gitweave.json
-├─ .gitweave/runs/<run-id>/   (GitWeave's per-Run repository store)
-└─ repos/OWNER/REPO/          (only for command executors, cloned on demand)
+├─ .gitweave/repos/OWNER/REPO.git   (GitWeave's shared store per GitHub repository)
+└─ repos/OWNER/REPO/                (only for command executors, cloned on demand)
 ```
 
 Install ProjectWeave, `gh`, and GitWeave on PATH first. From an empty directory
@@ -231,8 +231,10 @@ The ProjectWeave graph itself does not reset `AI execution` or close the Issue
 The GitWeave executor runs `gitweave run --graph gitweave.json --repo OWNER/REPO
 --issue N` for the selected Task, with the workspace as its working directory.
 In this Issue mode GitWeave fetches the repository's default branch HEAD itself
-into `.gitweave/runs/<run-id>/` (retained per Run; see GitWeave's runtime docs
-and takahirox/gitweave#96 for reusing fetched objects). Its nodes receive
+into one shared bare repository per GitHub repository,
+`.gitweave/repos/OWNER/REPO.git` (lowercased). Runs reuse it, so only new objects
+are fetched, and each Run's records stay in its own refs and notes there (see
+GitWeave's runtime docs). Its nodes receive
 `run_input` (`{"kind":"issue","number":N}`) and `github_repository`, and read
 the Issue themselves. ProjectWeave clones nothing for GitWeave; push the changes
 you want included to the default branch. GitWeave's Git transport and the agents'
