@@ -58,13 +58,14 @@ class CLITests(unittest.TestCase):
         self.assertFalse(any(c["command"] == "git" or c["argv"][:2] == ["repo", "clone"] for c in calls))
         self.assertIn("task $(literal) `literal`", launch[0]["argv"][-1])
         self.assertEqual(record["results"]["execute"]["references"], ["abc123"])
-        self.assertFalse(record["results"]["execute"]["data"]["outputs"][0]["data"]["approved"])
+        self.assertTrue(record["results"]["execute"]["data"]["outputs"][0]["data"]["merged"])
         for field in ("items", "labels", "fieldValues", "fields"):
             pages = [c for c in calls if c["command"] == "gh" and c["request"] and field + "(first:" in c["request"]["query"]]
             self.assertEqual([p["request"]["variables"]["cursor"] for p in pages], [None, "next"])
         mutations = [c for c in calls if c["command"] == "gh" and c["request"] and c["request"]["query"].startswith("mutation")]
         self.assertEqual(len(mutations), 2)
         self.assertIn(record["run_id"], mutations[0]["request"]["variables"]["body"])
+        self.assertIn("https://github.com/o/r/pull/12", mutations[0]["request"]["variables"]["body"])
         self.assertEqual(mutations[1]["request"]["variables"]["option"], "DONE")
 
     def use_command_agent(self):

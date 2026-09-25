@@ -180,15 +180,46 @@
     "close_issue": {
       "kind": "agent",
       "provider": "codex",
-      "instruction": "If inputs[0].data.merged is true, make sure the GitHub Issue identified by run_input in github_repository is closed, referencing the merged pull request in inputs[0].data.pr; do nothing if it is already closed. Otherwise leave it open. Report whether it is closed. Do not reset usage limits, buy allowance, or switch models/providers; stop on a usage limit.",
+      "instruction": "If inputs[0].data.merged is true, make sure the GitHub Issue identified by run_input in github_repository is closed, referencing the merged pull request in inputs[0].data.pr; do nothing if it is already closed. Otherwise leave it open. Report whether it is closed, and forward pr, merged and (when present) merge_commit from inputs[0].data unchanged so the Run's result names the pull request. Do not reset usage limits, buy allowance, or switch models/providers; stop on a usage limit.",
       "schema": {
         "type": "object",
         "properties": {
+          "pr": {
+            "type": "object",
+            "description": "The pull request this Run publishes; forward it unchanged unless it changes.",
+            "properties": {
+              "number": {
+                "type": "integer"
+              },
+              "url": {
+                "type": "string"
+              },
+              "head_sha": {
+                "type": "string",
+                "description": "Commit SHA currently at the PR head on GitHub."
+              }
+            },
+            "required": [
+              "number",
+              "url",
+              "head_sha"
+            ],
+            "additionalProperties": false
+          },
+          "merged": {
+            "type": "boolean"
+          },
+          "merge_commit": {
+            "type": "string",
+            "description": "Merge commit SHA; omit when not merged."
+          },
           "closed": {
             "type": "boolean"
           }
         },
         "required": [
+          "pr",
+          "merged",
           "closed"
         ],
         "additionalProperties": false

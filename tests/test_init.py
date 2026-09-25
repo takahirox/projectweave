@@ -95,6 +95,8 @@ class InitTests(unittest.TestCase):
         self.assertIn("with a merge commit", nodes["merge"]["instruction"])
         self.assertIn("Do not bypass required checks", nodes["merge"]["instruction"])
         self.assertIn("If inputs[0].data.merged is true", nodes["close_issue"]["instruction"])
+        # The terminal output names the PR so ProjectWeave's Issue comment includes it.
+        self.assertEqual(nodes["close_issue"]["schema"]["required"], ["pr", "merged", "closed"])
         self.assertTrue(any("MERGES it into the default branch" in a for a in report["human_actions"]))
         self.assertFalse(any("provider and model" in entry for entry in report["missing"]))
         self.assertEqual([e for e in report["missing"] if "remaining_percent" not in e], [])
@@ -478,6 +480,11 @@ class InitTests(unittest.TestCase):
         code, report, calls = self.invoke()
         self.assertEqual(code, 0, report)
         self.assertTrue(any("no permission_mode" in a for a in report["human_actions"]))
+        worker["nodes"]["fix"].update(provider="claude", permission_mode="bypassPermissions")
+        self.write("gitweave.json", worker)
+        code, report, calls = self.invoke()  # Mixed Claude nodes get both warnings.
+        self.assertTrue(any("no permission_mode" in a for a in report["human_actions"]))
+        self.assertTrue(any("permission_mode bypassPermissions" in a for a in report["human_actions"]))
 
     def test_edited_instruction_reused_and_old_single_node_graph_incompatible(self):
         worker = templates(self.root)["gitweave.json"]
@@ -492,6 +499,7 @@ class InitTests(unittest.TestCase):
         code, report, calls = self.invoke()
         self.assertEqual(code, 2)
         self.assertIn("Incompatible gitweave.json", report["failure"]["message"])
+        self.assertIn("regenerate the workspace", report["failure"]["message"])
         self.assertEqual(self.read("gitweave.json"), old)
         self.assertEqual(self.mutations(calls), [])
 

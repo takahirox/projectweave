@@ -123,6 +123,8 @@ projectweave init --project-owner my-team --project-number 7 --provider claude
 projectweave init --project-owner my-team --project-number 7 --model MODEL
 ```
 
+These choices apply to **every agent node** of the GitWeave Task graph.
+
 - `--provider codex|claude` selects the GitWeave provider (default `codex`).
 - `--model MODEL` writes an explicit model; without it no model is written and
   the provider's native default applies.
@@ -146,8 +148,8 @@ templates; only the GitWeave graph path in `graph.json` is made absolute:
 | --- | --- |
 | `project.json` | Project owner/type/number, standard Priority order `P0`, `P1`, `P2` |
 | `resources.json` | One `subscription` entry with `stop_at_remaining_percent: 20` and **no** `remaining_percent`; record the observed remaining usage before each Run |
-| `graph.json` | Load, select an eligible Issue from any repository in the Project (or return `no_work`), check the subscription threshold, execute GitWeave in that Issue's repository, comment the result |
-| `gitweave.json` | One implementation agent: Codex with its native default model, or the `--provider`/`--model` choices (Claude adds `bypassPermissions`) |
+| `graph.json` | Load, select an eligible Issue from any repository in the Project (or return `no_work`), check the subscription threshold, run GitWeave in Issue mode for that Issue, comment the result |
+| `gitweave.json` | The six-node Task graph (implement → PR → review/fix → merge → close_issue); every agent node uses Codex with its native default model, or the `--provider`/`--model` choices (Claude adds `bypassPermissions`) |
 
 The default workflow retains the standard Priority order **P0, P1, P2**.
 Init reads every page of Project fields before deciding Priority is missing. It
@@ -222,7 +224,8 @@ observe provider usage, estimate it, or infer the provider. The file is reloaded
 each Run. Renaming the entry (for example to `codex`) or checking several
 subscriptions is a custom graph/resources edit that init's compatibility check
 reports as incompatible; manage such a setup manually.
-It does not reset `AI execution` or close the Issue afterward; set the field to
+The ProjectWeave graph itself does not reset `AI execution` or close the Issue
+(the default GitWeave Task graph closes it after a merge); set the field to
 `Not ready` manually when appropriate to avoid selecting it again.
 
 The GitWeave executor runs `gitweave run --graph gitweave.json --repo OWNER/REPO
@@ -265,10 +268,10 @@ check accepts this fixed scaffold with edited `remaining_percent` /
 provider/instruction plus optional `model`, `effort`, `sandbox`, `permission_mode`.
 Other graph or policy edits are reported as incompatible with this initializer,
 not repaired or treated as invalid for the runtime. Continue managing a customized
-setup manually. Symlinked setup files are rejected. Because `instruction` is a
-human-editable field, a `gitweave.json` from an earlier template (for example one
-that only leaves artifacts in the worktree without committing) is reused unchanged;
-copy the current template's instruction into it to adopt the new wording.
+setup manually. Symlinked setup files are rejected. In `gitweave.json` the
+editable fields are per agent node. A single-node `gitweave.json` from an earlier
+template is reported as incompatible: regenerate the workspace (there is no
+migration).
 
 Partial failures leave ordinary files and GitHub state in place, with completed
 pieces in the report. The Project identity is saved first, before field creation,
@@ -401,8 +404,10 @@ Use a conditional branch to select that node only when the executor's structured
 outcome warrants it. A GitWeave task verdict can be selected at
 `/results/execute/data/outputs/0/data/approved` if its graph returns that field.
 The runtime does not equate GitWeave completion with task approval. The canonical
-template comments outcomes without choosing a Status policy. PR URLs can be
-returned in Result references and will appear in the Issue comment.
+template comments outcomes without choosing a Status policy. With the default Task
+graph, the terminal output's data carries `pr` (number, URL, head), `merged`,
+`merge_commit` when merged, and `closed`, so the Issue comment names the pull
+request, including when it was left open for a human.
 
 ## Review/fix loop
 
@@ -459,8 +464,7 @@ or:
 ```
 
 GitWeave receives the selected Task's `OWNER/REPO` as `--repo` and its Issue
-number as `--issue`, and runs from the workspace; `repo` and `commit` are not
-configurable.
+number as `--issue`, and runs from the workspace; `repo` is not configurable.
 
 The timeout is positive seconds; default 3600. GitHub requests each have a
 120-second timeout. Timeout terminates the direct process group; descendants

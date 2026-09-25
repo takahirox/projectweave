@@ -157,7 +157,7 @@ def compatible(name, value, expected):
     elif name == "gitweave.json":
         expected = deepcopy(expected)
         require(isinstance(candidate.get("nodes"), dict) and candidate["nodes"].keys() == expected["nodes"].keys(),
-                f"nodes must be {', '.join(expected['nodes'])}")
+                f"nodes must be {', '.join(expected['nodes'])}; regenerate the workspace for the current template (no migration)")
         # Per agent node, provider/instruction and the optional model/permission knobs are human-editable.
         for node_id, default in expected["nodes"].items():
             node = candidate["nodes"][node_id]
@@ -175,7 +175,7 @@ def initialize(args):
     report = {"initialized": False, "ready": False, "created": [], "existing": [],
               "missing": [], "next_commands": [], "human_actions": [], "failure": None}
     review_files = "Review incompatible files manually; init never overwrites files"
-    # The current directory is the Project workspace: configuration here, Task checkouts under repos/.
+    # The current directory is the Project workspace: configuration and GitWeave's .gitweave/ live here.
     workspace = Path.cwd().resolve()
     try:
         # Argument checks name the argument in their recovery action; file checks keep review_files.
@@ -299,9 +299,9 @@ def initialize(args):
             "projectweave run --graph graph.json --project project.json --resources resources.json"
         ]
         report["human_actions"] = ([
-            "Claude is configured with permission_mode bypassPermissions: the agent may edit files and run commands in its GitWeave worktree without asking. Remove it from gitweave.json to restrict Claude (it may then be unable to implement Issues)."]
-            if any(node.get("permission_mode") == "bypassPermissions" for node in workers) else [
-            "Claude has no permission_mode in gitweave.json, so a non-interactive Run may be unable to edit files or run commands; choose one deliberately."]
+            "Claude is configured with permission_mode bypassPermissions: the agents may edit files and run commands in their GitWeave worktrees without asking. Remove it from gitweave.json to restrict Claude (it may then be unable to implement Issues)."]
+            if any(node.get("permission_mode") == "bypassPermissions" for node in workers) else []) + ([
+            "Claude has no permission_mode on some gitweave.json nodes, so a non-interactive Run may be unable to edit files or run commands there; choose one deliberately."]
             if any(node["provider"] == "claude" and "permission_mode" not in node for node in workers) else []) + [
             "The GitWeave Task graph implements the Issue, opens a pull request whose body says Closes #N, iterates review and fix until the review agent approves, then MERGES it into the default branch with a merge commit and closes the Issue, without a human review. Agents push, open and merge PRs with your gh and Git credentials. Edit gitweave.json first if you want a human to review before merging.",
             "gitweave.json agents run " + "; ".join(choices)
