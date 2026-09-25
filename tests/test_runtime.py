@@ -4,7 +4,7 @@ from pathlib import Path
 import unittest
 import unittest.mock
 from unittest.mock import Mock
-from projectweave.contracts import Failure, result, decode, pointer, equal
+from projectweave.contracts import Failure, result, decode, pointer, equal, keys
 from projectweave.graph import validate
 from projectweave.runtime import Runtime
 from projectweave.resources import Resources
@@ -524,3 +524,23 @@ class SubscriptionTests(unittest.TestCase):
         self.assertIsNone(record["failure"])
         backend.set_status.assert_called_once_with(TASK, "In Progress")
         backend.writeback.assert_not_called()
+
+
+class FieldValidationTests(unittest.TestCase):
+    def message(self, value, allowed, required=()):
+        with self.assertRaises(Failure) as caught:
+            keys(value, allowed, required)
+        return str(caught.exception)
+
+    def test_errors_name_unexpected_and_missing_fields(self):
+        subscription = {"type", "stop_at_remaining_percent"}
+        message = self.message({"type": "subscription", "stop_at_remaining_percent": 20, "remaining_percent": 82},
+                               subscription, subscription)
+        self.assertTrue(message.startswith("Unexpected field: remaining_percent"), message)
+        self.assertIn("allowed ['stop_at_remaining_percent', 'type']", message)
+        self.assertTrue(self.message({"type": "subscription"}, subscription, subscription)
+                        .startswith("Missing field: stop_at_remaining_percent"))
+        message = self.message({"b": 1, "z": 1, "y": 1}, {"a", "b"}, {"a", "c"})
+        self.assertTrue(message.startswith("Missing fields: a, c; Unexpected fields: y, z"), message)
+        keys({"a": 1}, {"a", "b"}, {"a"})  # Valid objects are unchanged.
+        self.assertEqual(self.message([], {"a"}), "Expected an object")

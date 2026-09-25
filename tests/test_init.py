@@ -182,6 +182,14 @@ class InitTests(unittest.TestCase):
         self.assertEqual(self.read("graph.json"), old)
         self.assertEqual(self.mutations(calls), [])
 
+    def test_removed_resource_field_is_named(self):
+        old = {"subscription": {"type": "subscription", "stop_at_remaining_percent": 20, "remaining_percent": 82}}
+        self.write("resources.json", old)
+        code, report, calls = self.invoke("--project-number", "7")
+        self.assertEqual(code, 2)
+        self.assertIn("Incompatible resources.json: Unexpected field: remaining_percent", report["failure"]["message"])
+        self.assertEqual(self.read("resources.json"), old)
+
     def test_old_run_capacity_resources_reported_clearly(self):
         old = {"gitweave": {"unit": "runs", "available": 1, "accounting": "reservation"}}
         self.write("resources.json", old)
