@@ -122,9 +122,9 @@ class InitTests(unittest.TestCase):
             record = Runtime(graph, self.read("project.json"), self.read("resources.json"), observe=observe).run()
         self.assertIsNone(record["failure"])
         self.assertFalse(record["results"]["subscription"]["data"]["available"])
-        observed = observe.call_args.args[0]  # The canonical GitWeave graph's agent nodes, all Codex by default.
-        self.assertEqual(len(observed), 6)
-        self.assertEqual({node["provider"] for node in observed}, {"codex"})
+        # The observer receives the generated GitWeave graph's agent nodes (all Codex by default).
+        self.assertEqual(observe.call_args.args[0], list(self.read("gitweave.json")["nodes"].values()))
+        self.assertEqual({node["provider"] for node in observe.call_args.args[0]}, {"codex"})
         set_status.assert_not_called()  # Not marked In Progress.
         invoke.assert_not_called()
         writeback.assert_not_called()
