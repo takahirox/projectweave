@@ -5,7 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from projectweave.github import GitHub
 from projectweave.graph import validate
@@ -60,7 +60,7 @@ class InitTests(unittest.TestCase):
     def mutations(self, calls):
         return [c for c in calls if c["request"] and c["request"]["query"].startswith("mutation")]
 
-    def test_first_run_existing_project_and_unknown_remaining_usage(self):
+    def test_first_run_existing_project_and_unknown_usage_starts_nothing(self):
         code, report, calls = self.invoke("--project-number", "7")
         self.assertEqual(code, 0, report)
         self.assertTrue(report["initialized"])
@@ -114,13 +114,24 @@ class InitTests(unittest.TestCase):
         self.assertTrue(any("AI execution field to Ready" in a for a in report["human_actions"]))
         task = {"id": "I", "item_id": "ITEM", "project_id": "P", "state": "OPEN", "labels": [], "ai_execution": "Ready",
                 "priority": None, "status": "Todo", "created_at": "2026", "url": "url", "repository": "o/r"}
-        with patch.object(GitHub, "load", return_value=[task]), patch("projectweave.runtime.invoke") as invoke, patch.object(GitHub, "writeback") as writeback:
-            record = Runtime(graph, self.read("project.json"), self.read("resources.json")).run()
+        # Stub usage observation so the result never depends on installed CLIs or the day's usage,
+        # and nothing reaches a real provider or GitHub: unknown usage must start nothing.
+        observe = Mock(return_value={"codex": {"error": "stubbed: usage unknown"}})
+        with patch.object(GitHub, "load", return_value=[task]), patch("projectweave.runtime.invoke") as invoke, \
+                patch.object(GitHub, "set_status") as set_status, patch.object(GitHub, "writeback") as writeback:
+            record = Runtime(graph, self.read("project.json"), self.read("resources.json"), observe=observe).run()
         self.assertIsNone(record["failure"])
+        self.assertFalse(record["results"]["subscription"]["data"]["available"])
+        observed = observe.call_args.args[0]  # The canonical GitWeave graph's agent nodes, all Codex by default.
+        self.assertEqual(len(observed), 6)
+        self.assertEqual({node["provider"] for node in observed}, {"codex"})
+        set_status.assert_not_called()  # Not marked In Progress.
         invoke.assert_not_called()
         writeback.assert_not_called()
+        observe.reset_mock()
         with patch.object(GitHub, "load", return_value=[]):
-            record = Runtime(graph, self.read("project.json"), self.read("resources.json")).run()
+            record = Runtime(graph, self.read("project.json"), self.read("resources.json"), observe=observe).run()
+        observe.assert_not_called()  # No Task, so the subscription check is never reached.
         self.assertEqual(record["last"]["data"], {"status": "no_work"})
 
     def test_create_user_project_and_rerun_reuses_all_without_overwrite(self):
