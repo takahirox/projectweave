@@ -1,8 +1,10 @@
 # First runtime: minimal design (Issue #4)
 
-Python 3.11+ and the standard library; one synchronous CLI invocation, no task
-database. GitHub Projects v2 is canonical. JSON Run output is an execution
-receipt, not a second project state store.
+Python 3.11+ and the standard library; no task database. GitHub Projects v2 is
+canonical. JSON Run output is an execution receipt, not a second project state
+store. The graph runtime below executes one Project graph for one claimed Task
+(`run-task`); Project lifecycle (`claim`, `complete`) and the multi-Project
+coordinator with shared resource admission are described after it.
 
 ## Graph and results
 
@@ -35,10 +37,12 @@ graph cycles, concurrency, map/fan-out, or retries are supported.
 
 Only two node kinds exist. `agent` delegates an instruction to an executor;
 `action` invokes a runtime operation: `load`, `select`, `resources`, `execute`,
-`writeback`, or `result`. Agent roles belong in instructions. `execute` delegates
+`status`, `complete`, `writeback`, or `result`. Agent roles belong in instructions. `execute` delegates
 work without adding an instruction. Both use the same executor boundary.
 Node `inputs` maps names to RFC 6901 pointers into
-`{project, resources, results, last, run_id}`. Each node returns
+`{project, task, resources, results, last, run_id}`; `task` is the claimed Task
+passed to `run-task`. The runtime performs no implicit selection, Status change or
+completion: only the nodes a graph lists run. Each node returns
 `{message, data, references, usage}`; data is a JSON object, references are strings,
 usage maps resource names to nonnegative numbers. Results are retained by node ID;
 `last` is the last result. Empty branches preserve it. Equality is type-sensitive.
@@ -52,45 +56,43 @@ Failure routing is not supported; subsequent graph operations are not executed.
 
 ## Resources
 
-### Subscription thresholds (default policy)
+### Shared AI resource admission (coordinator)
 
-A subscription entry holds only the Project stop line:
-`{"type":"subscription","stop_at_remaining_percent":20}` (0–100). Remaining usage
-is never configured; it is **observed** once per Run, the first time a `resources`
-action names subscriptions in `config.subscriptions`:
+Shared provider allowance is admitted by `projectweave run` and
+`projectweave coordinate`, not by graphs. The root `projectweave.json` lists, per
+Project directory name and provider, `min_remaining_percent` and
+`estimated_usage_percent_per_task`. Constraints are opt-in: unlisted Projects and
+providers are not limited (and not observed).
 
-1. The runtime reads every GitWeave Task graph the Run's graph executes
-   (`executor.graph`) and collects the providers/models of its agent nodes.
-2. `projectweave/usage.py` observes each provider, read-only and without a model
-   call:
-   - **Claude**: `claude -p --output-format json /usage`. Remaining is the smallest
-     `100 − N` of `Current session` and `Current week (all models)`, plus
-     `Current week (Fable)` if any Claude node runs Fable (its `model` contains
-     `fable`, or it has no `model`, because the native default is unknown).
-   - **Codex**: `codex app-server` (experimental) `initialize` → `initialized` →
-     `account/rateLimits/read`; remaining is `100 − rateLimits.primary.usedPercent`.
-     Other windows and fields are ignored for now.
-3. `data.available` is true only if every named subscription exists and **every**
-   observed provider's remaining percentage is above its stop line.
+1. The listed providers are observed read-only without a model call
+   (`projectweave/usage.py`): **Claude** via `claude -p --output-format json /usage`,
+   giving `100 − N` for each window it reports (`Current session`,
+   `Current week (all models)`, and a model-specific weekly window such as
+   `Current week (Fable)` when present; session and all-models are required);
+   **Codex** via `codex app-server` (experimental) `initialize` → `initialized` →
+   `account/rateLimits/read`, giving `primary = 100 − rateLimits.primary.usedPercent`.
+2. A Task of Project P is admitted only if for every provider listed for P and
+   every observed window: `remaining − reserved(provider) − estimate(P, provider)
+   ≥ min(P, provider)`. `reserved` sums the estimates of all running Tasks, across
+   Projects, for that provider.
+3. Launching reserves P's estimates in memory; when the Task ends (completed,
+   failed or crashed) they are released and the providers are observed again.
 
-Any observation failure (launch failure, nonzero exit, timeout, unexpected output,
-a missing line or value, an unknown provider, or no providers at all) is recorded as
-unknown and admits nothing. `data.observations` records each provider's
-`remaining_percent` or `error` in the Run receipt. Not being admitted is an
-ordinary outcome, not a Runtime Failure; graphs branch on it before executing.
-ProjectWeave never estimates usage from tokens, attributes usage to Tasks,
-monitors usage during a Run, or redeems rate-limit reset credits. The Claude
-observer parses human-readable output and the Codex API is experimental; either
-may break with a new CLI version, which then stops safely as unknown.
-Subscription entries are never reserved or charged: naming one in `requires` is an
-`accounting` Runtime Failure.
+Any observation failure (launch failure, nonzero exit, timeout, unexpected
+output, a missing required line or value, an unknown provider) makes that
+provider unknown, which admits nothing for Projects that list it. Estimates are
+safety margins adjusted by operators, not accounting: ProjectWeave never
+attributes usage to Tasks, estimates from tokens, monitors usage during a Task,
+or redeems reset credits. The Claude observer parses human-readable output and
+the Codex API is experimental; either may break with a new CLI version, which
+then stops safely as unknown.
 
 ### Metered resources
 
 Metered entries are `{unit, available, accounting}`. `accounting` is `reservation`
 or `reported`. Units are operator-defined (invocations, tokens, USD, etc.). They
-remain available for custom workflows and future credit budgets but are not
-emitted by init. An agent/execute node may declare a nonempty `requires` map of
+remain in the graph runtime for programmatic use with an explicit envelope;
+`run-task` supplies none and init emits none. An agent/execute node may declare a nonempty `requires` map of
 positive amounts, or omit it when no metered reservation is needed. All
 amounts are checked atomically and reserved before launch. Insufficient or absent
 resources produce an ordinary `resource_exhausted` result without launching.
@@ -117,7 +119,7 @@ scoped to one Run, not concurrent processes or a billing ledger.
 
 ## GitHub mapping
 
-`--project` is a JSON file containing `owner`, `number`, and `owner_type`
+A Project's `project.json` contains `owner`, `number`, and `owner_type`
 (`organization` or `user`). `priority_field`, `status_field` default to Priority
 and Status; `priority_order` defaults to `["P0", "P1", "P2"]`; optional
 `eligible_statuses` further restricts selection (AND). Read all pages of items,
@@ -126,22 +128,25 @@ single-select field `AI execution`: only nonarchived open Issues whose value is
 `Ready` qualify. Labels play no part and a `label` setting is rejected. Drafts,
 PRs, inaccessible content, and closed Issues are excluded. Rank by configured priority, then oldest
 createdAt, then Issue URL and item ID. Missing/unknown priorities sort last.
-`select` returns task null for empty work. The `status` action sets the selected
-Task's named Status option (resolved and validated first) without commenting; the
-canonical graph uses it to mark a Task `In Progress` before execution, and its
-failure is a `status` Runtime Failure. Writeback posts an ordinary Issue
+`select` returns task null for empty work. `claim` runs load → select and sets
+the selected Task's Status to `In Progress` while holding a local per-Project file
+lock (`projects/NAME/.projectweave.lock`), so concurrent claims on one machine
+never select the same Task; the lock is released before the Task runs. The
+`status` action sets a named Status option (resolved and validated first) without
+commenting, and its failure is a `status` Runtime Failure; `complete` (action or
+command) sets `Done`. Writeback posts an ordinary Issue
 comment with the Run ID and full structured result, then optionally sets a named
 Status option. No automatic semantic interpretation or Issue closure. Validate
 status before commenting. Partial writeback is a failure and records completed
 mutation references. Lost responses are ambiguous; rerunning can duplicate work
-or comments. This release does not claim tasks atomically or reconcile concurrent
-edits. Run one coordinator per project.
+or comments. The lock and reservations are single-machine and in-memory; there is
+no distributed locking.
 
 ## Project workspace and Task checkouts
 
 A Project spans any repositories whose Issues are in the GitHub Project; each
 Task's `repository` is its execution location. The directory containing the
-`--project` file is the Project workspace. GitWeave executors run from the
+Project's `projects/NAME/` directory is the Project workspace. GitWeave executors run from the
 workspace in GitWeave's Issue mode (below), which fetches the repository itself.
 For command executors, after admission and before launch, the runtime resolves
 `task.repository` to
@@ -153,6 +158,18 @@ Command executors run against that remote default branch tip. No repository list
 path mapping, pooling or background sync exists, and no local branch is changed.
 Invalid repository names, an unrelated existing path, and clone/fetch errors are
 `checkout` Runtime Failures before launch (so no writeback).
+
+## Coordinator
+
+`projectweave coordinate` repeats: observe the listed providers → for each managed
+Project (sorted), while admission allows, `claim` a Task and run it on its own
+thread (`run-task`) → wait until a Task ends (release its reservation) or
+`poll_seconds` pass → observe again. Independent Projects and several Tasks of one
+Project run concurrently; nothing else limits concurrency. Selection stays
+Project-local (no cross-Project ranking or dependency reasoning). A stop request
+(SIGINT/SIGTERM) stops launching and waits for running Tasks; `--once` makes one
+pass and waits for what it launched. `projectweave run NAME` is the synchronous
+single-Task path: admission → claim → run-task.
 
 ## Executors and GitWeave lessons
 

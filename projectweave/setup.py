@@ -12,15 +12,13 @@ from .contracts import Failure, decode, equal, require, text
 from .executors import process
 from .github import ELIGIBILITY_FIELD, ELIGIBILITY_OPTIONS, READY, GitHub, validate_project
 from .graph import validate
-from .resources import Resources
+from .workspace import NAME, PROJECTS, ROOT_CONFIG, percent, validate_root
 
 PRIORITIES = ["P0", "P1", "P2"]
-# Only Todo Tasks are selected; the default graph marks a Task In Progress before executing it.
+# Only Todo Tasks are claimed; claim marks the Task In Progress before it runs.
 STATUSES = ["Todo", "In Progress"]
-FILES = ("project.json", "resources.json", "graph.json", "gitweave.json")
+FILES = ("project.json", "graph.json", "gitweave.json")
 PROVIDERS = ("codex", "claude")
-# The one subscription templates/graph.json checks; its stop line applies to every provider observed.
-SUBSCRIPTION = "subscription"
 
 
 def ensure_field(backend, report, fields, name, options, create=True):
@@ -108,6 +106,9 @@ def add_init_arguments(parser):
     parser.add_argument("--model", help="Explicit model (default: the provider's native default model)")
     parser.add_argument("--link-repository", action="append", default=[], metavar="OWNER/REPO",
                         help="Link this repository to the Project (repeatable; same owner as the Project)")
+    parser.add_argument("--resource", action="append", default=[], metavar="PROVIDER:MIN:ESTIMATE",
+                        help="Opt in to shared resource admission for this Project, e.g. codex:20:10 "
+                             "(min_remaining_percent 20, estimated_usage_percent_per_task 10); repeatable")
 
 
 def template(name):
@@ -121,7 +122,7 @@ def agents(worker):
 
 
 def templates(workspace, provider=None, model=None):
-    """The canonical default workflow pair and resources, materialized for one workspace."""
+    """The canonical default workflow pair, materialized for one Project workspace."""
     graph = template("graph.json")
     # The packaged graph names gitweave.json relative to the workspace; generated files use an absolute path.
     graph["nodes"]["execute"]["executor"]["graph"] = str(workspace / "gitweave.json")
@@ -134,7 +135,7 @@ def templates(workspace, provider=None, model=None):
         if node["provider"] == "claude":
             # Non-interactive Claude cannot edit or run commands without it; opted into via --provider claude.
             node["permission_mode"] = "bypassPermissions"
-    return {"resources.json": template("resources.json"), "graph.json": validate(graph), "gitweave.json": worker}
+    return {"graph.json": validate(graph), "gitweave.json": worker}
 
 
 def read_file(path):
@@ -152,12 +153,7 @@ def read_file(path):
 def compatible(name, value, expected):
     """Only the fixed scaffold and its documented human-editable knobs are reused."""
     candidate = deepcopy(value)
-    if name == "resources.json":
-        Resources(candidate)
-        require(isinstance(candidate.get(SUBSCRIPTION), dict) and candidate[SUBSCRIPTION].get("type") == "subscription",
-                f"default setup uses a {SUBSCRIPTION} threshold entry, not gitweave run capacity")
-        candidate[SUBSCRIPTION]["stop_at_remaining_percent"] = expected[SUBSCRIPTION]["stop_at_remaining_percent"]
-    elif name == "graph.json":
+    if name == "graph.json":
         validate(candidate)
     elif name == "gitweave.json":
         expected = deepcopy(expected)
@@ -176,12 +172,107 @@ def compatible(name, value, expected):
     require(equal(candidate, expected), f"Incompatible {name}; review manually (never overwritten)")
 
 
-def initialize(args):
-    report = {"initialized": False, "ready": False, "created": [], "existing": [],
-              "missing": [], "next_commands": [], "human_actions": [], "failure": None}
+def empty_report():
+    return {"initialized": False, "ready": False, "created": [], "existing": [],
+            "missing": [], "next_commands": [], "human_actions": [], "failure": None}
+
+
+def init_root(args):
+    """Create (or verify) the root workspace: projectweave.json and projects/. Never overwrites."""
+    report = empty_report()
+    root = Path.cwd().resolve()
+    operation = f"Review {ROOT_CONFIG} manually; init never overwrites it"
+    try:
+        config = read_file(root / ROOT_CONFIG)
+        if config is None:
+            with (root / ROOT_CONFIG).open("x") as output:
+                output.write(json.dumps({"projects": {}}, indent=2) + "\n")
+            report["created"].append(str(root / ROOT_CONFIG))
+        else:
+            try:
+                validate_root(config)
+            except Failure as exc:
+                raise Failure("setup", f"Incompatible {ROOT_CONFIG}: {exc}") from exc
+            report["existing"].append(str(root / ROOT_CONFIG))
+        operation = f"Check write access to {root}"
+        require(not (root / PROJECTS).is_symlink(), f"Incompatible symlink: {root / PROJECTS}")
+        if (root / PROJECTS).is_dir():
+            report["existing"].append(str(root / PROJECTS))
+        else:
+            (root / PROJECTS).mkdir()
+            report["created"].append(str(root / PROJECTS))
+        report["initialized"] = True
+        report["next_commands"] = [
+            "projectweave init-project NAME --project-owner OWNER --project-number NUMBER  # or --create-project TITLE",
+        ]
+        report["human_actions"] = [
+            f"Add each managed Project with `projectweave init-project NAME ...`; it becomes {PROJECTS}/NAME/. "
+            f"Resource constraints are opt-in per Project and provider in {ROOT_CONFIG} (init-project --resource PROVIDER:MIN:ESTIMATE); "
+            "a Project without them is not limited by shared AI resource admission.",
+        ]
+    except (Failure, OSError, UnicodeError, KeyError, TypeError, AttributeError, RecursionError) as exc:
+        report["failure"] = {"message": str(exc), "action": operation}
+        report["human_actions"].append(operation)
+    return report
+
+
+def parse_resources(values):
+    """--resource PROVIDER:MIN:ESTIMATE -> {provider: {min_remaining_percent, estimated_usage_percent_per_task}}."""
+    rules = {}
+    for value in values:
+        parts = value.split(":")
+        try:
+            provider, low, estimate = parts[0], float(parts[1]), float(parts[2])
+        except (IndexError, ValueError) as exc:
+            raise Failure("setup", f"--resource must be PROVIDER:MIN:ESTIMATE: {value!r}") from exc
+        low, estimate = (int(v) if v.is_integer() else v for v in (low, estimate))
+        require(len(parts) == 3 and text(provider) and percent(low) and percent(estimate),
+                f"--resource must be PROVIDER:MIN:ESTIMATE with percentages 0-100: {value!r}")
+        require(provider not in rules, f"--resource names {provider} twice")
+        rules[provider] = {"min_remaining_percent": low, "estimated_usage_percent_per_task": estimate}
+    return rules
+
+
+def init_project(args):
+    """Create (or verify) projects/NAME/ under the root, then record any requested resource policy."""
+    root = Path.cwd().resolve()
+    report = empty_report()
+    operation = "Run projectweave init in the root workspace first, then init-project NAME there"
+    try:
+        require(NAME.fullmatch(args.name) is not None, f"Invalid Project name: {args.name!r}")
+        config = read_file(root / ROOT_CONFIG)
+        require(config is not None and (root / PROJECTS).is_dir(), f"No {ROOT_CONFIG} and {PROJECTS}/ here")
+        validate_root(config)
+        operation = "Pass --resource as PROVIDER:MIN:ESTIMATE with percentages 0-100, or omit it"
+        rules = parse_resources(args.resource)
+        # Explicit choices must match existing root policy entries; they are never rewritten.
+        existing = config["projects"].get(args.name, {}).get("resources", {})
+        for provider, rule in rules.items():
+            require(provider not in existing or existing[provider] == rule,
+                    f"{ROOT_CONFIG} already constrains {args.name}.{provider} differently; edit it manually or omit --resource")
+        workspace = root / PROJECTS / args.name
+        require(not workspace.is_symlink(), f"Incompatible symlink: {workspace}")
+        workspace.mkdir(exist_ok=True)
+    except (Failure, OSError, UnicodeError, KeyError, TypeError, AttributeError) as exc:
+        report["failure"] = {"message": str(exc), "action": operation}
+        report["human_actions"].append(operation)
+        return report
+    report = initialize(args, workspace, root)
+    if report["initialized"] and rules:
+        added = {provider: rule for provider, rule in rules.items() if provider not in existing}
+        if added:
+            config["projects"].setdefault(args.name, {}).setdefault("resources", {}).update(added)
+            (root / ROOT_CONFIG).write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
+            report["created"].extend(f"{ROOT_CONFIG} policy {args.name}.{provider}" for provider in added)
+        report["existing"].extend(f"{ROOT_CONFIG} policy {args.name}.{provider}" for provider in rules if provider not in added)
+    return report
+
+
+def initialize(args, workspace, root):
+    report = empty_report()
     review_files = "Review incompatible files manually; init never overwrites files"
-    # The current directory is the Project workspace: configuration and GitWeave's .gitweave/ live here.
-    workspace = Path.cwd().resolve()
+    # projects/NAME/ is the Project workspace: configuration and GitWeave's .gitweave/ live here.
+    key = workspace.name  # The Project's directory name under projects/.
     try:
         # Argument checks name the argument in their recovery action; file checks keep review_files.
         operation = "Pass a nonblank --model MODEL, or omit it to use the provider's native default model"
@@ -275,7 +366,7 @@ def initialize(args):
             report["existing"].append(f"Project {owner} #{number}")
         report["project"] = project
         # Save the Project identity first so ordinary reruns reuse a created Project.
-        operation = (f"Check workspace write access, then rerun `projectweave init "
+        operation = (f"Check workspace write access, then rerun `projectweave init-project {key} "
                      f"--project-owner {owner} --project-number {project['number']}` to reuse this Project")
         for name, value in {"project.json": project, **values}.items():
             path = workspace / name
@@ -294,12 +385,12 @@ def initialize(args):
         report["initialized"] = True
         q = shlex.quote
         report["next_commands"] = [
-            f"cd {q(str(workspace))}",
-            "gitweave validate --graph gitweave.json",
-            "projectweave validate --graph graph.json",
+            f"cd {q(str(root))}",
+            f"gitweave validate --graph {q(PROJECTS + '/' + key + '/gitweave.json')}",
+            f"projectweave validate --graph {q(PROJECTS + '/' + key + '/graph.json')}",
             "ISSUE_URL='REPLACE_WITH_OPEN_ISSUE_URL'  # e.g. https://github.com/OWNER/REPO/issues/123",
             f'GH_HOST=github.com gh project item-add {project["number"]} --owner {q(owner)} --url "$ISSUE_URL"',
-            "projectweave run --graph graph.json --project project.json --resources resources.json"
+            f"projectweave run {q(key)}  # one Task; or: projectweave coordinate"
         ]
         report["human_actions"] = ([
             "Claude is configured with permission_mode bypassPermissions: the agents may edit files and run commands in their GitWeave worktrees without asking. Remove it from gitweave.json to restrict Claude (it may then be unable to implement Issues)."]
@@ -309,11 +400,11 @@ def initialize(args):
             "The GitWeave Task graph implements the Issue, opens a pull request whose body says Closes #N, iterates review and fix until the review agent approves, then MERGES it into the default branch with a merge commit and closes the Issue, without a human review. Agents push, open and merge PRs with your gh and Git credentials. Edit gitweave.json first if you want a human to review before merging.",
             "gitweave.json agents run " + "; ".join(choices)
             + ". Install and authenticate that provider CLI yourself. To change provider/model later, edit gitweave.json (init never rewrites it).",
-            "Each Run observes the remaining subscription usage of every provider used in gitweave.json before starting a Task (Claude: `claude -p --output-format json /usage`; Codex: `codex app-server` account/rateLimits/read). Both are read-only and use no model. A Task starts only if every provider is above resources.json stop_at_remaining_percent (default 20; adjust deliberately); an observation failure counts as unknown and starts nothing.",
+            f"Shared AI resource admission is opt-in: only providers listed for {key} in the root {ROOT_CONFIG} (init-project --resource PROVIDER:MIN:ESTIMATE) are observed (Claude `/usage`, Codex app-server; read-only) and must keep every window at or above min_remaining_percent after reserving estimated_usage_percent_per_task per running Task. Without an entry, {key} is not limited and coordinate may start all its eligible Tasks at once.",
             f"Choose an open Issue from any repository and add it to the Project using the commands below, then set its {ELIGIBILITY_FIELD} field to {READY} and its Status to Todo in the Project. Only Todo Tasks are selected. No Issue has been selected or changed.",
             "A Run invokes `gitweave run --repo OWNER/REPO --issue N` from this workspace. GitWeave fetches the repository's default branch into its shared per-repository store .gitweave/repos/OWNER/REPO.git here (reused across Runs, so only new objects are fetched) and pushes provenance refs/notes to the repository. Git transport uses your Git credentials: for HTTPS run `gh auth setup-git` or use SSH. Init fetches nothing.",
             "Run readiness is not certified: provider credentials, repository access, push/PR/merge permission, Issue comment permission, Project item-add access and Git identity need human verification. Init never runs AI or pushes.",
-            f"Before executing, the workflow sets the Task's Status to In Progress so it is not selected again, even if the Run then fails. ProjectWeave never sets Done: GitHub's Project workflows do when the Issue closes. To retry a Task left In Progress, set its Status back to Todo; {ELIGIBILITY_FIELD} is never changed."
+            f"claim sets the Task's Status to In Progress before it runs, so it is not selected again, even if the Run then fails. The default path to Done is GitHub's Project workflow when the Issue closes; `projectweave complete` (or a graph complete action) sets Done explicitly. To retry a Task left In Progress, set its Status back to Todo; {ELIGIBILITY_FIELD} is never changed."
         ]
     except (Failure, OSError, UnicodeError, KeyError, TypeError, AttributeError, RecursionError) as exc:
         report["failure"] = {"message": str(exc), "action": operation}

@@ -15,172 +15,201 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CLITests(unittest.TestCase):
+    """The root workspace CLI (run, claim, run-task, complete, coordinate) against fake gh/gitweave/codex/git."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.directory = Path(self.tmp.name)
+        self.bin = self.directory / "bin"
+        self.bin.mkdir()
         for name in ("gh", "gitweave", "worker", "git", "claude", "codex"):
-            path = self.directory / name
+            path = self.bin / name
             path.write_text(f"#!{sys.executable}\n" + (ROOT / "tests/fake_cli.py").read_text())
             path.chmod(0o755)
         self.log = self.directory / "calls.jsonl"
-        # Observed Codex usage (fake app-server) starts at 50% used, above the 20% stop line.
-        self.env = dict(os.environ, PATH=str(self.directory) + os.pathsep + os.environ["PATH"], FAKE_LOG=str(self.log),
-                        FAKE_CODEX_USED="50")
-        # The canonical default workflow; the observer reads providers from its GitWeave Task graph.
-        self.task_graph = self.directory / "gitweave.json"
-        self.task_graph.write_text((ROOT / "projectweave/templates/gitweave.json").read_text())
-        self.graph = json.loads((ROOT / "projectweave/templates/graph.json").read_text())
-        self.graph["nodes"]["execute"]["executor"]["graph"] = str(self.task_graph)
-        self.resources = json.loads((ROOT / "projectweave/templates/resources.json").read_text())
-        self.project = json.loads((ROOT / "examples/project.json").read_text())
+        # Observed Codex usage (fake app-server) starts at 50% used.
+        self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"], FAKE_LOG=str(self.log),
+                        FAKE_CODEX_USED="50", FAKE_STATE=str(self.directory / "github.json"))
+        self.root = self.directory / "root"
+        self.config = {"projects": {}}
+        self.project_dir = self.add_project("p")
+        self.task_graph = self.project_dir / "gitweave.json"
+
+    def add_project(self, name, number=1):
+        directory = self.root / "projects" / name
+        directory.mkdir(parents=True)
+        project = dict(json.loads((ROOT / "examples/project.json").read_text()), number=number)
+        (directory / "project.json").write_text(json.dumps(project))
+        (directory / "gitweave.json").write_text((ROOT / "projectweave/templates/gitweave.json").read_text())
+        self.write_graph(directory, json.loads((ROOT / "projectweave/templates/graph.json").read_text()))
+        return directory
+
+    def write_graph(self, directory, graph):
+        graph["nodes"]["execute"]["executor"].setdefault("graph", "gitweave.json")
+        if graph["nodes"]["execute"]["executor"].get("type") == "gitweave":
+            graph["nodes"]["execute"]["executor"]["graph"] = str(directory / "gitweave.json")
+        (directory / "graph.json").write_text(json.dumps(graph))
+
+    def graph(self):
+        return json.loads((self.project_dir / "graph.json").read_text())
+
+    def use_command_agent(self):
+        g = self.graph()
+        g["nodes"]["execute"] = {"kind": "agent", "instruction": "Implement the selected task.",
+                                 "executor": {"type": "command", "argv": ["worker"]}, "inputs": {"task": "/task"}}
+        (self.project_dir / "graph.json").write_text(json.dumps(g))
+
+    def add_writeback(self, status):
+        # The canonical graph has no writeback; a custom Project graph can add one explicitly.
+        g = self.graph()
+        g["nodes"]["writeback"] = {"kind": "action", "action": "writeback", "config": {"status": status},
+                                   "inputs": {"task": "/task", "result": "/results/execute"}}
+        g["flow"].append("writeback")
+        (self.project_dir / "graph.json").write_text(json.dumps(g))
 
     @staticmethod
     def mutation_options(calls):
         return [c["request"]["variables"].get("option", "comment") for c in calls
                 if c["command"] == "gh" and c["request"] and c["request"]["query"].startswith("mutation")]
 
-    def run_cli(self, mode="success"):
-        for name, value in (("graph", self.graph), ("project", self.project), ("resources", self.resources)):
-            (self.directory / (name + ".json")).write_text(json.dumps(value))
-        args = [sys.executable, "-m", "projectweave", "run"]
-        for name in ("graph", "project", "resources"):
-            args += ["--" + name, str(self.directory / (name + ".json"))]
-        completed = subprocess.run(args, cwd=ROOT, env=dict(self.env, FAKE_MODE=mode), capture_output=True, text=True, timeout=20)
-        self.assertEqual(completed.stderr, "", completed.stderr)
-        record = json.loads(completed.stdout)
+    def cli(self, *args, mode="success", stdin=None, **env):
+        (self.root / "projectweave.json").write_text(json.dumps(self.config))
+        self.log.unlink(missing_ok=True)
+        completed = subprocess.run([sys.executable, "-m", "projectweave", *args], cwd=self.root, input=stdin,
+                                   env=dict(self.env, FAKE_MODE=mode, PYTHONPATH=str(ROOT), **env),
+                                   capture_output=True, text=True, timeout=30)
+        output = json.loads(completed.stdout)
         calls = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
-        return completed.returncode, record, calls
+        return completed.returncode, output, calls
 
-    def add_writeback(self, status):
-        # The canonical graph has no writeback; custom graphs can still add one after execute.
-        self.graph["nodes"]["writeback"] = {"kind": "action", "action": "writeback", "config": {"status": status},
-                                            "inputs": {"task": "/results/select/data/task", "result": "/results/execute"}}
-        # The subscription check's "available" branch: start → execute (→ writeback).
-        self.graph["flow"][2]["if"]["else"][1]["if"]["then"].append("writeback")
-
-    def test_gitweave_end_to_end_pagination_and_literal_request(self):
-        code, record, calls = self.run_cli()
-        self.assertEqual(code, 0, record)
-        self.assertEqual(record["results"]["select"]["data"]["task"]["priority"], "P0")
+    def test_run_claims_then_runs_gitweave_in_issue_mode(self):
+        code, outcome, calls = self.cli("run", "p")
+        self.assertEqual(code, 0, outcome)
+        self.assertEqual(outcome["status"], "completed")
+        self.assertEqual(outcome["task"]["priority"], "P0")
+        self.assertEqual(outcome["observations"], {})  # No resource policy: unconstrained, nothing observed.
         launch = [c for c in calls if c["command"] == "gitweave"]
         self.assertEqual(len(launch), 1)
-        self.assertEqual(record["results"]["subscription"]["data"]["observations"], {"codex": {"remaining_percent": 50}})
-        self.assertEqual(launch[0]["argv"][:7], ["run", "--graph", str(self.task_graph),
-                                                 "--repo", "o/r", "--issue", "7"])
-        self.assertEqual(Path(launch[0]["cwd"]).resolve(), self.directory.resolve())  # The workspace holds .gitweave/.
-        # GitWeave fetches the repository itself; ProjectWeave clones and fetches nothing.
-        self.assertFalse(any(c["command"] == "git" or c["argv"][:2] == ["repo", "clone"] for c in calls))
+        self.assertEqual(launch[0]["argv"][:7], ["run", "--graph", str(self.task_graph), "--repo", "o/r", "--issue", "7"])
+        self.assertEqual(Path(launch[0]["cwd"]).resolve(), self.project_dir.resolve())  # .gitweave/ in the Project.
+        self.assertFalse(any(c["command"] in ("git", "codex", "claude") or c["argv"][:2] == ["repo", "clone"] for c in calls))
         self.assertIn("task $(literal) `literal`", launch[0]["argv"][-1])
+        record = outcome["record"]
         self.assertEqual(record["results"]["execute"]["references"], ["abc123"])
         self.assertTrue(record["results"]["execute"]["data"]["outputs"][0]["data"]["merged"])
         for field in ("items", "labels", "fieldValues", "fields"):
             pages = [c for c in calls if c["command"] == "gh" and c["request"] and field + "(first:" in c["request"]["query"]]
             self.assertEqual([p["request"]["variables"]["cursor"] for p in pages], [None, "next"])
-        # The canonical graph only marks the Task In Progress before launch; the GitWeave graph comments the
-        # outcome itself, so ProjectWeave posts no raw result comment.
+        # claim marks In Progress before launch; the graph only runs GitWeave (no comment, no Done).
         self.assertEqual(self.mutation_options(calls), ["PROGRESS"])
         self.assertLess(calls.index(next(c for c in calls if c["request"] and "mutation" in c["request"]["query"])),
                         calls.index(launch[0]))
-        self.assertEqual(list(record["results"])[-1], "execute")
+        self.assertEqual(list(record["results"]), ["execute"])
+        # The claimed Task is In Progress now, so a second run finds no work.
+        code, outcome, calls = self.cli("run", "p")
+        self.assertEqual((code, outcome["status"]), (0, "no_work"))
+        self.assertFalse(any(c["command"] == "gitweave" for c in calls))
 
-    def test_custom_writeback_comments_and_sets_status(self):
-        self.add_writeback("Done")
-        code, record, calls = self.run_cli()
+    def test_claim_run_task_and_complete_are_separate(self):
+        code, task, calls = self.cli("claim", "p")
+        self.assertEqual(code, 0)
+        self.assertEqual((task["number"], task["status"]), (7, "Todo"))  # The snapshot selected under the lock.
+        self.assertEqual(self.mutation_options(calls), ["PROGRESS"])
+        self.assertFalse(any(c["command"] == "gitweave" for c in calls))
+        self.assertIsNone(self.cli("claim", "p")[1])  # Already In Progress.
+        code, record, calls = self.cli("run-task", "p", "--task", "-", stdin=json.dumps(task))
         self.assertEqual(code, 0, record)
+        self.assertEqual(record["status"], "completed")
+        self.assertEqual(self.mutation_options(calls), [])  # run-task never selects or changes Status.
+        self.assertFalse(any(c["request"] and "items(first:" in c["request"]["query"] for c in calls if c["command"] == "gh"))
+        (self.directory / "task.json").write_text(json.dumps(task))
+        code, done, calls = self.cli("complete", "p", "--task", str(self.directory / "task.json"))
+        self.assertEqual(code, 0, done)
+        self.assertEqual(done["data"], {"status": "Done"})
+        self.assertEqual(self.mutation_options(calls), ["DONE"])
+
+    def test_custom_graph_complete_and_writeback_are_explicit(self):
+        self.add_writeback("Done")
+        code, outcome, calls = self.cli("run", "p")
+        self.assertEqual(code, 0, outcome)
         mutations = [c for c in calls if c["command"] == "gh" and c["request"] and c["request"]["query"].startswith("mutation")]
         self.assertEqual(self.mutation_options(calls), ["PROGRESS", "comment", "DONE"])
-        self.assertIn(record["run_id"], mutations[1]["request"]["variables"]["body"])
+        self.assertIn(outcome["record"]["run_id"], mutations[1]["request"]["variables"]["body"])
         self.assertIn("https://github.com/o/r/pull/12", mutations[1]["request"]["variables"]["body"])
-
-    def use_command_agent(self):
-        self.graph["nodes"]["execute"] = {"kind": "agent", "instruction": "Implement the selected task.",
-                                          "executor": {"type": "command", "argv": ["worker"]},
-                                          "inputs": {"task": "/results/select/data/task"}}
-        # A command executor has no GitWeave providers to observe, so these tests skip the subscription check.
-        self.graph["nodes"]["subscription"]["config"] = {}
 
     def test_agent_command_path(self):
         self.use_command_agent()
-        code, record, calls = self.run_cli()
+        code, outcome, calls = self.cli("run", "p")
         self.assertEqual(code, 0)
         worker = next(c for c in calls if c["command"] == "worker")
         self.assertEqual(worker["request"]["task"]["id"], "I")
-        self.assertEqual(worker["request"]["checkout"], str(self.directory / "repos" / "o" / "r"))
+        self.assertEqual(Path(worker["request"]["checkout"]).resolve(), (self.project_dir / "repos" / "o" / "r").resolve())
         self.assertIsInstance(worker["request"]["instruction"], str)
         self.assertFalse(any(c["command"] == "gitweave" for c in calls))
-        self.assertTrue(record["results"]["execute"]["data"]["approved"])
+        self.assertTrue(outcome["record"]["results"]["execute"]["data"]["approved"])
 
-    def test_empty_cli(self):
-        code, record, calls = self.run_cli("empty")
-        self.assertEqual(code, 0)
-        self.assertEqual(record["last"]["data"]["status"], "no_work")
-        self.assertEqual(len(calls), 2)
+    def test_no_work_not_ready_and_non_todo(self):
+        for mode in ("empty", "not_ready"):
+            with self.subTest(mode=mode):
+                code, outcome, calls = self.cli("run", "p", mode=mode)
+                self.assertEqual((code, outcome["status"]), (0, "no_work"))
+                self.assertEqual(self.mutation_options(calls), [])
+        project = json.loads((self.project_dir / "project.json").read_text())
+        (self.project_dir / "project.json").write_text(json.dumps(dict(project, eligible_statuses=["Done"])))
+        code, outcome, calls = self.cli("run", "p")
+        self.assertEqual((code, outcome["status"]), (0, "no_work"))
 
-    def test_not_ready_field_is_not_selected(self):
-        code, record, calls = self.run_cli("not_ready")
-        self.assertEqual(code, 0)
-        self.assertEqual(record["results"]["select"]["data"]["task"], None)
-        self.assertEqual(record["results"]["load"]["data"]["items"][0]["ai_execution"], "Not ready")
-        self.assertTrue(all(c["command"] == "gh" and not c["request"]["query"].startswith("mutation") for c in calls))
-
-    def test_subscription_at_stop_line_or_unknown_starts_nothing(self):
-        for extra in ({"FAKE_CODEX_USED": "80"}, {"FAKE_USAGE": "codex_error"}):
-            with self.subTest(extra=extra):
-                self.log.unlink(missing_ok=True)
-                self.env.update(extra)
-                code, record, calls = self.run_cli()
-                self.env.pop("FAKE_USAGE", None)
-                self.env["FAKE_CODEX_USED"] = "50"
-                self.assertEqual(code, 0)
-                data = record["results"]["subscription"]["data"]
-                self.assertFalse(data["available"])
-                self.assertEqual(list(data["observations"]), ["codex"])  # Observed (or failed) value in the receipt.
-                self.assertNotIn("execute", record["results"])
-                # Only GitHub reads and the Codex observation; no clone, fetch, GitWeave or Claude.
-                self.assertEqual({c["command"] for c in calls}, {"gh", "codex"})
-                calls = [c for c in calls if c["command"] == "gh"]
-                self.assertFalse(any(c["request"]["query"].startswith("mutation") for c in calls))
-                self.assertFalse((self.directory / "repos").exists())
+    def test_resource_policy_admits_or_blocks_before_claim(self):
+        self.config["projects"]["p"] = {"resources": {"codex": {"min_remaining_percent": 20, "estimated_usage_percent_per_task": 10}}}
+        for used, extra, admitted in (("70", {}, True), ("75", {}, False), ("50", {"FAKE_USAGE": "codex_error"}, False)):
+            with self.subTest(used=used, extra=extra):
+                (self.directory / "github.json").unlink(missing_ok=True)
+                code, outcome, calls = self.cli("run", "p", FAKE_CODEX_USED=used, **extra)
+                self.assertEqual(code, 0, outcome)
+                self.assertIn("codex", outcome["observations"])  # Observed (or failed) value in the output.
+                if admitted:  # 30 remaining - 0 reserved - 10 estimate >= 20.
+                    self.assertEqual(outcome["status"], "completed")
+                else:  # 25 - 10 < 20, or unknown: nothing is claimed or launched.
+                    self.assertEqual(outcome["status"], "not_admitted")
+                    self.assertTrue(outcome["reason"].startswith("codex"))
+                    self.assertEqual({c["command"] for c in calls}, {"codex"})
 
     def test_executor_failure_stays_in_progress_without_comment(self):
         for kind, command in (("gitweave", "gitweave"), ("command", "worker")):
             with self.subTest(kind=kind):
                 if kind == "command":
                     self.use_command_agent()
-                self.log.unlink(missing_ok=True)
-                code, record, calls = self.run_cli("executor_failure")
+                (self.directory / "github.json").unlink(missing_ok=True)
+                code, outcome, calls = self.cli("run", "p", mode="executor_failure")
                 self.assertEqual(code, 1)
+                record = outcome["record"]
                 self.assertEqual(record["status"], "failed")
                 self.assertEqual(record["failure"]["kind"], "transport")
                 self.assertEqual(record["failure"]["node"], "execute")
                 self.assertEqual(len([c for c in calls if c["command"] == command]), 1)
-                self.assertNotIn("execute", record["results"])
-                self.assertNotIn("writeback", record["results"])
-                # The Task stays In Progress, so the next Run does not select it again; nothing is commented.
+                # The Task stays In Progress, so the next claim does not select it again; nothing is commented.
                 self.assertEqual(self.mutation_options(calls), ["PROGRESS"])
 
     def test_existing_checkout_is_reused_after_origin_check(self):
         self.use_command_agent()  # Checkouts are resolved only for command executors.
-        self.assertEqual(self.run_cli()[0], 0)
-        self.log.unlink()
-        code, record, calls = self.run_cli()
-        self.assertEqual(code, 0, record)
+        self.assertEqual(self.cli("run", "p")[0], 0)
+        (self.directory / "github.json").unlink()
+        code, outcome, calls = self.cli("run", "p")
+        self.assertEqual(code, 0, outcome)
         self.assertFalse(any(c["argv"][:2] == ["repo", "clone"] for c in calls))
-        checkout = str(self.directory / "repos" / "o" / "r")
         self.assertEqual([c["argv"][2:] for c in calls if c["command"] == "git"],
                          [["rev-parse", "--show-toplevel"], ["remote", "get-url", "origin"], ["fetch", "origin"],
                           ["rev-parse", "--verify", "origin/HEAD^{commit}"]])
-        self.assertEqual(next(c for c in calls if c["command"] == "worker")["request"]["checkout"], checkout)
 
-    def test_checkout_failures_stop_before_executor_and_writeback(self):
+    def test_checkout_failures_stop_before_executor(self):
         self.use_command_agent()
-        checkout = self.directory / "repos" / "o" / "r"
+        checkout = self.project_dir / "repos" / "o" / "r"
         cases = {"clone_failure": None, "fetch_failure": None,
                  "wrong_origin": "https://github.com/o/other.git\n", "not_checkout": ""}
         for case, origin in cases.items():
             with self.subTest(case=case):
-                self.log.unlink(missing_ok=True)
+                (self.directory / "github.json").unlink(missing_ok=True)
                 if checkout.exists():
                     for path in checkout.iterdir():
                         path.unlink()
@@ -190,59 +219,64 @@ class CLITests(unittest.TestCase):
                     if origin:
                         (checkout / ".fake-origin").write_text(origin)
                     (checkout / "keep").write_text("user data")
-                code, record, calls = self.run_cli(case if case.endswith("failure") else "success")
-                self.assertEqual(code, 1, record)
-                self.assertEqual(record["failure"]["kind"], "checkout")
-                self.assertEqual(record["failure"]["node"], "execute")
-                self.assertIn("o/r", record["failure"]["message"])
+                code, outcome, calls = self.cli("run", "p", mode=case if case.endswith("failure") else "success")
+                self.assertEqual(code, 1, outcome)
+                self.assertEqual(outcome["record"]["failure"]["kind"], "checkout")
+                self.assertIn("o/r", outcome["record"]["failure"]["message"])
                 self.assertFalse(any(c["command"] == "worker" for c in calls))
-                self.assertNotIn("writeback", record["results"])
-                self.assertEqual(self.mutation_options(calls), ["PROGRESS"])  # Only In Progress, before launch.
+                self.assertEqual(self.mutation_options(calls), ["PROGRESS"])
                 if origin is not None:
                     self.assertEqual((checkout / "keep").read_text(), "user data")
                     self.assertFalse(any(c["argv"][:2] == ["repo", "clone"] for c in calls))
 
-    def test_status_update_failure_stops_before_launch(self):
-        code, record, calls = self.run_cli("status_failure")
-        self.assertEqual(code, 1)
-        self.assertEqual(record["failure"]["kind"], "status")
-        self.assertEqual(record["failure"]["node"], "start")
+    def test_claim_status_failure_launches_nothing(self):
+        code, outcome, calls = self.cli("run", "p", mode="status_failure")
+        self.assertEqual(code, 2)
+        self.assertEqual(outcome["failure"]["kind"], "status")
         self.assertFalse(any(c["command"] == "gitweave" for c in calls))
-        self.assertNotIn("writeback", record["results"])
 
-    def test_non_todo_task_is_not_selected(self):
-        self.project["eligible_statuses"] = ["Done"]
-        code, record, calls = self.run_cli()
-        self.assertEqual(code, 0)
-        self.assertEqual(record["last"]["data"]["status"], "no_work")
-        self.assertEqual(self.mutation_options(calls), [])
-
-    def test_partial_writeback_preserves_result(self):
+    def test_partial_writeback_and_status_preflight(self):
         self.add_writeback("Done")
-        code, record, _ = self.run_cli("writeback_failure")
+        code, outcome, _ = self.cli("run", "p", mode="writeback_failure")
         self.assertEqual(code, 1)
-        self.assertEqual(record["failure"]["kind"], "writeback")
-        self.assertEqual(len(record["failure"]["details"]["completed_references"]), 1)
-        self.assertIn("execute", record["results"])
-
-    def test_missing_status_preflight_does_not_comment(self):
+        self.assertEqual(outcome["record"]["failure"]["kind"], "writeback")
+        self.assertEqual(len(outcome["record"]["failure"]["details"]["completed_references"]), 1)
+        self.assertIn("execute", outcome["record"]["results"])
         self.add_writeback("Unknown")
-        code, record, calls = self.run_cli()
+        (self.directory / "github.json").unlink()
+        code, outcome, calls = self.cli("run", "p")
         self.assertEqual(code, 1)
-        self.assertEqual(record["failure"]["kind"], "writeback")
+        self.assertEqual(outcome["record"]["failure"]["kind"], "writeback")
         self.assertFalse(any(c["command"] == "gh" and c["request"] and "addComment(" in c["request"]["query"] for c in calls))
 
-    def test_graphql_error(self):
-        code, record, calls = self.run_cli("graphql_error")
-        self.assertEqual(code, 1)
-        self.assertEqual(record["failure"]["kind"], "github")
+    def test_graphql_error_and_invalid_input(self):
+        code, outcome, calls = self.cli("run", "p", mode="graphql_error")
+        self.assertEqual(code, 2)
+        self.assertEqual(outcome["failure"]["kind"], "github")
         self.assertEqual(len(calls), 1)
-
-    def test_invalid_input_exits_before_io(self):
-        self.resources["subscription"]["stop_at_remaining_percent"] = 101
-        code, _, calls = self.run_cli()
+        self.config["projects"]["p"] = {"resources": {"codex": {"min_remaining_percent": 101, "estimated_usage_percent_per_task": 1}}}
+        code, _, calls = self.cli("run", "p")
         self.assertEqual(code, 2)
         self.assertEqual(calls, [])
+        self.config["projects"] = {"missing": {}}
+        code, outcome, calls = self.cli("run", "p")
+        self.assertEqual(code, 2)
+        self.assertIn("missing", outcome["failure"]["message"])
+
+    def test_coordinate_once_across_projects_with_opt_in_admission(self):
+        self.add_project("q", number=2)
+        # q opts in: 50% remaining - 40% estimate < 20% minimum, so it is not admitted; p is unconstrained.
+        self.config["projects"]["q"] = {"resources": {"codex": {"min_remaining_percent": 20, "estimated_usage_percent_per_task": 40}}}
+        code, summary, calls = self.cli("coordinate", "--once")
+        self.assertEqual(code, 0, summary)
+        self.assertEqual([(run["project"], run["task"]["number"]) for run in summary["runs"]], [("p", 7)])
+        self.assertEqual(summary["observations"], {"codex": {"windows": {"primary": 50}}})
+        self.assertEqual(summary["reserved"], {})  # Released when the Task ended.
+        self.assertEqual([c["argv"][6] for c in calls if c["command"] == "gitweave"], ["7"])
+        # Loosen q's estimate: it is admitted and claims its own Task; p has no work left.
+        self.config["projects"]["q"]["resources"]["codex"]["estimated_usage_percent_per_task"] = 10
+        code, summary, calls = self.cli("coordinate", "--once")
+        self.assertEqual([(run["project"], run["task"]["number"]) for run in summary["runs"]], [("q", 8)])
 
 
 class BoundaryTests(unittest.TestCase):

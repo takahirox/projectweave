@@ -37,7 +37,7 @@ def validate(graph):
             require(text(node.get("instruction")) and "action" not in node,
                     "Agents require instruction and no action")
         else:
-            require(node.get("action") in ("load", "select", "resources", "execute", "status", "writeback", "result"),
+            require(node.get("action") in ("load", "select", "resources", "execute", "status", "complete", "writeback", "result"),
                     "Unknown action")
             require("instruction" not in node, "instruction is only valid for agents")
         cfg = node.get("config", {})
@@ -54,7 +54,10 @@ def validate(graph):
         else:
             require("executor" not in node and "requires" not in node, "Nonexecution node cannot allocate")
             action = node["action"]
-            if action == "status":
+            if action == "complete":
+                keys(cfg, set())
+                require("task" in inputs, "complete needs a task input")
+            elif action == "status":
                 keys(cfg, {"status"}, {"status"})
                 require(text(cfg["status"]), "status must be nonblank")
                 require("task" in inputs, "status needs a task input")
@@ -65,13 +68,10 @@ def validate(graph):
             elif action == "result":
                 check_result(cfg)
             elif action == "resources":
-                keys(cfg, {"requires", "subscriptions"})
+                keys(cfg, {"requires"})
                 cost = cfg.get("requires", {})
                 require(isinstance(cost, dict) and all(text(k) and number(v, True)
                         for k, v in cost.items()), "Invalid resource inspection allocation")
-                names = cfg.get("subscriptions", [])
-                require(isinstance(names, list) and all(text(k) for k in names) and len(set(names)) == len(names),
-                        "subscriptions must be unique resource names")
             else:
                 keys(cfg, set())
                 if action == "select":

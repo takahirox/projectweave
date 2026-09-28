@@ -159,6 +159,10 @@ class GitHub:
             raise Failure("status", f"Status update failed; it may have been applied: {exc}") from exc
         return result(f"Status set to {status}", {"status": status})
 
+    def complete(self, task):
+        """Explicitly set the Project item to Done (GitHub's own workflow usually does this on close)."""
+        return self.set_status(task, "Done")
+
     def writeback(self, task, outcome, run_id, status=None):
         check_result(outcome)
         self.check_task(task, "writeback")

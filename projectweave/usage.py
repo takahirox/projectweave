@@ -1,7 +1,8 @@
 """Built-in, read-only observers of provider subscription usage (Claude, Codex).
 
-Each observer returns the remaining percentage (0-100) or raises Failure; callers
-treat any failure as unknown usage. Observers never invoke a model or change state.
+Each observer returns the remaining percentage (0-100) per usage window or raises
+Failure; callers treat any failure as unknown usage. Observers never invoke a model
+or change state.
 """
 import json
 import os
@@ -19,32 +20,29 @@ LINE = r"^{}: (\d+(?:\.\d+)?)% used\b"
 CLAUDE_LIMITS = {"session": "Current session", "week": r"Current week \(all models\)", "fable": r"Current week \(Fable\)"}
 
 
-def fable(node):
-    # A node without model is treated as Fable because the native default model is unknown.
-    return "model" not in node or "fable" in str(node["model"]).lower()
-
-
 def remaining(used):
     require(number(used) and used <= 100, f"Invalid used percentage: {used!r}", "usage")
     return 100 - used
 
 
-def claude(uses_fable, timeout=TIMEOUT):
-    """Smallest remaining percentage of the Claude plan limits that apply."""
+def claude(timeout=TIMEOUT):
+    """Remaining percentage of every Claude plan window /usage reports (session and weekly limits)."""
     record = decode(process(["claude", "-p", "--output-format", "json", "/usage"], None, timeout))
     require(isinstance(record, dict) and record.get("is_error") is False and isinstance(record.get("result"), str),
             "Unexpected claude /usage output", "usage")
-    names = ["session", "week"] + (["fable"] if uses_fable else [])
-    values = []
-    for name in names:
-        match = re.search(LINE.format(CLAUDE_LIMITS[name]), record["result"], re.MULTILINE)
-        require(match is not None, f"claude /usage has no '{CLAUDE_LIMITS[name]}' line", "usage")
-        values.append(remaining(float(match[1]) if "." in match[1] else int(match[1])))
-    return min(values)
+    windows = {}
+    for name, label in CLAUDE_LIMITS.items():
+        match = re.search(LINE.format(label), record["result"], re.MULTILINE)
+        if match is not None:
+            windows[name] = remaining(float(match[1]) if "." in match[1] else int(match[1]))
+    # The session and all-models weekly windows must be present; a model-specific window is optional.
+    for name in ("session", "week"):
+        require(name in windows, f"claude /usage has no '{CLAUDE_LIMITS[name]}' line", "usage")
+    return windows
 
 
 def codex(timeout=TIMEOUT):
-    """100 - rateLimits.primary.usedPercent from the (experimental) app-server API."""
+    """{"primary": 100 - rateLimits.primary.usedPercent} from the (experimental) app-server API."""
     requests = [{"method": "initialize", "id": 1, "params": {
                     "clientInfo": {"name": "projectweave", "title": None, "version": "0"}, "capabilities": None}},
                 {"method": "initialized"}, {"method": "account/rateLimits/read", "id": 2}]
@@ -73,7 +71,7 @@ def codex(timeout=TIMEOUT):
                 pass
         child.wait()
     try:
-        return remaining(response["result"]["rateLimits"]["primary"]["usedPercent"])
+        return {"primary": remaining(response["result"]["rateLimits"]["primary"]["usedPercent"])}
     except (KeyError, TypeError) as exc:
         raise Failure("usage", "codex rate limits have no primary usedPercent") from exc
 
@@ -100,30 +98,16 @@ def read_response(stream, identity, deadline):
         buffer += chunk
 
 
-def providers(nodes):
-    """Map each provider used by GitWeave agent nodes to whether any Claude node runs Fable."""
-    used = {}
-    for node in nodes:
-        provider = node.get("provider")
-        used[provider] = used.get(provider, False) or (provider == "claude" and fable(node))
-    return used
+OBSERVERS = {"claude": claude, "codex": codex}
 
 
-def observe(nodes):
-    """Observe every provider the agent nodes use: {provider: {remaining_percent} | {error}}."""
-    used = providers(nodes)
+def observe(providers):
+    """{provider: {"windows": {name: remaining_percent}} | {"error": reason}} for each named provider."""
     observations = {}
-    if not used:
-        return {"(none)": {"error": "No GitWeave agent providers to observe"}}
-    for provider, uses_fable in sorted(used.items()):
+    for provider in sorted(providers):
         try:
-            if provider == "claude":
-                value = claude(uses_fable)
-            elif provider == "codex":
-                value = codex()
-            else:
-                raise Failure("usage", f"No usage observer for provider {provider!r}")
-            observations[provider] = {"remaining_percent": value}
+            require(provider in OBSERVERS, f"No usage observer for provider {provider!r}", "usage")
+            observations[provider] = {"windows": OBSERVERS[provider]()}
         except (Failure, OSError) as exc:
             observations[provider] = {"error": str(exc)}
     return observations
