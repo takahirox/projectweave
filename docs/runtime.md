@@ -61,7 +61,8 @@ Failure routing is not supported; subsequent graph operations are not executed.
 Shared provider allowance is admitted by `projectweave run` and
 `projectweave coordinate`, not by graphs. The root `projectweave.json` lists, per
 Project directory name and provider, `min_remaining_percent` and
-`estimated_usage_percent_per_task`. Constraints are opt-in: unlisted Projects and
+`estimated_usage_percent_per_task` (and, per Project, an optional scheduling
+`weight`; see Coordinator). Constraints are opt-in: unlisted Projects and
 providers are not limited (and not observed).
 
 1. The listed providers are observed read-only without a model call
@@ -163,9 +164,12 @@ share the checkout directory itself.
 
 ## Coordinator
 
-`projectweave coordinate` repeats: observe the listed providers → for each managed
-Project (sorted), while admission allows, `claim` a Task and run it on its own
-thread (`run-task`) → wait until a Task ends (release its reservation) or
+`projectweave coordinate` repeats: observe the listed providers → repeatedly give
+the next launch opportunity to an admitted Project with work, chosen by smooth
+weighted round-robin (optional per-Project `weight`, default 1; credit persists
+across passes so sort order cannot starve a Project), `claim` a Task there and run
+it on its own thread (`run-task`), until no Project can take another Task → wait
+until a Task ends (release its reservation) or
 `poll_seconds` pass → observe again. Independent Projects and several Tasks of one
 Project run concurrently; nothing else limits concurrency. Selection stays
 Project-local (no cross-Project ranking or dependency reasoning). A stop request

@@ -5,7 +5,7 @@ import time
 from .contracts import Failure
 from . import usage
 from .workspace import (claim, check_project, failure_record, load_root, policy, project_dir, projects, run_task,
-                        POLL_SECONDS)
+                        weights, POLL_SECONDS)
 
 
 class Admission:
@@ -49,6 +49,24 @@ class Admission:
             self.reserved[provider] -= amount
 
 
+class RoundRobin:
+    """Smooth weighted round-robin over Projects that can take a Task now. Credits persist across passes, so a
+    Project that sorts first cannot monopolize newly available capacity; higher weights get proportionally more
+    launch opportunities. It only decides who goes next; admission still decides whether a Task may start."""
+
+    def __init__(self, weights):
+        self.weights = weights
+        self.credit = {}
+
+    def pick(self, candidates):
+        total = sum(self.weights[name] for name in candidates)
+        for name in candidates:
+            self.credit[name] = self.credit.get(name, 0) + self.weights[name]
+        chosen = max(candidates, key=lambda name: self.credit[name])  # Ties go to the earlier Project.
+        self.credit[chosen] -= total
+        return chosen
+
+
 def run_one(root, name, observe=usage.observe, claim_task=claim, run=run_task):
     """Synchronous single-Task path: admission -> claim -> run-task -> wait."""
     directory = project_dir(root, name)
@@ -80,6 +98,7 @@ def coordinate(root, once=False, poll_seconds=None, stop=None, observe=usage.obs
         raise Failure("input", "poll_seconds must be positive")
     stop = stop or threading.Event()
     admission = Admission(policy(config), observe)
+    order = RoundRobin(weights(config, names))
     finished = queue.Queue()
     running = {}
     runs = []
@@ -117,27 +136,37 @@ def coordinate(root, once=False, poll_seconds=None, stop=None, observe=usage.obs
 
     def admit_and_launch():
         admission.refresh(names)
+        candidates = {}
         for name in names:
             try:
-                directory = project_dir(root, name)
-                check_project(directory)  # Never claim for a Project whose graph cannot run.
+                candidates[name] = project_dir(root, name)
+                check_project(candidates[name])  # Never claim for a Project whose graph cannot run.
             except Exception as exc:
+                candidates.pop(name, None)
                 problem(name, "setup_failure", failure_record(exc))
+        # One launch opportunity at a time, in weighted round-robin order, until nobody can take another Task.
+        while not stop.is_set():
+            admitted = [name for name in candidates if admission.admits(name)[0]]
+            if not admitted:
+                break
+            name = order.pick(admitted)
+            directory = candidates[name]
+            try:
+                task = claim_task(directory)
+            except Exception as exc:
+                problem(name, "claim_failure", failure_record(exc))
+                del candidates[name]
                 continue
-            while not stop.is_set() and admission.admits(name)[0]:
-                try:
-                    task = claim_task(directory)
-                except Exception as exc:
-                    problem(name, "claim_failure", failure_record(exc))
-                    break
-                last_problem.pop(name, None)
-                if task is None:
-                    break
-                if task.get("item_id") is not None and any(item == task.get("item_id") for _, item in running.values()):
-                    # Defensive: never launch a Task that is already running; make it visible.
-                    problem(name, "duplicate_claim", task.get("item_id"))
-                    break
-                launch(name, directory, task)
+            last_problem.pop(name, None)
+            if task is None:
+                del candidates[name]  # No runnable Task left in this Project for now.
+                continue
+            if task.get("item_id") is not None and any(item == task.get("item_id") for _, item in running.values()):
+                # Defensive: never launch a Task that is already running; make it visible.
+                problem(name, "duplicate_claim", task.get("item_id"))
+                del candidates[name]
+                continue
+            launch(name, directory, task)
 
     try:
         while True:

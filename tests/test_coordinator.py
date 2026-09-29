@@ -6,9 +6,9 @@ import time
 import unittest
 
 from projectweave.contracts import Failure
-from projectweave.coordinator import Admission, coordinate, run_one
+from projectweave.coordinator import Admission, RoundRobin, coordinate, run_one
 from projectweave.github import GitHub
-from projectweave.workspace import claim, load_root
+from projectweave.workspace import claim, load_root, validate_root
 
 ROOT = Path(__file__).resolve().parents[1]
 CODEX = {"min_remaining_percent": 20, "estimated_usage_percent_per_task": 10}
@@ -57,6 +57,25 @@ class AdmissionTests(unittest.TestCase):
         self.assertIn("usage unknown", admission.admits("a")[1])
 
 
+class RoundRobinTests(unittest.TestCase):
+    def test_weighted_order_is_smooth_proportional_and_persistent(self):
+        order = RoundRobin({"a": 2, "b": 1})
+        self.assertEqual([order.pick(["a", "b"]) for _ in range(6)], ["a", "b", "a", "a", "b", "a"])
+        even = RoundRobin({"a": 1, "b": 1})
+        self.assertEqual([even.pick(["a", "b"]) for _ in range(4)], ["a", "b", "a", "b"])
+        # Only Projects that can take a Task compete: a Project without capacity or work gains no credit meanwhile.
+        idle = RoundRobin({"a": 1, "b": 1})
+        self.assertEqual([idle.pick(["a"]), idle.pick(["a"]), idle.pick(["a", "b"]), idle.pick(["a", "b"])],
+                         ["a", "a", "a", "b"])
+
+    def test_weight_is_an_optional_positive_integer(self):
+        validate_root({"projects": {"a": {"weight": 3}, "b": {}}})
+        for weight in (0, -1, 1.5, "2", True):
+            with self.subTest(weight=weight):
+                with self.assertRaises(Failure):
+                    validate_root({"projects": {"a": {"weight": weight}}})
+
+
 class CoordinatorTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -72,7 +91,7 @@ class CoordinatorTests(unittest.TestCase):
         (directory / "graph.json").write_text((ROOT / "projectweave/templates/graph.json").read_text())
         self.queues[name] = [task(value) for value in tasks]
         if rules:
-            self.rules[name] = {"resources": rules}
+            self.rules.setdefault(name, {})["resources"] = rules
         (self.root / "projectweave.json").write_text(json.dumps({"projects": self.rules}))
         return directory
 
@@ -100,6 +119,32 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(ids(self.queues["b"]), ["b3"])  # Not claimed: claims happen only after admission.
         self.assertEqual(observations, [["codex"]])
         self.assertEqual(summary["reserved"], {"codex": 0})
+
+    def test_shared_capacity_is_offered_round_robin_not_by_sort_order(self):
+        # Capacity for two Tasks in total (45 - 10 >= 20, 45 - 20 >= 20 is false after two): a sorts first but
+        # must not take both.
+        self.project("a", ["a1", "a2", "a3"], {"codex": CODEX})
+        self.project("b", ["b1", "b2"], {"codex": CODEX})
+        launched = []
+        coordinate(self.root, once=True, observe=lambda p: {"codex": {"windows": {"primary": 45}}},
+                   claim_task=self.claim, run=lambda d, t: launched.append(t["item_id"]) or {"status": "completed", "failure": None})
+        self.assertEqual(sorted(launched), ["a1", "b1"])
+
+    def test_weights_share_capacity_across_passes_without_starvation(self):
+        self.rules = {"a": {"weight": 2}}
+        self.project("a", [f"a{i}" for i in range(9)], {"codex": CODEX})
+        self.project("b", [f"b{i}" for i in range(9)], {"codex": CODEX})
+        stop, finished = threading.Event(), []
+
+        def report(outcome):
+            finished.append(outcome["task"]["item_id"][0])
+            if len(finished) == 6:
+                stop.set()
+
+        # Room for one Task at a time: every launch is a fresh pass after the previous Task ended.
+        coordinate(self.root, poll_seconds=60, stop=stop, observe=lambda p: {"codex": {"windows": {"primary": 35}}},
+                   claim_task=self.claim, run=lambda d, t: {"status": "completed", "failure": None}, report=report)
+        self.assertEqual("".join(finished), "abaaba")  # 2:1, and b is never starved by sorting after a.
 
     def test_loop_releases_reobserves_and_admits_more_until_stopped(self):
         self.project("b", ["b1", "b2", "b3"], {"codex": CODEX})
