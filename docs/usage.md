@@ -149,23 +149,32 @@ A Project workspace holds two packaged templates:
 The GitWeave Task graph runs, entirely inside GitWeave:
 
 ```text
-implement → publish PR → review ─┬─ approved → merge → close_issue
-                ▲                └─ findings → fix ─┐
-                └───────────────────────────────────┘
+implement → publish PR → review ─┬─ findings → fix → publish PR → review (again)
+                                 └─ approved → merge ─┬─ merged → close_issue
+                                                      └─ not merged → review (again)
 ```
 
 - `implement` implements the Issue and commits with a human-readable message.
 - `publish` opens (or updates) a PR that says `Closes #N`.
 - `review` checks the PR against the Issue for missing and unnecessary scope,
-  correctness and tests.
-- `fix` addresses the findings, and the PR is updated again.
+  correctness and tests, and treats a PR that cannot be merged cleanly into the
+  current default branch as a blocking finding.
+- `fix` addresses the findings, and the PR is updated again. For a conflict with
+  the default branch, the fix agent fetches the current default branch itself
+  and brings the PR up to date.
 - `merge` merges only the reviewed head, **with a merge commit** so GitWeave's
   checkpoint notes stay in the branch history, and never bypasses required checks.
-- `close_issue` makes sure the Issue is closed once merged, and comments the
-  outcome on the Issue whether or not the PR was merged (in whatever form the
-  repository's conventions suggest), when the Run reaches it.
-- `max_steps: 30` bounds the loop. With `retries: 0`, a failed or exhausted Run
-  stops without merging and leaves the PR for a human.
+  If it reports `merged: false` (for example because another PR changed the
+  default branch meanwhile), the flow returns to review and the review/fix loop,
+  then tries `merge` again.
+- `close_issue` runs after a successful merge: it makes sure the Issue is closed
+  and comments the outcome (in whatever form the repository's conventions
+  suggest).
+- `max_steps: 30` bounds both loops. With `retries: 0`, a Run that cannot
+  converge (for example a merge that keeps failing for another reason, such as
+  pending required checks, after repeated review/merge attempts) or fails at
+  runtime stops without merging. **It leaves no comment on the Issue**; it stays
+  visible as an open PR and an `In Progress` Task for a human.
 
 **This merges into the default branch without a human review** once the review
 agent approves. Agents push, open PRs and merge with your `gh` and Git
@@ -209,7 +218,7 @@ It writes three files into `projects/NAME/`:
 | --- | --- |
 | `project.json` | Project owner/type/number, standard Priority order `P0`, `P1`, `P2`, `eligible_statuses: ["Todo"]` |
 | `graph.json` | The Project graph: `execute` GitWeave in Issue mode for the claimed Task; only the GitWeave graph path is made absolute |
-| `gitweave.json` | The six-node Task graph (implement → PR → review/fix → merge → close_issue); every agent node uses Codex with its native default model, or the `--provider`/`--model` choices (Claude adds `bypassPermissions`) |
+| `gitweave.json` | The six-node Task graph (implement → PR → review/fix → merge, retried until merged → close_issue); every agent node uses Codex with its native default model, or the `--provider`/`--model` choices (Claude adds `bypassPermissions`) |
 
 ### Provider and model
 
