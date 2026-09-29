@@ -228,7 +228,8 @@ exactly once (additional options and any display order are allowed), or creates
 that field with P0/P1/P2 options when absent. An incompatible type, missing or
 ambiguous required options, or ambiguous field name is reported without repair.
 Init also verifies that the Project's `Status` field (GitHub's built-in one) is a
-single-select with `Todo` and `In Progress` options. It never creates or repairs
+single-select with `Todo`, `In Progress` and `Done` options (claim sets
+`In Progress`; `complete` sets `Done`). It never creates or repairs
 Status: a missing field or option is reported for you to add in the Project.
 Init verifies/creates the `AI execution` single-select field with `Ready` and
 `Not ready` options in the same way (other options are allowed; incompatible
