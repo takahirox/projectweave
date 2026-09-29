@@ -1,4 +1,5 @@
 import copy
+from contextlib import nullcontext
 import json
 from pathlib import Path
 import unittest
@@ -37,7 +38,7 @@ class RuntimeTests(unittest.TestCase):
         backend.writeback.return_value = result("posted", references=["comment"])
         execute = executor or Mock(return_value=result("Rejected", {"approved": False}))
         record = Runtime(g or graph(), PROJECT, env if env is not None else envelope(), backend, execute,
-                         checkout=lambda repository: "/workspace/repos/" + repository).run()
+                         checkout=lambda repository, name, failed: nullcontext("/workspace/worktrees/" + name)).run()
         return record, backend, execute
 
     def test_handoff_agent_and_task_rejection(self):
@@ -390,7 +391,7 @@ class ClaimedTaskTests(unittest.TestCase):
         g = {"version": 1, "nodes": {"work": {"kind": "agent", "instruction": "Do it",
              "executor": {"type": "command", "argv": ["fake"]}, "inputs": {"task": "/task"}}}, "flow": ["work"]}
         backend, execute = Mock(), Mock(return_value=result("Done"))
-        record = Runtime(g, PROJECT, backend=backend, executor=execute, checkout=lambda r: "/c", task=TASK).run()
+        record = Runtime(g, PROJECT, backend=backend, executor=execute, checkout=lambda r, name, failed: nullcontext("/c"), task=TASK).run()
         self.assertIsNone(record["failure"])
         self.assertEqual(execute.call_args.args[1]["task"], TASK)
         self.assertEqual(backend.mock_calls, [])  # No implicit selection, status transition or completion.
@@ -448,7 +449,7 @@ class ClaimedTaskTests(unittest.TestCase):
         backend.select.side_effect = GitHub(PROJECT).select
         backend.set_status.return_value = result("Status set", {"status": "In Progress"})
         execute = Mock(return_value=result("Done"))
-        record = Runtime(g, PROJECT, envelope(), backend, execute, checkout=lambda r: "/c").run()
+        record = Runtime(g, PROJECT, envelope(), backend, execute, checkout=lambda r, name, failed: nullcontext("/c")).run()
         self.assertIsNone(record["failure"])
         backend.set_status.assert_called_once_with(TASK, "In Progress")
         backend.writeback.assert_not_called()
@@ -509,3 +510,54 @@ class CheckoutLockTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(len(clones), 1)
         self.assertEqual(len(set(paths)), 1)
+
+
+class WorktreeTests(unittest.TestCase):
+    def test_real_git_worktrees_are_isolated_and_removed(self):
+        import subprocess, tempfile
+        from projectweave import checkout
+        with tempfile.TemporaryDirectory() as tmp:
+            shared = Path(tmp) / "repos" / "o" / "r"
+            git = lambda *args, cwd=shared: subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True)
+            shared.mkdir(parents=True)
+            git("init", "-q")
+            (shared / "file.txt").write_text("base\n")
+            git("add", "file.txt")
+            git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "base")
+            git("update-ref", "refs/remotes/origin/main", "HEAD")
+            git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+            failures = []
+            # Clone/fetch are covered elsewhere; here only the worktree lifecycle runs against real git.
+            with unittest.mock.patch.object(checkout, "prepare", lambda path, repository: str(path)):
+                with checkout.worktree(tmp, "o/r", "run-a", failures.append) as first, \
+                        checkout.worktree(tmp, "o/r", "run-b", failures.append) as second:
+                    self.assertNotEqual(first, second)
+                    Path(first, "file.txt").write_text("changed by a\n")  # Concurrent edits stay isolated.
+                    self.assertEqual(Path(second, "file.txt").read_text(), "base\n")
+                    self.assertEqual((shared / "file.txt").read_text(), "base\n")
+                self.assertFalse(Path(first).exists() or Path(second).exists())
+                listed = subprocess.run(["git", "-C", str(shared), "worktree", "list"], capture_output=True, text=True).stdout
+                self.assertEqual(len(listed.strip().splitlines()), 1)  # Only the shared checkout remains.
+                with self.assertRaises(RuntimeError):
+                    with checkout.worktree(tmp, "o/r", "run-c", failures.append) as third:
+                        raise RuntimeError("executor failed")  # Removed even when the executor fails.
+                self.assertFalse(Path(third).exists())
+            self.assertEqual(failures, [])
+
+    def test_worktree_names_stay_inside_worktrees(self):
+        from projectweave import checkout
+        for name in ("a/b", "..", "../escape", ""):
+            with self.subTest(name=name):
+                with self.assertRaises(Failure):
+                    with checkout.worktree("/nonexistent", "o/r", name):
+                        pass
+
+    def test_worktree_name_sanitizes_node_ids(self):
+        names = []
+        g = {"version": 1, "nodes": {"fix/../x": {"kind": "agent", "instruction": "Do it",
+             "executor": {"type": "command", "argv": ["fake"]}, "inputs": {"task": "/task"}}}, "flow": ["fix/../x"]}
+        record = Runtime(g, PROJECT, backend=Mock(), executor=Mock(return_value=result("Done")),
+                         checkout=lambda repository, name, failed: names.append(name) or nullcontext("/w"), task=TASK).run()
+        self.assertIsNone(record["failure"])
+        self.assertEqual(names, [f"{record['run_id']}-fix_.._x-1"])
+        self.assertNotIn("/", names[0])

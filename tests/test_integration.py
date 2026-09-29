@@ -144,7 +144,13 @@ class CLITests(unittest.TestCase):
         self.assertEqual(code, 0)
         worker = next(c for c in calls if c["command"] == "worker")
         self.assertEqual(worker["request"]["task"]["id"], "I")
-        self.assertEqual(Path(worker["request"]["checkout"]).resolve(), (self.project_dir / "repos" / "o" / "r").resolve())
+        # The executor gets its own worktree of the shared checkout (never the checkout itself), removed afterwards.
+        worktree = Path(worker["request"]["checkout"])
+        self.assertEqual(worktree.parent.resolve(), (self.project_dir / "worktrees").resolve())
+        self.assertTrue(worktree.name.startswith(outcome["record"]["run_id"] + "-execute-"))
+        self.assertEqual(Path(worker["worktree_of"]).resolve(), (self.project_dir / "repos" / "o" / "r").resolve())
+        self.assertFalse(worktree.exists())
+        self.assertEqual(outcome["record"]["cleanup_failures"], [])
         self.assertIsInstance(worker["request"]["instruction"], str)
         self.assertFalse(any(c["command"] == "gitweave" for c in calls))
         self.assertTrue(outcome["record"]["results"]["execute"]["data"]["approved"])
@@ -198,9 +204,12 @@ class CLITests(unittest.TestCase):
         code, outcome, calls = self.cli("run", "p")
         self.assertEqual(code, 0, outcome)
         self.assertFalse(any(c["argv"][:2] == ["repo", "clone"] for c in calls))
-        self.assertEqual([c["argv"][2:] for c in calls if c["command"] == "git"],
-                         [["rev-parse", "--show-toplevel"], ["remote", "get-url", "origin"], ["fetch", "origin"],
-                          ["rev-parse", "--verify", "origin/HEAD^{commit}"]])
+        git = [c["argv"][2:] for c in calls if c["command"] == "git"]
+        self.assertEqual(git[:4], [["rev-parse", "--show-toplevel"], ["remote", "get-url", "origin"], ["fetch", "origin"],
+                                   ["rev-parse", "--verify", "origin/HEAD^{commit}"]])
+        self.assertEqual([g[:3] for g in git[4:]], [["worktree", "add", "--detach"], ["worktree", "remove", "--force"],
+                                                    ["worktree", "prune"]])
+        self.assertEqual(git[4][4], "origin/HEAD")
 
     def test_checkout_failures_stop_before_executor(self):
         self.use_command_agent()
@@ -228,6 +237,32 @@ class CLITests(unittest.TestCase):
                 if origin is not None:
                     self.assertEqual((checkout / "keep").read_text(), "user data")
                     self.assertFalse(any(c["argv"][:2] == ["repo", "clone"] for c in calls))
+
+    def test_each_command_invocation_gets_a_distinct_worktree(self):
+        self.use_command_agent()
+        g = self.graph()
+        g["nodes"]["again"] = dict(g["nodes"]["execute"])
+        g["flow"] = ["execute", "again"]  # Two invocations in one Run, like two concurrent Tasks would get.
+        (self.project_dir / "graph.json").write_text(json.dumps(g))
+        code, outcome, calls = self.cli("run", "p")
+        self.assertEqual(code, 0, outcome)
+        paths = [c["request"]["checkout"] for c in calls if c["command"] == "worker"]
+        self.assertEqual(len(set(paths)), 2)
+        self.assertFalse(any(Path(path).exists() for path in paths))
+
+    def test_worktree_creation_and_cleanup_failures(self):
+        self.use_command_agent()
+        code, outcome, calls = self.cli("run", "p", mode="worktree_failure")
+        self.assertEqual(code, 1, outcome)
+        self.assertEqual(outcome["record"]["failure"]["kind"], "checkout")
+        self.assertIn("worktree", outcome["record"]["failure"]["message"])
+        self.assertFalse(any(c["command"] == "worker" for c in calls))  # Before launch.
+        (self.directory / "github.json").unlink()
+        code, outcome, calls = self.cli("run", "p", mode="cleanup_failure")
+        self.assertEqual(code, 0, outcome)  # Cleanup failure is reported but does not change the outcome.
+        self.assertEqual(outcome["record"]["status"], "completed")
+        self.assertEqual(len(outcome["record"]["cleanup_failures"]), 1)
+        self.assertIn("worktrees", outcome["record"]["cleanup_failures"][0]["worktree"])
 
     def test_claim_status_failure_launches_nothing(self):
         code, outcome, calls = self.cli("run", "p", mode="status_failure")
