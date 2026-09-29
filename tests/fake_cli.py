@@ -9,7 +9,11 @@ name = Path(sys.argv[0]).name
 args = sys.argv[1:]
 request = json.load(sys.stdin) if name == "worker" or (name == "gh" and args[:2] == ["api", "graphql"]) else None
 with open(os.environ["FAKE_LOG"], "a") as log:
-    log.write(json.dumps({"command": name, "argv": args, "request": request, "cwd": os.getcwd()}) + "\n")
+    entry = {"command": name, "argv": args, "request": request, "cwd": os.getcwd()}
+    if name == "worker" and request.get("checkout"):
+        # What the command executor actually received: an isolated worktree, not the shared checkout.
+        entry["worktree_of"] = (Path(request["checkout"]) / ".fake-worktree").read_text()
+    log.write(json.dumps(entry) + "\n")
 usage = os.environ.get("FAKE_USAGE", "")
 if name == "claude":
     # claude -p --output-format json /usage: the plan limits as text, no model call.
@@ -71,6 +75,14 @@ if name == "git":
         pass
     elif args[2:] == ["rev-parse", "--verify", "origin/HEAD^{commit}"]:
         print("f" * 40)
+    elif args[2:5] == ["worktree", "add", "--detach"] and args[6:] == ["origin/HEAD"] and mode != "worktree_failure":
+        Path(args[5]).mkdir()
+        (Path(args[5]) / ".fake-worktree").write_text(args[1])  # Records the shared checkout it came from.
+    elif args[2:5] == ["worktree", "remove", "--force"] and mode != "cleanup_failure":
+        import shutil
+        shutil.rmtree(args[5])
+    elif args[2:] == ["worktree", "prune"]:
+        pass
     else:
         print("fatal: git operation failed", file=sys.stderr)
         sys.exit(128)

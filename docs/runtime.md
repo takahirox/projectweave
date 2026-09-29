@@ -149,18 +149,24 @@ A Project spans any repositories whose Issues are in the GitHub Project; each
 Task's `repository` is its execution location. A Project's `projects/NAME/`
 directory is its Project workspace. GitWeave executors run from the
 workspace in GitWeave's Issue mode (below), which fetches the repository itself.
-For command executors, after admission and before launch, the runtime resolves
-`task.repository` to
-`<workspace>/repos/OWNER/REPO`: it clones with `gh repo clone` when the path is
+Command executors are repository-aware, and **each invocation runs in its own
+isolated worktree** (an invariant: concurrent Tasks never share a mutable working
+tree). After admission and before launch, the runtime prepares the shared Git
+source `<workspace>/repos/OWNER/REPO` for `task.repository`: it clones with `gh repo clone` when the path is
 absent, otherwise requires a directory that is itself a Git repository root whose
 `origin` is that github.com
 repository, then runs `git fetch origin` and checks that `origin/HEAD` resolves.
-Command executors run against that remote default branch tip. No repository list,
-path mapping, pooling or background sync exists, and no local branch is changed.
-Invalid repository names, an unrelated existing path, and clone/fetch errors are
-`checkout` Runtime Failures before launch (so no writeback). Preparation is serialized per repository by a lock file
-beside the checkout, so concurrent Tasks never race on clone or fetch; they do
-share the checkout directory itself.
+It then adds a detached worktree at that remote default branch tip under
+`<workspace>/worktrees/<run_id>-<node>-<step>/` and passes only that path as the
+request's `checkout`; the shared checkout itself is never handed out. The worktree
+is removed when the executor exits (success or failure); results that must
+survive are published by the executor. No repository list, path mapping, pooling
+or background sync exists, and no local branch is changed. Invalid repository
+names, an unrelated existing path, and clone/fetch/worktree errors are `checkout`
+Runtime Failures before launch (so no writeback); a removal failure is recorded
+in the receipt's `cleanup_failures` without changing the outcome. Operations on
+the shared checkout (clone, fetch, worktree add/remove) are serialized per
+repository by a lock file beside it.
 
 ## Coordinator
 
@@ -181,7 +187,7 @@ single-Task path: admission → claim → run-task.
 
 Command executors are argv arrays (no shell). They receive one JSON request on
 stdin: `{task, checkout, context, resources, allocation, instruction, run_id}`,
-where `checkout` is the resolved checkout path. Exit zero
+where `checkout` is the invocation's isolated worktree path. Exit zero
 must emit exactly one common Result as JSON; nonzero is infrastructure failure.
 A finite timeout (default 3600 seconds) kills the subprocess group. Instructions
 and command configuration are trusted; task content is data. Children inherit

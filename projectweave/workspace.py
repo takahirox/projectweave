@@ -10,7 +10,7 @@ from functools import partial
 from pathlib import Path
 import re
 import sys
-from .checkout import resolve
+from .checkout import worktree
 from .contracts import Failure, decode, keys, number, require, text
 from .executors import invoke
 from .github import GitHub, validate_project
@@ -128,7 +128,7 @@ def run_task(directory, task, backend=None, executor=invoke):
     directory = Path(directory)
     graph = check_project(directory)
     project = load_project(directory)
-    return Runtime(graph, project, backend=backend, executor=executor, checkout=partial(resolve, directory),
+    return Runtime(graph, project, backend=backend, executor=executor, checkout=partial(worktree, directory),
                    workspace=str(directory), task=task).run()
 
 

@@ -1,4 +1,11 @@
-"""Deterministic Task checkouts at <workspace>/repos/<owner>/<repo>; no registry or mapping."""
+"""Task worktrees for command executors.
+
+<workspace>/repos/<owner>/<repo> is a shared checkout used only as the Git object source (cloned lazily,
+fetched before each use). Every command-executor invocation gets its own detached worktree under
+<workspace>/worktrees/, created at the fetched remote default branch tip and removed when the executor
+exits, so concurrent Tasks never share a mutable working tree. No registry or mapping.
+"""
+from contextlib import contextmanager
 import fcntl
 import os
 from pathlib import Path
@@ -23,22 +30,55 @@ def origin_matches(url, repository):
     return match is not None and match[1].lower() == repository.lower()
 
 
-def resolve(workspace, repository):
-    """Return the checkout path for a Task repository, cloning it lazily and fetching origin."""
-    require(valid_repository(repository), f"Invalid Task repository: {repository!r}", "checkout")
-    path = Path(workspace) / "repos" / repository
+@contextmanager
+def repository_lock(path, repository):
+    # Concurrent Tasks of one repository must not race on the shared checkout (clone, fetch, worktree metadata).
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         lock = open(path.parent / f".{path.name}.lock", "a")
     except OSError as exc:
         raise Failure("checkout", f"Cannot prepare checkout for {repository}: {exc}") from exc
-    # Concurrent Tasks of one repository must not race on clone/fetch; hold a lock beside the checkout.
     with lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
-            return prepare(path, repository)
+            yield
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def resolve(workspace, repository):
+    """Return the shared checkout path for a Task repository, cloning it lazily and fetching origin."""
+    require(valid_repository(repository), f"Invalid Task repository: {repository!r}", "checkout")
+    path = Path(workspace) / "repos" / repository
+    with repository_lock(path, repository):
+        return prepare(path, repository)
+
+
+@contextmanager
+def worktree(workspace, repository, name, cleanup_failed=None):
+    """Yield a fresh detached worktree of the Task repository at origin/HEAD; remove it on exit, whatever
+    the executor did. Creation failure is a checkout Failure; removal failure is only reported."""
+    require(valid_repository(repository), f"Invalid Task repository: {repository!r}", "checkout")
+    shared = Path(workspace) / "repos" / repository
+    path = Path(workspace).absolute() / "worktrees" / name
+    with repository_lock(shared, repository):
+        prepare(shared, repository)
+        try:
+            require(not path.exists() and not path.is_symlink(), f"{path} already exists", "checkout")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            process(["git", "-C", str(shared), "worktree", "add", "--detach", str(path), BASE], None, 120)
+        except (Failure, OSError) as exc:
+            raise Failure("checkout", f"Cannot create a Task worktree for {repository}: {exc}") from exc
+    try:
+        yield str(path)
+    finally:
+        with repository_lock(shared, repository):
+            try:
+                process(["git", "-C", str(shared), "worktree", "remove", "--force", str(path)], None, 120)
+                process(["git", "-C", str(shared), "worktree", "prune"], None, 60)
+            except (Failure, OSError) as exc:
+                if cleanup_failed:
+                    cleanup_failed({"worktree": str(path), "message": str(exc)})
 
 
 def prepare(path, repository):

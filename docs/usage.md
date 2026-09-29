@@ -27,7 +27,8 @@ workspace/
    ├─ app/                    (a Project workspace; "app" is its key)
    │  ├─ project.json  graph.json  gitweave.json
    │  ├─ .gitweave/repos/OWNER/REPO.git   (GitWeave's shared store per repository)
-   │  └─ repos/OWNER/REPO/                (only for command executors, cloned on demand)
+   │  ├─ repos/OWNER/REPO/                (command executors: shared Git source, cloned on demand)
+   │  └─ worktrees/RUN-NODE-STEP/         (command executors: one temporary worktree per invocation)
    └─ api/
 ```
 
@@ -345,24 +346,32 @@ human-readable message referencing the Issue; GitWeave then adds its
 changed and the execution record. If the agent leaves changes uncommitted, the
 checkpoint still captures them; only the readable message is missing. GitWeave
 pushes provenance refs/notes to the Task's repository during a live Run. If the
-workspace is itself a Git repository, ignore `.gitweave/`, `repos/` and
-`*.lock`.
+workspace is itself a Git repository, ignore `.gitweave/`, `repos/`,
+`worktrees/` and `*.lock`.
 
-For **command executors**, the Run instead resolves the claimed Task's repository
-(`task.repository`) to `<Project workspace>/repos/OWNER/REPO`. The first Task
+**Command executors are repository-aware and get one isolated worktree per
+invocation.** This is an invariant: concurrent Tasks never share a mutable working
+tree (GitWeave already guarantees the same with its own per-Task worktrees). The
+Run keeps a shared checkout of the claimed Task's repository (`task.repository`)
+at `<Project workspace>/repos/OWNER/REPO` only as the Git object source; executors
+never receive it. The first Task
 from a repository clones it with `gh repo clone`; later Runs reuse the directory
 only if it is itself a Git checkout (not merely inside another repository) whose
 `origin` is that repository on github.com (HTTPS or SSH form, case-insensitive).
 An existing directory that is not such a checkout is never overwritten or
-repurposed: the Run fails. Every execution then runs `git fetch origin`, and the
-command receives the checkout path to work against the **remote default branch
-tip (`origin/HEAD`)**. If `origin/HEAD` is missing or the default branch was
-renamed, run `git remote set-head origin --auto` in the checkout. Clone, fetch or
-origin failures are `checkout` Runtime Failures before the executor launches.
-Checkout preparation (clone/fetch) is serialized per repository with a lock file
-beside it, but concurrent command-executor Tasks of one repository then share the
-same checkout directory: make such wrappers safe for that (for example by
-working in their own worktree), or do not run them concurrently.
+repurposed: the Run fails. Every invocation then runs `git fetch origin` and
+creates a detached worktree at the **remote default branch tip (`origin/HEAD`)**
+under `<Project workspace>/worktrees/<run_id>-<node>-<step>/`; that path is the
+request's `checkout`. If `origin/HEAD` is missing or the default branch was
+renamed, run `git remote set-head origin --auto` in the shared checkout. Clone,
+fetch, origin and worktree-creation failures are `checkout` Runtime Failures
+before the executor launches. Operations on the shared checkout are serialized
+per repository with a lock file beside it. **The worktree is a temporary
+sandbox:** it is removed (`git worktree remove --force`, then `prune`) when the
+executor exits, whether it succeeded or failed, so anything that must outlive the
+Run has to be published by the executor itself (commit/push/PR or another
+external result). A removal failure is listed in the receipt's
+`cleanup_failures` and does not change the Task's outcome.
 
 Authenticate `gh` with Project read access (claim), Project write access (Status
 updates) and Issue comment permission (the GitWeave graph's `close_issue`
@@ -495,7 +504,7 @@ Command stdin is one JSON object:
 ```json
 {
   "task": {"title":"Example", "body":"Task description", "repository":"owner/repo"},
-  "checkout": "/path/to/workspace/repos/owner/repo",
+  "checkout": "/path/to/workspace/projects/app/worktrees/RUN-execute-1",
   "context": {},
   "resources": {"api":{"unit":"USD","available":8,"accounting":"reported","charged":2}},
   "allocation": {"api":2},

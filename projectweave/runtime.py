@@ -16,8 +16,9 @@ class Runtime:
         self.resources = Resources(envelope or {})
         self.backend = backend or GitHub(project)
         self.executor = executor
-        # Maps a Task repository to its prepared local checkout path (see checkout.resolve).
+        # (repository, name, cleanup_failed) -> context manager yielding an isolated Task worktree (checkout.worktree).
         self.checkout = checkout
+        self.cleanup_failures = []
         # GitWeave runs in Issue mode from the Project workspace and fetches the repository itself.
         self.workspace = workspace
         # run-task supplies the already-claimed Task at /task; the graph never claims or selects it itself.
@@ -49,11 +50,16 @@ class Runtime:
                         and task["number"] > 0, "GitWeave execution needs the Task repository and Issue number", "input")
             else:
                 require(self.checkout is not None, "Execution needs a Project workspace", "checkout")
-                request["checkout"] = self.checkout(task.get("repository"))
             output = None
             try:
-                args = (node["executor"], deepcopy(request)) + ((self.workspace,) if gitweave else ())
-                output = check_result(self.executor(*args))
+                if gitweave:
+                    output = check_result(self.executor(node["executor"], deepcopy(request), self.workspace))
+                else:
+                    # One isolated worktree per invocation; it is removed when the executor exits.
+                    name = f"{self.context['run_id']}-{self.active}-{self.steps}"
+                    with self.checkout(task.get("repository"), name, self.cleanup_failures.append) as path:
+                        request["checkout"] = path
+                        output = check_result(self.executor(node["executor"], deepcopy(request)))
                 self.resources.settle(allocation, output["usage"])
             except Failure as exc:
                 if output is not None:
@@ -115,4 +121,5 @@ class Runtime:
             failure = {**exc.record(), "node": self.active}
         return {"run_id": self.context["run_id"], "status": "failed" if failure else "completed",
                 "failure": failure, "steps": self.steps, "results": self.context["results"],
-                "events": self.events, "last": self.context["last"], "resources": self.resources.state}
+                "events": self.events, "last": self.context["last"], "resources": self.resources.state,
+                "cleanup_failures": self.cleanup_failures}

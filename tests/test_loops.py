@@ -1,4 +1,5 @@
 import copy
+from contextlib import nullcontext
 import json
 from pathlib import Path
 import unittest
@@ -35,7 +36,7 @@ class LoopTests(unittest.TestCase):
         backend.load.return_value = []
         execute = Mock(side_effect=outputs)
         env = {"ai": {"unit": "calls", "available": amount, "accounting": mode}}
-        record = Runtime(g, PROJECT, env, backend, execute, checkout=lambda repository: "checkout").run()
+        record = Runtime(g, PROJECT, env, backend, execute, checkout=lambda repository, name, failed: nullcontext("checkout")).run()
         return record, backend, execute
 
     def test_post_condition_and_state_retention(self):
@@ -192,7 +193,7 @@ class LoopTests(unittest.TestCase):
                 execute = Mock(side_effect=outputs)
                 # run-task gives the graph the already-claimed Task at /task; the graph never selects one.
                 record = Runtime(copy.deepcopy(example), PROJECT, backend=backend, executor=execute,
-                                 checkout=lambda repository: "checkout", task={"id": "task"}).run()
+                                 checkout=lambda repository, name, failed: nullcontext("checkout"), task={"id": "task"}).run()
                 self.assertEqual(record["status"], "completed")
                 self.assertEqual(backend.mock_calls, [])
                 self.assertEqual(execute.call_args.args[1]["task"], {"id": "task"})
