@@ -42,7 +42,7 @@ Evaluate
 
 The important property is that the workflow is explicit and configurable.
 
-The runtime executes JSON graphs with `agent` and `action` nodes, sequential flow, structured result handoff, `if` routing, and explicit post-condition `loop` control bounded by `max_steps`. It runs once from the CLI; concurrent execution is outside this release.
+The runtime executes JSON graphs with `agent` and `action` nodes, sequential flow, structured result handoff, `if` routing, and explicit post-condition `loop` control bounded by `max_steps`. Each `run-task` executes one graph for one claimed Task; `projectweave coordinate` runs claimed Tasks concurrently across and within Projects, each Task still one bounded graph Run.
 
 ## AI resources as constraints
 
@@ -188,44 +188,48 @@ python3 -m unittest discover -s tests -v
 ```
 
 A ProjectWeave Project is a GitHub Project whose Tasks are repository Issues
-from one or more repositories. For first-time setup, create a Project workspace
-directory and select an existing GitHub Project:
+from one or more repositories. One root workspace manages any number of Projects
+under `projects/<name>/`:
 
 ```sh
-mkdir my-project && cd my-project
-projectweave init --project-owner my-team --project-number 7
+mkdir workspace && cd workspace
+projectweave init
+projectweave init-project app --project-owner my-team --project-number 7
+projectweave init-project api --project-owner my-team --create-project "API" --resource codex:20:5
 ```
 
-Or explicitly create one with `--create-project "First Run"`; add
-`--link-repository OWNER/REPO` (repeatable) to also link repositories to it. Init writes
-human-editable files into the workspace without overwriting existing files.
-It defaults to Codex with its native default model; pass `--provider claude`
-(which also enables Claude's `bypassPermissions` mode: the agent edits files and
-runs commands without asking) or `--model MODEL` to
-override. Each Run observes the providers' remaining subscription usage itself
-(Claude `/usage`, Codex app-server) and starts nothing at or below the default 20%
-stop line or when usage cannot be observed.
-Follow the printed steps to add a chosen Issue to the Project, set its
-`AI execution` field to `Ready`, and run. See [initialization and recovery](docs/usage.md#initialize-a-project-workspace)
-for prerequisites, compatibility rules, and live Run limitations.
+`init-project` also takes `--link-repository OWNER/REPO` (repeatable) and
+`--provider claude` (which also enables Claude's `bypassPermissions` mode: the
+agent edits files and runs commands without asking) or `--model MODEL`; the
+default is Codex with its native default model. Init never overwrites files.
+Then add an Issue to the Project, set its `AI execution` field to `Ready` and its
+Status to `Todo`, and run either:
 
-The default recommended workflow is one canonical pair of files, which init
-copies and the docs describe:
+```sh
+projectweave run app       # one Task: admission -> claim -> run-task
+projectweave coordinate    # all Projects, concurrently, until stopped (--once for one pass)
+```
+
+ProjectWeave owns Project lifecycle: `claim` selects one runnable Task and sets it
+`In Progress` under a per-Project lock, `run-task` runs the Project graph for a
+claimed Task, and `complete` sets `Done` explicitly (by default GitHub does that
+when the Issue closes). Shared AI usage is observed directly (Claude `/usage`,
+Codex app-server) and admitted per Project with **opt-in** limits in the root
+`projectweave.json` (`init-project --resource PROVIDER:MIN:ESTIMATE`); a Project
+without limits is not constrained. See [the CLI guide](docs/usage.md) for
+prerequisites, admission rules, and live Run limitations.
+
+Each Project workspace holds two packaged templates:
 
 - [projectweave/templates/graph.json](projectweave/templates/graph.json), the
-  **ProjectWeave graph** (how the Project is operated): load the Project → select
-  a `Ready` repository Issue whose Status is `Todo` (or return `no_work`) → check
-  the subscription stop line → set its Status to `In Progress` so it is not
-  selected again → run GitWeave for the Issue (`--repo OWNER/REPO --issue N`).
-  ProjectWeave posts no comment itself; the GitWeave graph reports the outcome.
+  required **Project graph**: here just run GitWeave for the claimed Task
+  (`--repo OWNER/REPO --issue N`). ProjectWeave posts no comment itself.
 - [projectweave/templates/gitweave.json](projectweave/templates/gitweave.json),
   the **GitWeave Task graph** (how one selected Issue is carried to a merge):
   implement → open a PR (`Closes #N`) → review ⇄ fix until approved → merge with
   a merge commit → make sure the Issue is closed and comment the outcome on it.
   **It merges without a human review** once the review agent approves; edit it
   if you want a human to merge.
-- [projectweave/templates/resources.json](projectweave/templates/resources.json),
-  the subscription stop line the ProjectWeave graph checks.
 
 [examples/](examples/) holds specialized feature examples such as the
 [review/fix loop](examples/review-fix.json) and a manual

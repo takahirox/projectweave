@@ -1,44 +1,83 @@
 import argparse
-from functools import partial
 import json
 from pathlib import Path
+import signal
 import sys
-from .checkout import resolve
+import threading
 from .contracts import Failure, decode
+from .coordinator import coordinate, run_one
 from .graph import validate
-from .runtime import Runtime
-from .setup import add_init_arguments, initialize
+from .setup import add_init_arguments, init_project, init_root
+from .workspace import claim, complete, failure_record, project_dir, read_task, run_task
+
+
+def positive(value):
+    number = int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return number
+
+
+def emit(value):
+    print(json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2), flush=True)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="projectweave")
     commands = parser.add_subparsers(dest="command", required=True)
-    add_init_arguments(commands.add_parser("init", help="Prepare a Project workspace for its first Run"))
+    commands.add_parser("init", help="Create the root workspace (projectweave.json and projects/)")
+    setup = commands.add_parser("init-project", help="Create projects/NAME/ for one GitHub Project")
+    setup.add_argument("name")
+    add_init_arguments(setup)
     check = commands.add_parser("validate", help="Validate a graph without external operations")
     check.add_argument("--graph", required=True, type=Path)
-    run = commands.add_parser("run", help="Run one graph against a GitHub Project")
-    run.add_argument("--graph", required=True, type=Path)
-    run.add_argument("--project", required=True, type=Path)
-    run.add_argument("--resources", required=True, type=Path)
+    for name, text in (("claim", "Select one runnable Task and set it In Progress"),
+                       ("run-task", "Run the Project graph for an already-claimed Task"),
+                       ("complete", "Set a claimed Task's Project item to Done"),
+                       ("run", "Admission -> claim -> run-task for one Task, synchronously")):
+        command = commands.add_parser(name, help=text)
+        command.add_argument("project", help="Project directory name under projects/")
+        if name in ("run-task", "complete"):
+            command.add_argument("--task", required=True, help="Claimed Task JSON file, or - for stdin")
+    loop = commands.add_parser("coordinate", help="Observe, admit and launch Tasks across all Projects")
+    loop.add_argument("--once", action="store_true", help="One pass: launch what is admitted and wait for it")
+    loop.add_argument("--poll-seconds", type=positive, help="Re-observe interval (default from projectweave.json, else 300)")
     args = parser.parse_args(argv)
-    if args.command == "init":
-        report = initialize(args)
-        print(json.dumps(report, ensure_ascii=False, indent=2))
+    if args.command in ("init", "init-project"):
+        report = init_root(args) if args.command == "init" else init_project(args)
+        emit(report)
         return 0 if report["initialized"] else 2
+    root = Path.cwd()
     try:
-        graph = validate(decode(args.graph.read_text()))
         if args.command == "validate":
-            print(json.dumps({"status": "valid"}))
+            validate(decode(args.graph.read_text()))
+            emit({"status": "valid"})
             return 0
-        # The directory containing project.json is the Project workspace.
-        workspace = args.project.absolute().parent
-        record = Runtime(graph, decode(args.project.read_text()), decode(args.resources.read_text()),
-                         checkout=partial(resolve, workspace), workspace=str(workspace)).run()
-        print(json.dumps(record, ensure_ascii=False, allow_nan=False, indent=2))
-        return 1 if record["failure"] else 0
+        if args.command == "claim":
+            emit(claim(project_dir(root, args.project)))
+            return 0
+        if args.command == "run-task":
+            record = run_task(project_dir(root, args.project), read_task(args.task))
+            emit(record)
+            return 1 if record["failure"] else 0
+        if args.command == "complete":
+            emit(complete(project_dir(root, args.project), read_task(args.task)))
+            return 0
+        if args.command == "run":
+            outcome = run_one(root, args.project)
+            emit(outcome)
+            return 1 if outcome.get("failure") or outcome.get("record", {}).get("failure") else 0
+        stop = threading.Event()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            # Stop launching new work; Tasks already running are waited for.
+            signal.signal(sig, lambda *_: stop.set())
+        summary = coordinate(root, once=args.once, poll_seconds=args.poll_seconds, stop=stop,
+                             report=lambda outcome: print(json.dumps(outcome, ensure_ascii=False), file=sys.stderr, flush=True))
+        emit(summary)
+        return 1 if any(run.get("claim_failure") or run.get("setup_failure") or (run.get("record") or {}).get("failure")
+                        for run in summary["runs"]) else 0
     except (Failure, OSError, UnicodeError, RecursionError) as exc:
-        failure = exc.record() if isinstance(exc, Failure) else {"kind": "input", "message": str(exc)}
-        print(json.dumps({"status": "failed", "failure": failure}))
+        emit({"status": "failed", "failure": failure_record(exc)})
         return 2
 
 

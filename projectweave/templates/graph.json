@@ -1,48 +1,6 @@
 {
   "version": 1,
   "nodes": {
-    "load": {
-      "kind": "action",
-      "action": "load"
-    },
-    "select": {
-      "kind": "action",
-      "action": "select",
-      "inputs": {
-        "items": "/results/load/data/items"
-      }
-    },
-    "no_work": {
-      "kind": "action",
-      "action": "result",
-      "config": {
-        "message": "No eligible work",
-        "data": {
-          "status": "no_work"
-        },
-        "references": [],
-        "usage": {}
-      }
-    },
-    "subscription": {
-      "kind": "action",
-      "action": "resources",
-      "config": {
-        "subscriptions": [
-          "subscription"
-        ]
-      }
-    },
-    "start": {
-      "kind": "action",
-      "action": "status",
-      "inputs": {
-        "task": "/results/select/data/task"
-      },
-      "config": {
-        "status": "In Progress"
-      }
-    },
     "execute": {
       "kind": "action",
       "action": "execute",
@@ -51,35 +9,11 @@
         "graph": "gitweave.json"
       },
       "inputs": {
-        "task": "/results/select/data/task"
+        "task": "/task"
       }
     }
   },
   "flow": [
-    "load",
-    "select",
-    {
-      "if": {
-        "path": "/results/select/data/task",
-        "equals": null,
-        "then": [
-          "no_work"
-        ],
-        "else": [
-          "subscription",
-          {
-            "if": {
-              "path": "/results/subscription/data/available",
-              "equals": true,
-              "then": [
-                "start",
-                "execute"
-              ],
-              "else": []
-            }
-          }
-        ]
-      }
-    }
+    "execute"
   ]
 }

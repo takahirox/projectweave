@@ -9,8 +9,8 @@ from unittest.mock import Mock, patch
 
 from projectweave.github import GitHub
 from projectweave.graph import validate
-from projectweave.runtime import Runtime
 from projectweave.setup import templates
+from projectweave.workspace import run_task
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -19,7 +19,11 @@ class InitTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name).resolve() / "workspace with spaces"
+        # A root workspace (projectweave.json + projects/) with one Project workspace, projects/p.
+        self.top = Path(self.tmp.name).resolve() / "workspace with spaces"
+        (self.top / "projects").mkdir(parents=True)
+        (self.top / "projectweave.json").write_text(json.dumps({"projects": {}}))
+        self.root = self.top / "projects" / "p"
         self.root.mkdir()
         self.bin = Path(self.tmp.name) / "bin"
         self.bin.mkdir()
@@ -27,7 +31,7 @@ class InitTests(unittest.TestCase):
             script = self.bin / name
             script.write_text(f"#!{sys.executable}\n" + (ROOT / "tests/fake_init_cli.py").read_text())
             script.chmod(0o755)
-        self.directory = self.root  # The workspace holds configuration directly.
+        self.directory = self.root  # The Project workspace holds its configuration directly.
         self.log = Path(self.tmp.name) / "calls.jsonl"
         self.state = Path(self.tmp.name) / "remote.json"
         self.state.write_text(json.dumps({"projects": 0}))
@@ -39,8 +43,8 @@ class InitTests(unittest.TestCase):
         env = dict(self.env, INIT_MODE=mode)
         if owner and "--project-owner" not in args:
             args = ("--project-owner", "o", *args)
-        result = subprocess.run([sys.executable, "-m", "projectweave", "init", *args],
-                                cwd=self.root, env=env, capture_output=True, text=True, timeout=20)
+        result = subprocess.run([sys.executable, "-m", "projectweave", "init-project", "p", *args],
+                                cwd=self.top, env=env, capture_output=True, text=True, timeout=20)
         self.assertEqual(result.stderr, "")
         report = json.loads(result.stdout)
         calls = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
@@ -60,26 +64,30 @@ class InitTests(unittest.TestCase):
     def mutations(self, calls):
         return [c for c in calls if c["request"] and c["request"]["query"].startswith("mutation")]
 
-    def test_first_run_existing_project_and_unknown_usage_starts_nothing(self):
+    def root_config(self):
+        return json.loads((self.top / "projectweave.json").read_text())
+
+    def test_first_run_existing_project_and_run_task_executes_only_the_graph(self):
         code, report, calls = self.invoke("--project-number", "7")
         self.assertEqual(code, 0, report)
         self.assertTrue(report["initialized"])
         self.assertFalse(report["ready"])
-        self.assertEqual(len(report["created"]), 6)
+        self.assertEqual(len(report["created"]), 5)
         self.assertEqual(len(self.mutations(calls)), 2)
         self.assertEqual(self.read("project.json"), {"owner": "o", "owner_type": "organization", "number": 7,
                          "priority_order": ["P0", "P1", "P2"], "eligible_statuses": ["Todo"]})
         graph = validate(self.read("graph.json"))
         executor = graph["nodes"]["execute"]["executor"]
         self.assertEqual(executor, {"type": "gitweave", "graph": str(self.root / "gitweave.json")})
-        self.assertEqual(self.read("resources.json"), {"subscription": {"type": "subscription", "stop_at_remaining_percent": 20}})
-        self.assertEqual(graph["nodes"]["subscription"]["config"], {"subscriptions": ["subscription"]})
+        self.assertFalse((self.root / "resources.json").exists())  # Resource policy lives in the root, opt-in.
+        self.assertEqual(self.root_config(), {"projects": {}})
         # The generated files are the packaged canonical templates; only the GitWeave graph path is materialized.
         canonical = json.loads((ROOT / "projectweave/templates/graph.json").read_text())
         canonical["nodes"]["execute"]["executor"]["graph"] = str(self.root / "gitweave.json")
         self.assertEqual(graph, canonical)
-        for name in ("gitweave.json", "resources.json"):
-            self.assertEqual(self.read(name), json.loads((ROOT / "projectweave/templates" / name).read_text()))
+        self.assertEqual(self.read("gitweave.json"), json.loads((ROOT / "projectweave/templates/gitweave.json").read_text()))
+        self.assertEqual(list(graph["nodes"]), ["execute"])  # Required but minimal: just run GitWeave for /task.
+        self.assertEqual(graph["nodes"]["execute"]["inputs"], {"task": "/task"})
         self.assertNotIn("requires", graph["nodes"]["execute"])
         nodes = self.read("gitweave.json")["nodes"]
         self.assertEqual(list(nodes), ["implement", "publish", "review", "fix", "merge", "close_issue"])
@@ -100,39 +108,25 @@ class InitTests(unittest.TestCase):
         self.assertTrue(any("MERGES it into the default branch" in a for a in report["human_actions"]))
         self.assertTrue(any(".gitweave/repos/OWNER/REPO.git" in a for a in report["human_actions"]))
         self.assertFalse(any("provider and model" in entry for entry in report["missing"]))
-        self.assertEqual(report["missing"], [])  # Remaining usage is observed each Run; nothing to record.
-        self.assertTrue(any("observes the remaining subscription usage" in a for a in report["human_actions"]))
+        self.assertEqual(report["missing"], [])
+        self.assertTrue(any("admission is opt-in" in a for a in report["human_actions"]))
         self.assertTrue(any("native default model" in a for a in report["human_actions"]))
         self.assertFalse(any("bypassPermissions" in a for a in report["human_actions"]))
         self.assertTrue(any("item-add 7 --owner o" in c for c in report["next_commands"]))
-        self.assertIn("projectweave run --graph graph.json --project project.json --resources resources.json", report["next_commands"])
+        self.assertIn("projectweave run p  # one Task; or: projectweave coordinate", report["next_commands"])
         self.assertIn("AI execution field (Ready/Not ready)", report["created"])
         self.assertIn("Status field (Todo/In Progress)", report["existing"])
-        self.assertIn("start", graph["nodes"])  # Marks the Task In Progress between the threshold check and execute.
         self.assertTrue(any("Status to Todo" in a for a in report["human_actions"]))
         self.assertFalse(any("label" in c for c in report["next_commands"]))
         self.assertTrue(any("AI execution field to Ready" in a for a in report["human_actions"]))
-        task = {"id": "I", "item_id": "ITEM", "project_id": "P", "state": "OPEN", "labels": [], "ai_execution": "Ready",
-                "priority": None, "status": "Todo", "created_at": "2026", "url": "url", "repository": "o/r"}
-        # Stub usage observation so the result never depends on installed CLIs or the day's usage,
-        # and nothing reaches a real provider or GitHub: unknown usage must start nothing.
-        observe = Mock(return_value={"codex": {"error": "stubbed: usage unknown"}})
-        with patch.object(GitHub, "load", return_value=[task]), patch("projectweave.runtime.invoke") as invoke, \
-                patch.object(GitHub, "set_status") as set_status, patch.object(GitHub, "writeback") as writeback:
-            record = Runtime(graph, self.read("project.json"), self.read("resources.json"), observe=observe).run()
+        # run-task executes the generated graph for an already-claimed Task and nothing else.
+        task = {"id": "I", "item_id": "ITEM", "project_id": "P", "number": 7, "repository": "o/r"}
+        backend, executor = Mock(), Mock(return_value={"message": "done", "data": {}, "references": [], "usage": {}})
+        record = run_task(self.root, task, backend=backend, executor=executor)
         self.assertIsNone(record["failure"])
-        self.assertFalse(record["results"]["subscription"]["data"]["available"])
-        # The observer receives the generated GitWeave graph's agent nodes (all Codex by default).
-        self.assertEqual(observe.call_args.args[0], list(self.read("gitweave.json")["nodes"].values()))
-        self.assertEqual({node["provider"] for node in observe.call_args.args[0]}, {"codex"})
-        set_status.assert_not_called()  # Not marked In Progress.
-        invoke.assert_not_called()
-        writeback.assert_not_called()
-        observe.reset_mock()
-        with patch.object(GitHub, "load", return_value=[]):
-            record = Runtime(graph, self.read("project.json"), self.read("resources.json"), observe=observe).run()
-        observe.assert_not_called()  # No Task, so the subscription check is never reached.
-        self.assertEqual(record["last"]["data"], {"status": "no_work"})
+        config, request, workspace = executor.call_args.args
+        self.assertEqual((config["type"], request["task"], workspace), ("gitweave", task, str(self.root)))
+        self.assertEqual(backend.mock_calls, [])  # No selection, Status change or comment.
 
     def test_create_user_project_and_rerun_reuses_all_without_overwrite(self):
         self.state.write_text(json.dumps({"projects": 0, "owner_type": "User"}))
@@ -153,21 +147,16 @@ class InitTests(unittest.TestCase):
         worker = self.read("gitweave.json")
         worker["nodes"]["implement"].update(provider="codex", model="human-selected", effort="medium")
         self.write("gitweave.json", worker)
-        capacity = self.read("resources.json")
-        capacity["subscription"]["stop_at_remaining_percent"] = 30
-        self.write("resources.json", capacity)
         (self.directory / "graph.json").unlink()
         code, report, calls = self.invoke()
         self.assertEqual(code, 0, report)
         self.assertFalse(report["ready"])  # Static checks never certify live provider/access readiness.
         self.assertEqual(report["missing"], [])
         self.assertEqual(self.read("gitweave.json"), worker)
-        self.assertEqual(self.read("resources.json"), capacity)
         self.assertEqual(self.mutations(calls), [])
 
     def test_incompatible_files_stop_before_remote_mutations(self):
-        bad_values = {"graph.json": {"version": 999}, "resources.json": {"subscription": {"type": "subscription", "stop_at_remaining_percent": 101}},
-                      "gitweave.json": {"nodes": []}, "project.json": None}
+        bad_values = {"graph.json": {"version": 999}, "gitweave.json": {"nodes": []}, "project.json": None}
         for name, bad in bad_values.items():
             with self.subTest(name=name):
                 self.write(name, bad)
@@ -180,14 +169,15 @@ class InitTests(unittest.TestCase):
 
     def test_graph_generated_before_canonical_template_is_incompatible(self):
         self.invoke("--project-number", "7")
-        old = self.read("graph.json")
-        old["nodes"]["capacity"] = old["nodes"].pop("subscription")
-        old["nodes"]["comment"] = {"kind": "action", "action": "writeback", "inputs": {
-            "task": "/results/select/data/task", "result": "/results/execute"}}
-        del old["nodes"]["no_work"]
-        old["flow"] = ["load", "select", {"if": {"path": "/results/select/data/task", "equals": None, "then": [],
-            "else": ["capacity", {"if": {"path": "/results/capacity/data/available", "equals": True,
-            "then": ["execute", "comment"], "else": []}}]}}]
+        # The previous canonical graph selected and marked the Task itself; claim does that now.
+        old = {"version": 1, "nodes": {
+            "load": {"kind": "action", "action": "load"},
+            "select": {"kind": "action", "action": "select", "inputs": {"items": "/results/load/data/items"}},
+            "start": {"kind": "action", "action": "status", "inputs": {"task": "/results/select/data/task"},
+                      "config": {"status": "In Progress"}},
+            "execute": dict(self.read("graph.json")["nodes"]["execute"], inputs={"task": "/results/select/data/task"})},
+            "flow": ["load", "select", {"if": {"path": "/results/select/data/task", "equals": None, "then": [],
+                                                "else": ["start", "execute"]}}]}
         self.write("graph.json", old)
         code, report, calls = self.invoke()
         self.assertEqual(code, 2)
@@ -195,22 +185,40 @@ class InitTests(unittest.TestCase):
         self.assertEqual(self.read("graph.json"), old)
         self.assertEqual(self.mutations(calls), [])
 
-    def test_removed_resource_field_is_named(self):
-        old = {"subscription": {"type": "subscription", "stop_at_remaining_percent": 20, "remaining_percent": 82}}
-        self.write("resources.json", old)
-        code, report, calls = self.invoke("--project-number", "7")
+    def test_resource_policy_is_opt_in_and_never_rewritten(self):
+        code, report, calls = self.invoke("--project-number", "7", "--resource", "codex:20:10", "--resource", "claude:30:5.5")
+        self.assertEqual(code, 0, report)
+        rules = {"codex": {"min_remaining_percent": 20, "estimated_usage_percent_per_task": 10},
+                 "claude": {"min_remaining_percent": 30, "estimated_usage_percent_per_task": 5.5}}
+        self.assertEqual(self.root_config(), {"projects": {"p": {"resources": rules}}})
+        self.assertIn("projectweave.json policy p.codex", report["created"])
+        # Same choice or no flag reuses it; a different explicit value conflicts and nothing is rewritten.
+        for flags in (("--resource", "codex:20:10"), ()):
+            with self.subTest(flags=flags):
+                code, report, calls = self.invoke(*flags)
+                self.assertEqual(code, 0, report)
+                self.assertEqual(self.root_config(), {"projects": {"p": {"resources": rules}}})
+        code, report, calls = self.invoke("--resource", "codex:50:10")
         self.assertEqual(code, 2)
-        self.assertIn("Incompatible resources.json: Unexpected field: remaining_percent", report["failure"]["message"])
-        self.assertEqual(self.read("resources.json"), old)
-
-    def test_old_run_capacity_resources_reported_clearly(self):
-        old = {"gitweave": {"unit": "runs", "available": 1, "accounting": "reservation"}}
-        self.write("resources.json", old)
-        code, report, calls = self.invoke("--project-number", "7")
-        self.assertEqual(code, 2)
-        self.assertIn("not gitweave run capacity", report["failure"]["message"])
-        self.assertEqual(self.read("resources.json"), old)
+        self.assertIn("already constrains p.codex differently", report["failure"]["message"])
         self.assertEqual(self.mutations(calls), [])
+        self.assertEqual(self.root_config(), {"projects": {"p": {"resources": rules}}})
+
+    def test_invalid_resource_flags_and_root_config_named(self):
+        for flag in ("codex", "codex:20", "codex:101:1", "codex:x:1", ":20:1", "codex:20:10:1", "openai:20:5"):
+            with self.subTest(flag=flag):
+                code, report, calls = self.invoke("--project-number", "7", "--resource", flag)
+                self.assertEqual(code, 2)
+                self.assertIn("--resource", report["failure"]["message"])
+                self.assertEqual(calls, [])
+        (self.top / "projectweave.json").write_text(json.dumps({"projects": {}, "remaining_percent": 82}))
+        code, report, calls = self.invoke("--project-number", "7")
+        self.assertEqual(code, 2)
+        self.assertIn("Unexpected field: remaining_percent", report["failure"]["message"])
+        (self.top / "projectweave.json").unlink()
+        code, report, calls = self.invoke("--project-number", "7")
+        self.assertEqual(code, 2)
+        self.assertIn("projectweave init", report["failure"]["action"])
 
     def test_symlinks_rejected(self):
         outside = Path(self.tmp.name) / "outside"
@@ -231,7 +239,7 @@ class InitTests(unittest.TestCase):
         # A plain directory (not a Git checkout) is a valid workspace; no repository is named or cloned.
         code, report, calls = self.invoke("--project-number", "7")
         self.assertEqual(code, 0, report)
-        self.assertEqual(sorted(p.name for p in self.root.iterdir()), sorted(["project.json", "resources.json", "graph.json", "gitweave.json"]))
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), sorted(["project.json", "graph.json", "gitweave.json"]))
 
     def test_selection_required_and_conflicts(self):
         code, report, calls = self.invoke()
@@ -444,29 +452,29 @@ class InitTests(unittest.TestCase):
         self.assertEqual(self.read("project.json"), project)
         self.assertEqual(self.mutations(calls), [])
 
-    def test_generated_workflow_executes_without_projectweave_comment_using_external_fixtures(self):
-        # Quick start: nothing is edited; remaining usage is observed from the (fake) Codex app-server.
-        self.assertEqual(self.invoke("--project-number", "7")[0], 0)
+    def test_generated_project_runs_one_task_using_external_fixtures(self):
+        # Quick start: nothing is edited. `projectweave run p` claims (In Progress) then runs the graph.
+        self.assertEqual(self.invoke("--project-number", "7", "--resource", "codex:20:10")[0], 0)
         for name in ("gh", "gitweave", "git", "codex"):
             (self.bin / name).write_text(f"#!{sys.executable}\n" + (ROOT / "tests/fake_cli.py").read_text())
             (self.bin / name).chmod(0o755)
         self.log.unlink()
-        args = [sys.executable, "-m", "projectweave", "run", "--graph", str(self.directory / "graph.json"),
-                "--project", str(self.directory / "project.json"), "--resources", str(self.directory / "resources.json")]
-        result = subprocess.run(args, cwd=self.bin, env=dict(self.env, FAKE_LOG=str(self.log), FAKE_MODE="success"),
+        result = subprocess.run([sys.executable, "-m", "projectweave", "run", "p"], cwd=self.top,
+                                env=dict(self.env, FAKE_LOG=str(self.log), FAKE_MODE="success"),
                                 capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        record = json.loads(result.stdout)
-        self.assertEqual(list(record["results"])[-1], "execute")  # No writeback in the canonical graph.
-        self.assertEqual(record["results"]["subscription"]["data"]["observations"], {"codex": {"remaining_percent": 50}})
+        outcome = json.loads(result.stdout)
+        self.assertEqual(outcome["status"], "completed")
+        self.assertEqual(outcome["observations"], {"codex": {"windows": {"primary": 50}}})  # Opted-in provider observed.
+        self.assertEqual(list(outcome["record"]["results"]), ["execute"])
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
         launch = next(c for c in calls if c["command"] == "gitweave")
         self.assertEqual(launch["argv"][2], str(self.directory / "gitweave.json"))
-        self.assertEqual(launch["argv"][3:7], ["--repo", "o/r", "--issue", "7"])  # GitWeave Issue mode fetches itself.
+        self.assertEqual(launch["argv"][3:7], ["--repo", "o/r", "--issue", "13"])  # Project #7's fake item is Issue 13.
         self.assertEqual(Path(launch["cwd"]).resolve(), self.root)
         self.assertFalse(any(c["command"] == "git" or c["argv"][:2] == ["repo", "clone"] for c in calls))
         mutations = [c for c in calls if c["command"] == "gh" and c["request"] and c["request"]["query"].startswith("mutation")]
-        self.assertEqual(len(mutations), 1)  # Only In Progress, before launch; no raw result comment.
+        self.assertEqual(len(mutations), 1)  # Only the claim's In Progress, before launch; no comment.
         self.assertEqual(mutations[0]["request"]["variables"]["option"], "PROGRESS")
         self.assertLess(calls.index(mutations[0]), calls.index(launch))
 
@@ -502,10 +510,11 @@ class InitTests(unittest.TestCase):
     def test_invalid_provider_or_blank_model_rejected(self):
         for flags in (("--provider", "gemini"), ("--model", " ")):
             with self.subTest(flags=flags):
-                result = subprocess.run([sys.executable, "-m", "projectweave", "init", "--project-owner", "o",
-                                         "--project-number", "7", *flags], cwd=self.root, env=self.env,
+                result = subprocess.run([sys.executable, "-m", "projectweave", "init-project", "p", "--project-owner", "o",
+                                         "--project-number", "7", *flags], cwd=self.top, env=self.env,
                                         capture_output=True, text=True, timeout=20)
                 self.assertEqual(result.returncode, 2)
+                self.assertIn("gemini" if "gemini" in flags else "--model", result.stdout + result.stderr)
                 self.assertEqual(list(self.root.iterdir()), [])
 
     def test_human_provider_model_edits_without_flags_are_reused(self):
@@ -674,3 +683,26 @@ class InitTests(unittest.TestCase):
                                 cwd=self.root, env=dict(self.env, PYTHONPATH=os.environ["GITWEAVE_SOURCE"]),
                                 capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class RootInitTests(unittest.TestCase):
+    def init(self, cwd):
+        result = subprocess.run([sys.executable, "-m", "projectweave", "init"], cwd=cwd, capture_output=True, text=True,
+                                timeout=20, env=dict(os.environ, PYTHONPATH=str(ROOT)))
+        return result.returncode, json.loads(result.stdout)
+
+    def test_root_workspace_created_reused_and_never_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code, report = self.init(root)
+            self.assertEqual(code, 0, report)
+            self.assertEqual(json.loads((root / "projectweave.json").read_text()), {"projects": {}})
+            self.assertTrue((root / "projects").is_dir())
+            self.assertTrue(any("init-project" in c for c in report["next_commands"]))
+            code, report = self.init(root)
+            self.assertEqual((code, report["created"]), (0, []))
+            (root / "projectweave.json").write_text('{"projects": {"bad name": {}}}')
+            code, report = self.init(root)
+            self.assertEqual(code, 2)
+            self.assertIn("Incompatible projectweave.json", report["failure"]["message"])
+            self.assertEqual((root / "projectweave.json").read_text(), '{"projects": {"bad name": {}}}')

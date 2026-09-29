@@ -32,23 +32,22 @@ class UsageTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_claude_takes_smallest_applicable_limit(self):
+    def test_claude_reports_every_window(self):
         self.env(FAKE_CLAUDE_USED="10,20,90")
-        self.assertEqual(usage.claude(uses_fable=True), 10)  # Weekly Fable is 90% used.
-        self.assertEqual(usage.claude(uses_fable=False), 80)  # Session 90% left, week 80% left.
+        self.assertEqual(usage.claude(), {"session": 90, "week": 80, "fable": 10})
 
     def test_claude_failures_are_unknown(self):
         for mode in ("claude_failure", "claude_no_week"):
             with self.subTest(mode=mode):
                 self.env(FAKE_USAGE=mode)
                 with self.assertRaises(Failure):
-                    usage.claude(uses_fable=False)
+                    usage.claude()
 
     def test_codex_primary_window(self):
         self.env(FAKE_CODEX_USED="95")
-        self.assertEqual(usage.codex(), 5)
+        self.assertEqual(usage.codex(), {"primary": 5})
         self.env(FAKE_USAGE="codex_server_request")
-        self.assertEqual(usage.codex(), 5)  # The server's own request with id 2 is skipped.
+        self.assertEqual(usage.codex(), {"primary": 5})  # The server's own request with id 2 is skipped.
 
     def test_codex_failures_are_unknown(self):
         for mode in ("codex_error", "codex_no_primary", "codex_hang", "codex_exit"):
@@ -57,20 +56,14 @@ class UsageTests(unittest.TestCase):
                 with self.assertRaises(Failure):
                     usage.codex(timeout=1)
 
-    def test_fable_rule_and_observe_per_provider(self):
-        self.assertTrue(usage.fable({"provider": "claude"}))  # No model: native default is unknown.
-        self.assertTrue(usage.fable({"provider": "claude", "model": "claude-FABLE-5-1"}))
-        self.assertFalse(usage.fable({"provider": "claude", "model": "opus"}))
+    def test_observe_named_providers(self):
         self.env(FAKE_CLAUDE_USED="10,20,90", FAKE_CODEX_USED="40")
-        nodes = [{"provider": "codex"}, {"provider": "claude", "model": "opus"}, {"provider": "claude", "model": "opus"}]
-        self.assertEqual(usage.observe(nodes), {"claude": {"remaining_percent": 80}, "codex": {"remaining_percent": 60}})
-        observed = usage.observe([{"provider": "claude", "model": "opus"}, {"provider": "claude"}])
-        self.assertEqual(observed, {"claude": {"remaining_percent": 10}})  # Any Fable node includes the Fable limit.
+        self.assertEqual(usage.observe({"codex", "claude"}), {
+            "claude": {"windows": {"session": 90, "week": 80, "fable": 10}}, "codex": {"windows": {"primary": 60}}})
         self.env(FAKE_USAGE="codex_exit")
-        observed = usage.observe([{"provider": "codex"}, {"provider": "claude", "model": "opus"}])
+        observed = usage.observe(["codex", "claude"])
         self.assertIn("exited without a rate limit response", observed["codex"]["error"])  # Real reason recorded.
-        self.assertEqual(observed["claude"], {"remaining_percent": 80})  # Other providers are unaffected.
-        self.assertIsInstance(observed["claude"]["remaining_percent"], int)
-        observed = usage.observe([{"provider": "gemini"}])
-        self.assertIn("error", observed["gemini"])
-        self.assertIn("error", usage.observe([])["(none)"])
+        self.assertIn("windows", observed["claude"])  # Other providers are unaffected.
+        self.assertIsInstance(observed["claude"]["windows"]["week"], int)
+        self.assertIn("No usage observer", usage.observe(["gemini"])["gemini"]["error"])
+        self.assertEqual(usage.observe([]), {})
