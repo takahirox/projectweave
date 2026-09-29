@@ -16,8 +16,7 @@ from .usage import OBSERVERS
 from .workspace import NAME, PROJECTS, ROOT_CONFIG, percent, validate_root
 
 PRIORITIES = ["P0", "P1", "P2"]
-# Only Todo Tasks are claimed; claim marks the Task In Progress before it runs.
-# claim sets In Progress and complete sets Done, so all three lifecycle options must exist.
+# Only Todo Tasks are claimed; claim sets In Progress and complete sets Done, so init requires all three.
 STATUSES = ["Todo", "In Progress", "Done"]
 FILES = ("project.json", "graph.json", "gitweave.json")
 PROVIDERS = ("codex", "claude")
