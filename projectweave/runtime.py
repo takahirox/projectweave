@@ -1,5 +1,6 @@
 """Bounded single-run graph interpreter."""
 from copy import deepcopy
+import re
 import uuid
 from .contracts import Failure, require, pointer, equal, result, check_result
 from .graph import validate
@@ -56,7 +57,8 @@ class Runtime:
                     output = check_result(self.executor(node["executor"], deepcopy(request), self.workspace))
                 else:
                     # One isolated worktree per invocation; it is removed when the executor exits.
-                    name = f"{self.context['run_id']}-{self.active}-{self.steps}"
+                    node_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(self.active)).strip(".") or "node"
+                    name = f"{self.context['run_id']}-{node_id}-{self.steps}"
                     with self.checkout(task.get("repository"), name, self.cleanup_failures.append) as path:
                         request["checkout"] = path
                         output = check_result(self.executor(node["executor"], deepcopy(request)))

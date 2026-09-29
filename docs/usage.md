@@ -322,7 +322,8 @@ projectweave run app          # or: projectweave coordinate
 `run` prints `{"status", "project", "task", "record", "observations"}`: `status`
 is `not_admitted` (with `reason`), `no_work`, or the Run's `completed`/`failed`.
 `run-task` prints the Run receipt: Run ID, status, failure (or null), executed
-steps, per-node results, ordered events, last result, and resources. Exit 0 means
+steps, per-node results, ordered events, last result, resources, and
+`cleanup_failures` (worktree removals that failed). Exit 0 means
 normal completion (including no work or not admitted); exit 1 is a Runtime
 Failure; exit 2 is invalid input/setup or a failed claim. Receipts contain
 selected Issue content and bounded executor error text, so handle them like
@@ -371,7 +372,9 @@ sandbox:** it is removed (`git worktree remove --force`, then `prune`) when the
 executor exits, whether it succeeded or failed, so anything that must outlive the
 Run has to be published by the executor itself (commit/push/PR or another
 external result). A removal failure is listed in the receipt's
-`cleanup_failures` and does not change the Task's outcome.
+`cleanup_failures` and does not change the Task's outcome. A Run that is killed
+hard (SIGKILL, a crash) cannot clean up: remove leftovers under `worktrees/` with
+`git -C repos/OWNER/REPO worktree remove --force PATH` and `git worktree prune`.
 
 Authenticate `gh` with Project read access (claim), Project write access (Status
 updates) and Issue comment permission (the GitWeave graph's `close_issue`

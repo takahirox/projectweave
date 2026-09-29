@@ -543,3 +543,21 @@ class WorktreeTests(unittest.TestCase):
                         raise RuntimeError("executor failed")  # Removed even when the executor fails.
                 self.assertFalse(Path(third).exists())
             self.assertEqual(failures, [])
+
+    def test_worktree_names_stay_inside_worktrees(self):
+        from projectweave import checkout
+        for name in ("a/b", "..", "../escape", ""):
+            with self.subTest(name=name):
+                with self.assertRaises(Failure):
+                    with checkout.worktree("/nonexistent", "o/r", name):
+                        pass
+
+    def test_worktree_name_sanitizes_node_ids(self):
+        names = []
+        g = {"version": 1, "nodes": {"fix/../x": {"kind": "agent", "instruction": "Do it",
+             "executor": {"type": "command", "argv": ["fake"]}, "inputs": {"task": "/task"}}}, "flow": ["fix/../x"]}
+        record = Runtime(g, PROJECT, backend=Mock(), executor=Mock(return_value=result("Done")),
+                         checkout=lambda repository, name, failed: names.append(name) or nullcontext("/w"), task=TASK).run()
+        self.assertIsNone(record["failure"])
+        self.assertEqual(names, [f"{record['run_id']}-fix_.._x-1"])
+        self.assertNotIn("/", names[0])

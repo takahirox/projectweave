@@ -60,7 +60,11 @@ def worktree(workspace, repository, name, cleanup_failed=None):
     the executor did. Creation failure is a checkout Failure; removal failure is only reported."""
     require(valid_repository(repository), f"Invalid Task repository: {repository!r}", "checkout")
     shared = Path(workspace) / "repos" / repository
-    path = Path(workspace).absolute() / "worktrees" / name
+    root = Path(workspace).absolute() / "worktrees"
+    path = root / name
+    # Keep every Task worktree directly under worktrees/, whatever characters the name carries.
+    require(path.parent == root and name not in ("", ".", "..") and "/" not in name,
+            f"Invalid Task worktree name: {name!r}", "checkout")
     with repository_lock(shared, repository):
         prepare(shared, repository)
         try:
@@ -72,13 +76,14 @@ def worktree(workspace, repository, name, cleanup_failed=None):
     try:
         yield str(path)
     finally:
-        with repository_lock(shared, repository):
-            try:
+        # Any cleanup problem, including taking the lock, is only reported: it never changes the outcome.
+        try:
+            with repository_lock(shared, repository):
                 process(["git", "-C", str(shared), "worktree", "remove", "--force", str(path)], None, 120)
                 process(["git", "-C", str(shared), "worktree", "prune"], None, 60)
-            except (Failure, OSError) as exc:
-                if cleanup_failed:
-                    cleanup_failed({"worktree": str(path), "message": str(exc)})
+        except (Failure, OSError) as exc:
+            if cleanup_failed:
+                cleanup_failed({"worktree": str(path), "message": str(exc)})
 
 
 def prepare(path, repository):
