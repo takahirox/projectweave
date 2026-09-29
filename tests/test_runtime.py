@@ -472,3 +472,40 @@ class FieldValidationTests(unittest.TestCase):
         self.assertTrue(message.startswith("Missing fields: a, c; Unexpected fields: y, z"), message)
         keys({"a": 1}, {"a", "b"}, {"a"})  # Valid objects are unchanged.
         self.assertEqual(self.message([], {"a"}), "Expected an object")
+
+
+class CheckoutLockTests(unittest.TestCase):
+    def test_concurrent_checkouts_of_one_repository_clone_once(self):
+        import tempfile, threading, time
+        from projectweave.checkout import resolve
+        clones = []
+
+        def process(argv, stdin, timeout):
+            if argv[:3] == ["gh", "repo", "clone"]:
+                clones.append(argv)
+                time.sleep(0.1)  # A racing second clone would see a half-made directory.
+                Path(argv[4]).mkdir()
+                return ""
+            if argv[3:] == ["rev-parse", "--show-toplevel"]:
+                return argv[2] + "\n"
+            if argv[3:] == ["remote", "get-url", "origin"]:
+                return "https://github.com/o/r.git\n"
+            return ""
+
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch("projectweave.checkout.process", process):
+            paths, errors = [], []
+
+            def work():
+                try:
+                    paths.append(resolve(tmp, "o/r"))
+                except Failure as exc:
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=work) for _ in range(3)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(len(clones), 1)
+        self.assertEqual(len(set(paths)), 1)

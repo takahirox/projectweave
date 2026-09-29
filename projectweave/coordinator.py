@@ -4,7 +4,8 @@ import threading
 import time
 from .contracts import Failure
 from . import usage
-from .workspace import claim, failure_record, load_root, policy, project_dir, projects, run_task, POLL_SECONDS
+from .workspace import (claim, check_project, failure_record, load_root, policy, project_dir, projects, run_task,
+                        POLL_SECONDS)
 
 
 class Admission:
@@ -51,6 +52,7 @@ class Admission:
 def run_one(root, name, observe=usage.observe, claim_task=claim, run=run_task):
     """Synchronous single-Task path: admission -> claim -> run-task -> wait."""
     directory = project_dir(root, name)
+    check_project(directory)  # Before claiming, so a broken setup never strands a Task In Progress.
     admission = Admission(policy(load_root(root)), observe)
     observations = admission.refresh([name])
     admitted, reason = admission.admits(name)
@@ -59,7 +61,11 @@ def run_one(root, name, observe=usage.observe, claim_task=claim, run=run_task):
     task = claim_task(directory)
     if task is None:
         return {"status": "no_work", "project": name, "observations": observations}
-    record = run(directory, task)
+    try:
+        record = run(directory, task)
+    except Exception as exc:  # The claimed Task stays In Progress; name it so it is not lost.
+        return {"status": "failed", "project": name, "task": task, "failure": failure_record(exc),
+                "observations": observations}
     return {"status": record["status"], "project": name, "task": task, "record": record, "observations": observations}
 
 
@@ -69,7 +75,9 @@ def coordinate(root, once=False, poll_seconds=None, stop=None, observe=usage.obs
     re-observe when a Task ends or every poll interval. With once, make one pass and wait for what it launched."""
     config = load_root(root)
     names = projects(root)
-    poll = poll_seconds or config.get("poll_seconds", POLL_SECONDS)
+    poll = poll_seconds if poll_seconds is not None else config.get("poll_seconds", POLL_SECONDS)
+    if poll <= 0:
+        raise Failure("input", "poll_seconds must be positive")
     stop = stop or threading.Event()
     admission = Admission(policy(config), observe)
     finished = queue.Queue()
@@ -79,7 +87,7 @@ def coordinate(root, once=False, poll_seconds=None, stop=None, observe=usage.obs
     def launch(name, directory, task):
         reservation = admission.reserve(name)
         key = object()
-        running[key] = reservation
+        running[key] = (reservation, task.get("item_id"))
 
         def work():
             try:
@@ -91,36 +99,49 @@ def coordinate(root, once=False, poll_seconds=None, stop=None, observe=usage.obs
         threading.Thread(target=work, name=f"projectweave-{name}", daemon=True).start()
 
     def settle(key, outcome):
-        admission.release(running.pop(key))
+        admission.release(running.pop(key)[0])
         runs.append(outcome)
         if report:
             report(outcome)
 
-    while True:
-        if not stop.is_set():
-            admission.refresh(names)
-            for name in names:
-                directory = project_dir(root, name)
-                while not stop.is_set() and admission.admits(name)[0]:
-                    try:
-                        task = claim_task(directory)
-                    except (Failure, OSError) as exc:
-                        runs.append({"project": name, "claim_failure": failure_record(exc)})
-                        break
-                    if task is None:
-                        break
-                    launch(name, directory, task)
-        if once or stop.is_set():
-            while running:
-                settle(*finished.get())
-            break
-        # Wait for a Task to end or the poll interval, in short slices so a stop request is seen promptly.
-        deadline = time.monotonic() + poll
-        while not stop.is_set():
+    def admit_and_launch():
+        admission.refresh(names)
+        for name in names:
             try:
-                settle(*finished.get(timeout=max(0.0, min(1.0, deadline - time.monotonic()))))
-                break
-            except queue.Empty:
-                if time.monotonic() >= deadline:
+                directory = project_dir(root, name)
+                check_project(directory)  # Never claim for a Project whose graph cannot run.
+            except Exception as exc:
+                runs.append({"project": name, "setup_failure": failure_record(exc)})
+                continue
+            while not stop.is_set() and admission.admits(name)[0]:
+                try:
+                    task = claim_task(directory)
+                except Exception as exc:
+                    runs.append({"project": name, "claim_failure": failure_record(exc)})
                     break
+                if task is None:
+                    break
+                if task.get("item_id") is not None and any(item == task.get("item_id") for _, item in running.values()):
+                    break  # Defensive: never launch a Task that is already running.
+                launch(name, directory, task)
+
+    try:
+        while True:
+            if not stop.is_set():
+                admit_and_launch()
+            if once or stop.is_set():
+                break
+            # Wait for a Task to end or the poll interval, in short slices so a stop request is seen promptly.
+            deadline = time.monotonic() + poll
+            while not stop.is_set():
+                try:
+                    settle(*finished.get(timeout=max(0.0, min(1.0, deadline - time.monotonic()))))
+                    break
+                except queue.Empty:
+                    if time.monotonic() >= deadline:
+                        break
+    finally:
+        # Whatever happens (stop, --once, or an unexpected error), wait for the Tasks already launched.
+        while running:
+            settle(*finished.get())
     return {"observations": admission.observations, "reserved": admission.reserved, "runs": runs}

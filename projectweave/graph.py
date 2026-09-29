@@ -44,7 +44,7 @@ def validate(graph):
         if execute:
             require("executor" in node, "Execution requires an executor")
             executor(node["executor"])
-            # requires is optional: subscription admission happens in a resources action instead.
+            # requires is optional (metered resources); shared AI usage is admitted by the coordinator.
             if "requires" in node:
                 cost = node["requires"]
                 require(isinstance(cost, dict) and cost and all(text(k) and number(v, True)

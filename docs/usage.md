@@ -53,7 +53,9 @@ supported. Run every command below from the root workspace.
   sets its Status to `In Progress`, holding a local per-Project file lock
   (`projects/NAME/.projectweave.lock`) only around select → mark. Manual `claim`
   and `coordinate` share the lock, so concurrent claims on one machine never pick
-  the same Task. Another claim may start while an earlier Task is still running.
+  the same Task. Only `Todo` Tasks are claimed, even if `project.json` sets no
+  `eligible_statuses`. The printed Task shows its new Status, `In Progress`.
+  Another claim may start while an earlier Task is still running.
 - **run-task** runs the Project graph with the claimed Task at `/task`. The graph
   does only what it says: no implicit selection, Status change or completion.
 - **complete** sets `Done` explicitly. The default path to `Done` is GitHub's
@@ -115,7 +117,12 @@ cross-Project ranking. Each finished Task is reported on stderr as one JSON line
 on exit a summary (last observations, reservations, runs) is printed. SIGINT or
 SIGTERM stops launching new work and waits for running Tasks. `--once` makes a
 single pass, waits for what it launched, and exits (useful for tests or cron).
-Exit status 1 means a Task or a claim failed.
+Exit status 1 means a Task, a claim, or a Project's setup check failed; a Project
+whose `project.json`/`graph.json` is invalid is skipped before claiming, so no
+Task is left `In Progress` by a broken setup. The root config and the set of
+Projects are read at start: restart `coordinate` after editing
+`projectweave.json` or adding a Project. Any unexpected error also waits for the
+Tasks already running before `coordinate` exits.
 
 ## Default Project workflow
 
@@ -339,6 +346,10 @@ command receives the checkout path to work against the **remote default branch
 tip (`origin/HEAD`)**. If `origin/HEAD` is missing or the default branch was
 renamed, run `git remote set-head origin --auto` in the checkout. Clone, fetch or
 origin failures are `checkout` Runtime Failures before the executor launches.
+Checkout preparation (clone/fetch) is serialized per repository with a lock file
+beside it, but concurrent command-executor Tasks of one repository then share the
+same checkout directory: make such wrappers safe for that (for example by
+working in their own worktree), or do not run them concurrently.
 
 Authenticate `gh` with Project read access (claim), Project write access (Status
 updates) and Issue comment permission (the GitWeave graph's `close_issue`
@@ -407,8 +418,9 @@ using it on public Issues.
 
 ## Review/fix loop
 
-[examples/review-fix.json](../examples/review-fix.json) selects a task and uses
-this body, skipping the loop when no eligible task exists:
+[examples/review-fix.json](../examples/review-fix.json) is a Project graph for a
+claimed Task (both agents take `inputs.task = "/task"`) whose whole flow is this
+loop:
 
 ```json
 {
@@ -430,9 +442,9 @@ this body, skipping the loop when no eligible task exists:
 The first review always runs; fixes run only after rejection. The loop checks
 the named review result after the conditional fix, so a fix cannot overwrite the
 approval being tested through `last`. A rejection leads to another review; an
-approval exits without a fix. Configure both wrapper paths and an `ai` resource
-envelope before live use. Review must return a boolean `data.approved`; wrappers
-receive the selected task and the preceding result as context. This example
+approval exits without a fix. Configure both wrapper paths before live use.
+Review must return a boolean `data.approved`; wrappers receive the claimed Task
+and the preceding result as context. This example
 performs no writeback.
 
 Validate without invoking wrappers:
@@ -442,8 +454,7 @@ start (including the first) consumes another, and body nodes/controls consume
 their usual steps. All nested controls share `max_steps`; no body executes after
 the limit is exhausted. State and resource balances carry forward, with latest
 per-node results and all completed invocations in events. Missing condition data
-(including an exhausted review allocation that returns no `approved` field) or
-any body Runtime Failure stops the Run without retries or continuation.
+or any body Runtime Failure stops the Run without retries or continuation.
 
 ## Command executor contract
 

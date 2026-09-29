@@ -2,17 +2,6 @@
   "version": 1,
   "max_steps": 100,
   "nodes": {
-    "load": {
-      "kind": "action",
-      "action": "load"
-    },
-    "select": {
-      "kind": "action",
-      "action": "select",
-      "inputs": {
-        "items": "/results/load/data/items"
-      }
-    },
     "review": {
       "kind": "agent",
       "instruction": "Review the task and return data.approved as a boolean.",
@@ -22,11 +11,8 @@
           "/path/to/review-wrapper"
         ]
       },
-      "requires": {
-        "ai": 1
-      },
       "inputs": {
-        "task": "/results/select/data/task",
+        "task": "/task",
         "context": "/last"
       }
     },
@@ -39,46 +25,32 @@
           "/path/to/fix-wrapper"
         ]
       },
-      "requires": {
-        "ai": 1
-      },
       "inputs": {
-        "task": "/results/select/data/task",
+        "task": "/task",
         "context": "/last"
       }
     }
   },
   "flow": [
-    "load",
-    "select",
     {
-      "if": {
-        "path": "/results/select/data/task",
-        "equals": null,
-        "then": [],
-        "else": [
+      "loop": {
+        "flow": [
+          "review",
           {
-            "loop": {
-              "flow": [
-                "review",
-                {
-                  "if": {
-                    "path": "/results/review/data/approved",
-                    "equals": false,
-                    "then": [
-                      "fix"
-                    ],
-                    "else": []
-                  }
-                }
+            "if": {
+              "path": "/results/review/data/approved",
+              "equals": false,
+              "then": [
+                "fix"
               ],
-              "while": {
-                "path": "/results/review/data/approved",
-                "equals": false
-              }
+              "else": []
             }
           }
-        ]
+        ],
+        "while": {
+          "path": "/results/review/data/approved",
+          "equals": false
+        }
       }
     }
   ]

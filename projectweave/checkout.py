@@ -1,4 +1,5 @@
 """Deterministic Task checkouts at <workspace>/repos/<owner>/<repo>; no registry or mapping."""
+import fcntl
 import os
 from pathlib import Path
 import re
@@ -26,10 +27,24 @@ def resolve(workspace, repository):
     """Return the checkout path for a Task repository, cloning it lazily and fetching origin."""
     require(valid_repository(repository), f"Invalid Task repository: {repository!r}", "checkout")
     path = Path(workspace) / "repos" / repository
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock = open(path.parent / f".{path.name}.lock", "a")
+    except OSError as exc:
+        raise Failure("checkout", f"Cannot prepare checkout for {repository}: {exc}") from exc
+    # Concurrent Tasks of one repository must not race on clone/fetch; hold a lock beside the checkout.
+    with lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            return prepare(path, repository)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def prepare(path, repository):
     hint = ""
     try:
         if not path.exists() and not path.is_symlink():
-            path.parent.mkdir(parents=True, exist_ok=True)
             process(["gh", "repo", "clone", f"github.com/{repository}", str(path)], None, 600)
         else:
             require(path.is_dir() and not path.is_symlink(), f"{path} exists but is not a checkout directory", "checkout")

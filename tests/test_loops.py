@@ -187,15 +187,15 @@ class LoopTests(unittest.TestCase):
         for rejected_first in (False, True):
             with self.subTest(rejected_first=rejected_first):
                 backend = Mock()
-                backend.load.return_value = [{"id": "task"}]
-                backend.select.return_value = {"id": "task"}
                 outputs = ([result(data={"approved": False}), result("Fixed")] if rejected_first else [])
                 outputs.append(result(data={"approved": True}))
                 execute = Mock(side_effect=outputs)
-                record = Runtime(copy.deepcopy(example), PROJECT,
-                                 {"ai": {"unit": "calls", "available": 3, "accounting": "reservation"}},
-                                 backend, execute, checkout=lambda repository: "checkout").run()
+                # run-task gives the graph the already-claimed Task at /task; the graph never selects one.
+                record = Runtime(copy.deepcopy(example), PROJECT, backend=backend, executor=execute,
+                                 checkout=lambda repository: "checkout", task={"id": "task"}).run()
                 self.assertEqual(record["status"], "completed")
+                self.assertEqual(backend.mock_calls, [])
+                self.assertEqual(execute.call_args.args[1]["task"], {"id": "task"})
                 self.assertEqual([e["node"] for e in record["events"]],
-                                 ["load", "select"] + (["review", "fix"] if rejected_first else []) + ["review"])
+                                 (["review", "fix"] if rejected_first else []) + ["review"])
                 self.assertEqual(execute.call_count, 3 if rejected_first else 1)

@@ -205,7 +205,7 @@ class InitTests(unittest.TestCase):
         self.assertEqual(self.root_config(), {"projects": {"p": {"resources": rules}}})
 
     def test_invalid_resource_flags_and_root_config_named(self):
-        for flag in ("codex", "codex:20", "codex:101:1", "codex:x:1", ":20:1", "codex:20:10:1"):
+        for flag in ("codex", "codex:20", "codex:101:1", "codex:x:1", ":20:1", "codex:20:10:1", "openai:20:5"):
             with self.subTest(flag=flag):
                 code, report, calls = self.invoke("--project-number", "7", "--resource", flag)
                 self.assertEqual(code, 2)

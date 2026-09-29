@@ -12,6 +12,7 @@ from .contracts import Failure, decode, equal, require, text
 from .executors import process
 from .github import ELIGIBILITY_FIELD, ELIGIBILITY_OPTIONS, READY, GitHub, validate_project
 from .graph import validate
+from .usage import OBSERVERS
 from .workspace import NAME, PROJECTS, ROOT_CONFIG, percent, validate_root
 
 PRIORITIES = ["P0", "P1", "P2"]
@@ -229,6 +230,8 @@ def parse_resources(values):
         require(len(parts) == 3 and text(provider) and percent(low) and percent(estimate),
                 f"--resource must be PROVIDER:MIN:ESTIMATE with percentages 0-100: {value!r}")
         require(provider not in rules, f"--resource names {provider} twice")
+        # A provider without an observer would always be unknown and block the Project forever.
+        require(provider in OBSERVERS, f"--resource provider must be one of {', '.join(sorted(OBSERVERS))}: {value!r}")
         rules[provider] = {"min_remaining_percent": low, "estimated_usage_percent_per_task": estimate}
     return rules
 
@@ -261,8 +264,17 @@ def init_project(args):
     if report["initialized"] and rules:
         added = {provider: rule for provider, rule in rules.items() if provider not in existing}
         if added:
-            config["projects"].setdefault(args.name, {}).setdefault("resources", {}).update(added)
-            (root / ROOT_CONFIG).write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
+            operation = f"Check write access to {root / ROOT_CONFIG}, then rerun init-project with the same --resource"
+            try:
+                # Re-read just before writing so other Projects' entries are kept as they are now.
+                current = validate_root(read_file(root / ROOT_CONFIG))
+                current["projects"].setdefault(args.name, {}).setdefault("resources", {}).update(added)
+                (root / ROOT_CONFIG).write_text(json.dumps(current, indent=2, ensure_ascii=False) + "\n")
+            except (Failure, OSError, UnicodeError, KeyError, TypeError, AttributeError) as exc:
+                report["initialized"] = False
+                report["failure"] = {"message": str(exc), "action": operation}
+                report["human_actions"].append(operation)
+                return report
             report["created"].extend(f"{ROOT_CONFIG} policy {args.name}.{provider}" for provider in added)
         report["existing"].extend(f"{ROOT_CONFIG} policy {args.name}.{provider}" for provider in rules if provider not in added)
     return report

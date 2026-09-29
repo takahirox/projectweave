@@ -114,7 +114,7 @@ class CLITests(unittest.TestCase):
     def test_claim_run_task_and_complete_are_separate(self):
         code, task, calls = self.cli("claim", "p")
         self.assertEqual(code, 0)
-        self.assertEqual((task["number"], task["status"]), (7, "Todo"))  # The snapshot selected under the lock.
+        self.assertEqual((task["number"], task["status"]), (7, "In Progress"))  # Selected Todo, now marked.
         self.assertEqual(self.mutation_options(calls), ["PROGRESS"])
         self.assertFalse(any(c["command"] == "gitweave" for c in calls))
         self.assertIsNone(self.cli("claim", "p")[1])  # Already In Progress.
@@ -262,6 +262,14 @@ class CLITests(unittest.TestCase):
         code, outcome, calls = self.cli("run", "p")
         self.assertEqual(code, 2)
         self.assertIn("missing", outcome["failure"]["message"])
+
+    def test_invalid_poll_seconds_rejected_by_cli(self):
+        for value in ("0", "-5"):
+            completed = subprocess.run([sys.executable, "-m", "projectweave", "coordinate", "--poll-seconds", value],
+                                       cwd=self.root, env=dict(self.env, PYTHONPATH=str(ROOT)), capture_output=True,
+                                       text=True, timeout=30)
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("positive", completed.stderr)
 
     def test_coordinate_once_across_projects_with_opt_in_admission(self):
         self.add_project("q", number=2)

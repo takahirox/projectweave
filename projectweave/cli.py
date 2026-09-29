@@ -11,6 +11,13 @@ from .setup import add_init_arguments, init_project, init_root
 from .workspace import claim, complete, failure_record, project_dir, read_task, run_task
 
 
+def positive(value):
+    number = int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return number
+
+
 def emit(value):
     print(json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2), flush=True)
 
@@ -34,7 +41,7 @@ def main(argv=None):
             command.add_argument("--task", required=True, help="Claimed Task JSON file, or - for stdin")
     loop = commands.add_parser("coordinate", help="Observe, admit and launch Tasks across all Projects")
     loop.add_argument("--once", action="store_true", help="One pass: launch what is admitted and wait for it")
-    loop.add_argument("--poll-seconds", type=int, help="Re-observe interval (default from projectweave.json, else 300)")
+    loop.add_argument("--poll-seconds", type=positive, help="Re-observe interval (default from projectweave.json, else 300)")
     args = parser.parse_args(argv)
     if args.command in ("init", "init-project"):
         report = init_root(args) if args.command == "init" else init_project(args)
@@ -59,7 +66,7 @@ def main(argv=None):
         if args.command == "run":
             outcome = run_one(root, args.project)
             emit(outcome)
-            return 1 if outcome.get("record", {}).get("failure") else 0
+            return 1 if outcome.get("failure") or outcome.get("record", {}).get("failure") else 0
         stop = threading.Event()
         for sig in (signal.SIGINT, signal.SIGTERM):
             # Stop launching new work; Tasks already running are waited for.
@@ -67,7 +74,8 @@ def main(argv=None):
         summary = coordinate(root, once=args.once, poll_seconds=args.poll_seconds, stop=stop,
                              report=lambda outcome: print(json.dumps(outcome, ensure_ascii=False), file=sys.stderr, flush=True))
         emit(summary)
-        return 1 if any(run.get("claim_failure") or (run.get("record") or {}).get("failure") for run in summary["runs"]) else 0
+        return 1 if any(run.get("claim_failure") or run.get("setup_failure") or (run.get("record") or {}).get("failure")
+                        for run in summary["runs"]) else 0
     except (Failure, OSError, UnicodeError, RecursionError) as exc:
         emit({"status": "failed", "failure": failure_record(exc)})
         return 2

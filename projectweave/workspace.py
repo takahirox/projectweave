@@ -21,6 +21,7 @@ ROOT_CONFIG = "projectweave.json"
 PROJECTS = "projects"
 NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
 POLL_SECONDS = 300
+TODO, IN_PROGRESS = "Todo", "In Progress"
 
 
 def percent(value):
@@ -93,13 +94,24 @@ def project_lock(directory):
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+def check_project(directory):
+    """Validate a Project workspace before claiming, so a broken setup never strands a Task In Progress."""
+    directory = Path(directory)
+    load_project(directory)
+    return validate(decode((directory / "graph.json").read_text()))
+
+
 def claim(directory, backend=None):
-    """Select one runnable Task and set it In Progress under the Project lock; None when there is none."""
+    """Select one runnable Task and set it In Progress under the Project lock; None when there is none.
+
+    Only Todo Tasks are runnable, whatever eligible_statuses says, so a claimed (In Progress) or Done Task
+    is never selected again."""
     backend = backend or GitHub(load_project(directory))
     with project_lock(directory):
-        task = backend.select(backend.load())
+        task = backend.select([item for item in backend.load() if item.get("status") == TODO])
         if task is not None:
-            backend.set_status(task, "In Progress")
+            backend.set_status(task, IN_PROGRESS)
+            task = dict(task, status=IN_PROGRESS)
     return task
 
 
@@ -107,7 +119,7 @@ def run_task(directory, task, backend=None, executor=invoke):
     """Run the Project's required graph.json for an already-claimed Task (at /task); no lifecycle side effects."""
     require(isinstance(task, dict), "run-task needs a claimed Task object", "input")
     directory = Path(directory)
-    graph = validate(decode((directory / "graph.json").read_text()))
+    graph = check_project(directory)
     project = load_project(directory)
     return Runtime(graph, project, backend=backend, executor=executor, checkout=partial(resolve, directory),
                    workspace=str(directory), task=task).run()

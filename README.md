@@ -42,7 +42,7 @@ Evaluate
 
 The important property is that the workflow is explicit and configurable.
 
-The runtime executes JSON graphs with `agent` and `action` nodes, sequential flow, structured result handoff, `if` routing, and explicit post-condition `loop` control bounded by `max_steps`. It runs once from the CLI; concurrent execution is outside this release.
+The runtime executes JSON graphs with `agent` and `action` nodes, sequential flow, structured result handoff, `if` routing, and explicit post-condition `loop` control bounded by `max_steps`. Each `run-task` executes one graph for one claimed Task; `projectweave coordinate` runs claimed Tasks concurrently across and within Projects, each Task still one bounded graph Run.
 
 ## AI resources as constraints
 

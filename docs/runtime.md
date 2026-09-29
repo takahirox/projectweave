@@ -145,8 +145,8 @@ no distributed locking.
 ## Project workspace and Task checkouts
 
 A Project spans any repositories whose Issues are in the GitHub Project; each
-Task's `repository` is its execution location. The directory containing the
-Project's `projects/NAME/` directory is the Project workspace. GitWeave executors run from the
+Task's `repository` is its execution location. A Project's `projects/NAME/`
+directory is its Project workspace. GitWeave executors run from the
 workspace in GitWeave's Issue mode (below), which fetches the repository itself.
 For command executors, after admission and before launch, the runtime resolves
 `task.repository` to
@@ -157,7 +157,9 @@ repository, then runs `git fetch origin` and checks that `origin/HEAD` resolves.
 Command executors run against that remote default branch tip. No repository list,
 path mapping, pooling or background sync exists, and no local branch is changed.
 Invalid repository names, an unrelated existing path, and clone/fetch errors are
-`checkout` Runtime Failures before launch (so no writeback).
+`checkout` Runtime Failures before launch (so no writeback). Preparation is serialized per repository by a lock file
+beside the checkout, so concurrent Tasks never race on clone or fetch; they do
+share the checkout directory itself.
 
 ## Coordinator
 
