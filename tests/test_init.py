@@ -106,6 +106,9 @@ class InitTests(unittest.TestCase):
         self.assertEqual(flow[2]["loop"]["while"], {"path": "/0/data/merged", "equals": False})
         self.assertEqual([step if isinstance(step, str) else "loop" for step in flow[2]["loop"]["flow"]],
                          ["review", "loop", "merge"])
+        inner = flow[2]["loop"]["flow"][1]["loop"]  # The unchanged review/fix loop.
+        self.assertEqual(inner["while"], {"path": "/0/data/approved", "equals": False})
+        self.assertEqual(inner["flow"][0]["if"]["else"], ["fix", "publish", "review"])
         self.assertIn("with a merge commit", nodes["merge"]["instruction"])
         self.assertIn("Do not bypass required checks", nodes["merge"]["instruction"])
         self.assertIn("If inputs[0].data.merged is true", nodes["close_issue"]["instruction"])

@@ -218,7 +218,7 @@ It writes three files into `projects/NAME/`:
 | --- | --- |
 | `project.json` | Project owner/type/number, standard Priority order `P0`, `P1`, `P2`, `eligible_statuses: ["Todo"]` |
 | `graph.json` | The Project graph: `execute` GitWeave in Issue mode for the claimed Task; only the GitWeave graph path is made absolute |
-| `gitweave.json` | The six-node Task graph (implement → PR → review/fix → merge → close_issue); every agent node uses Codex with its native default model, or the `--provider`/`--model` choices (Claude adds `bypassPermissions`) |
+| `gitweave.json` | The six-node Task graph (implement → PR → review/fix → merge, retried until merged → close_issue); every agent node uses Codex with its native default model, or the `--provider`/`--model` choices (Claude adds `bypassPermissions`) |
 
 ### Provider and model
 
