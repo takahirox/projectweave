@@ -226,8 +226,10 @@ Each Project workspace holds two packaged templates:
   (`--repo OWNER/REPO --issue N`). ProjectWeave posts no comment itself.
 - [projectweave/templates/gitweave.json](projectweave/templates/gitweave.json),
   the **GitWeave Task graph** (how one selected Issue is carried to a merge):
-  implement → open a PR (`Closes #N`) → review ⇄ fix until approved → merge with
-  a merge commit → make sure the Issue is closed and comment the outcome on it.
+  implement → open a PR (`Closes #N`) → review ⇄ fix until approved (including
+  conflicts with the current default branch) → merge with a merge commit, going
+  back to review and retrying if the merge fails → make sure the Issue is closed
+  and comment the outcome on it.
   **It merges without a human review** once the review agent approves; edit it
   if you want a human to merge.
 

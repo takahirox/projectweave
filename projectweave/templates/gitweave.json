@@ -47,7 +47,7 @@
     "review": {
       "kind": "agent",
       "provider": "codex",
-      "instruction": "Review the pull request in inputs[0].data.pr against the GitHub Issue identified by run_input in github_repository. Check both missing scope (partial implementation) and unnecessary scope (changes or complexity the Issue does not justify), correctness, and tests; follow the repository's review guidelines if present and run relevant checks. Set approved only when no blocking findings remain, and list each blocking problem in findings. Leave files unchanged; do not push, merge, or comment. Forward pr unchanged. Do not reset usage limits, buy allowance, or switch models/providers; stop on a usage limit.",
+      "instruction": "Review the pull request in inputs[0].data.pr against the GitHub Issue identified by run_input in github_repository. Check both missing scope (partial implementation) and unnecessary scope (changes or complexity the Issue does not justify), correctness, and tests, and treat a pull request that cannot be merged cleanly into the current default branch as a blocking finding; follow the repository's review guidelines if present and run relevant checks. Set approved only when no blocking findings remain, and list each blocking problem in findings. Leave files unchanged; do not push, merge, or comment. Forward pr unchanged. Do not reset usage limits, buy allowance, or switch models/providers; stop on a usage limit.",
       "schema": {
         "type": "object",
         "properties": {
@@ -229,32 +229,42 @@
   "flow": [
     "implement",
     "publish",
-    "review",
     {
       "loop": {
         "flow": [
+          "review",
           {
-            "if": {
-              "condition": {
+            "loop": {
+              "flow": [
+                {
+                  "if": {
+                    "condition": {
+                      "path": "/0/data/approved",
+                      "equals": true
+                    },
+                    "then": [],
+                    "else": [
+                      "fix",
+                      "publish",
+                      "review"
+                    ]
+                  }
+                }
+              ],
+              "while": {
                 "path": "/0/data/approved",
-                "equals": true
-              },
-              "then": [],
-              "else": [
-                "fix",
-                "publish",
-                "review"
-              ]
+                "equals": false
+              }
             }
-          }
+          },
+          "merge"
         ],
         "while": {
-          "path": "/0/data/approved",
+          "path": "/0/data/merged",
           "equals": false
         }
       }
     },
-    "merge",
     "close_issue"
   ]
 }
