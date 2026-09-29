@@ -29,15 +29,17 @@ def percent(value):
 
 
 def validate_root(config):
-    """{"projects": {name: {"resources": {provider: {min_remaining_percent, estimated_usage_percent_per_task}}}},
-    "poll_seconds": N}; providers are constrained only when listed (opt-in)."""
+    """{"projects": {name: {"weight": N, "resources": {provider: {min_remaining_percent,
+    estimated_usage_percent_per_task}}}}, "poll_seconds": N}; providers are constrained only when listed (opt-in)."""
     keys(config, {"projects", "poll_seconds"}, {"projects"})
     require(isinstance(config["projects"], dict), "projects must be an object")
     require(type(config.get("poll_seconds", POLL_SECONDS)) is int and config.get("poll_seconds", POLL_SECONDS) > 0,
             "poll_seconds must be a positive integer")
     for name, entry in config["projects"].items():
         require(NAME.fullmatch(name) is not None, f"Invalid Project name: {name!r}")
-        keys(entry, {"resources"})
+        keys(entry, {"resources", "weight"})
+        require(type(entry.get("weight", 1)) is int and entry.get("weight", 1) > 0,
+                f"{name}.weight must be a positive integer")
         rules = entry.get("resources", {})
         require(isinstance(rules, dict), f"{name}.resources must be an object")
         for provider, rule in rules.items():
@@ -70,6 +72,11 @@ def projects(root):
 
 def policy(config):
     return {name: entry.get("resources", {}) for name, entry in config["projects"].items()}
+
+
+def weights(config, names):
+    """Scheduling weight per managed Project (default 1)."""
+    return {name: config["projects"].get(name, {}).get("weight", 1) for name in names}
 
 
 def project_dir(root, name):
