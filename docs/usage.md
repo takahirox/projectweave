@@ -111,26 +111,30 @@ observe listed providers → next admitted Project (weighted round-robin): claim
         └──────────── a Task ends (release, re-observe) or poll_seconds pass ───────┘
 ```
 
-Independent Projects progress concurrently, and one Project can run several Tasks
-at once while admission allows. **Which Project gets the next launch
+Independent Projects progress concurrently, and one Project can run several
+Tasks at once while admission allows. **Which Project gets the next launch
 opportunity** follows a smooth weighted round-robin over the Projects that are
 admitted and still have work: each gets credit equal to its optional `weight`
-(default 1, a positive integer) per opportunity, and the one with the most credit
-goes next. Credit persists across passes, so a Project that sorts first cannot
-take all newly available capacity, every runnable Project gets recurring turns,
-and a weight-2 Project gets about twice as many as a weight-1 Project when
-capacity is scarce. This only orders launches: admission still decides whether a
-Task may start, and no capacity is partitioned per Project. Task selection within
-a Project stays Project-local; there is no cross-Project Issue ranking. Each finished Task is reported on stderr as one JSON line;
-on exit a summary (last observations, reservations, runs) is printed. SIGINT or
-SIGTERM stops launching new work and waits for running Tasks. `--once` makes a
-single pass, waits for what it launched, and exits (useful for tests or cron).
-Exit status 1 means a Task, a claim, or a Project's setup check failed; a Project
-whose `project.json`/`graph.json` is invalid is skipped before claiming, so no
-Task is left `In Progress` by a broken setup. The root config and the set of
-Projects are read at start: restart `coordinate` after editing
-`projectweave.json` or adding a Project. Any unexpected error also waits for the
-Tasks already running before `coordinate` exits.
+(default 1, a positive integer) per opportunity, and the one with the most
+credit goes next. Credit persists across passes, so a Project that sorts first
+cannot take all newly available capacity, every runnable Project gets recurring
+turns, and a weight-2 Project gets about twice as many as a weight-1 Project
+when capacity is scarce. This only orders launches: admission still decides
+whether a Task may start, and no capacity is partitioned per Project. Fairness
+applies among Projects admitted right now: a Project whose estimate is larger
+than the remaining headroom waits while Projects with smaller estimates keep
+fitting, so choose estimates with that in mind. Task selection within a Project
+stays Project-local; there is no cross-Project Issue ranking. Each finished Task
+is reported on stderr as one JSON line; on exit a summary (last observations,
+reservations, runs) is printed. SIGINT or SIGTERM stops launching new work and
+waits for running Tasks. `--once` makes a single pass, waits for what it
+launched, and exits (useful for tests or cron). Exit status 1 means a Task, a
+claim, or a Project's setup check failed; a Project whose
+`project.json`/`graph.json` is invalid is skipped before claiming, so no Task is
+left `In Progress` by a broken setup. The root config and the set of Projects
+are read at start: restart `coordinate` after editing `projectweave.json` or
+adding a Project. Any unexpected error also waits for the Tasks already running
+before `coordinate` exits.
 
 ## Default Project workflow
 

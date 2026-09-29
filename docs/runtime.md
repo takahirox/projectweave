@@ -61,7 +61,8 @@ Failure routing is not supported; subsequent graph operations are not executed.
 Shared provider allowance is admitted by `projectweave run` and
 `projectweave coordinate`, not by graphs. The root `projectweave.json` lists, per
 Project directory name and provider, `min_remaining_percent` and
-`estimated_usage_percent_per_task`. Constraints are opt-in: unlisted Projects and
+`estimated_usage_percent_per_task` (and, per Project, an optional scheduling
+`weight`; see Coordinator). Constraints are opt-in: unlisted Projects and
 providers are not limited (and not observed).
 
 1. The listed providers are observed read-only without a model call
