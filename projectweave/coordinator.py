@@ -104,6 +104,17 @@ def coordinate(root, once=False, poll_seconds=None, stop=None, observe=usage.obs
         if report:
             report(outcome)
 
+    last_problem = {}
+
+    def problem(name, kind, value):
+        # Record a Project problem once until it changes, so a long-running loop does not grow without bound.
+        entry = {"project": name, kind: value}
+        if last_problem.get(name) != entry:
+            last_problem[name] = entry
+            runs.append(entry)
+            if report:
+                report(entry)
+
     def admit_and_launch():
         admission.refresh(names)
         for name in names:
@@ -111,18 +122,21 @@ def coordinate(root, once=False, poll_seconds=None, stop=None, observe=usage.obs
                 directory = project_dir(root, name)
                 check_project(directory)  # Never claim for a Project whose graph cannot run.
             except Exception as exc:
-                runs.append({"project": name, "setup_failure": failure_record(exc)})
+                problem(name, "setup_failure", failure_record(exc))
                 continue
             while not stop.is_set() and admission.admits(name)[0]:
                 try:
                     task = claim_task(directory)
                 except Exception as exc:
-                    runs.append({"project": name, "claim_failure": failure_record(exc)})
+                    problem(name, "claim_failure", failure_record(exc))
                     break
+                last_problem.pop(name, None)
                 if task is None:
                     break
                 if task.get("item_id") is not None and any(item == task.get("item_id") for _, item in running.values()):
-                    break  # Defensive: never launch a Task that is already running.
+                    # Defensive: never launch a Task that is already running; make it visible.
+                    problem(name, "duplicate_claim", task.get("item_id"))
+                    break
                 launch(name, directory, task)
 
     try:

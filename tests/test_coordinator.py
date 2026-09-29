@@ -178,7 +178,22 @@ class CoordinatorTests(unittest.TestCase):
                              run=lambda d, t: launched.append(t) or release.wait(5) or {"status": "completed", "failure": None},
                              report=lambda outcome: release.set())
         self.assertEqual(len(launched), 1)
-        self.assertEqual(len(summary["runs"]), 1)
+        self.assertEqual([run.get("duplicate_claim") for run in summary["runs"]], ["same", None])
+
+    def test_repeated_problems_are_recorded_once_until_they_change(self):
+        broken = self.project("a", [], {"codex": CODEX})  # Listed, so every pass observes (and counts).
+        (broken / "graph.json").write_text("{}")
+        stop, passes = threading.Event(), []
+
+        def observe(providers):
+            passes.append(1)
+            if len(passes) == 4:
+                stop.set()
+            return {}
+
+        summary = coordinate(self.root, poll_seconds=1, stop=stop, observe=observe, claim_task=self.claim)
+        self.assertGreaterEqual(len(passes), 3)
+        self.assertEqual([list(run) for run in summary["runs"]], [["project", "setup_failure"]])
 
     def test_invalid_poll_seconds_rejected(self):
         self.project("a", [])
