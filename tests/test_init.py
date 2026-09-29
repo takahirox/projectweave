@@ -115,7 +115,7 @@ class InitTests(unittest.TestCase):
         self.assertTrue(any("item-add 7 --owner o" in c for c in report["next_commands"]))
         self.assertIn("projectweave run p  # one Task; or: projectweave coordinate", report["next_commands"])
         self.assertIn("AI execution field (Ready/Not ready)", report["created"])
-        self.assertIn("Status field (Todo/In Progress)", report["existing"])
+        self.assertIn("Status field (Todo/In Progress/Done)", report["existing"])
         self.assertTrue(any("Status to Todo" in a for a in report["human_actions"]))
         self.assertFalse(any("label" in c for c in report["next_commands"]))
         self.assertTrue(any("AI execution field to Ready" in a for a in report["human_actions"]))
@@ -316,15 +316,18 @@ class InitTests(unittest.TestCase):
         self.assertEqual(self.mutations(calls), [])
         for path in self.root.iterdir():
             path.unlink()
+        select = {"__typename": "ProjectV2SingleSelectField", "name": "Status", "dataType": "SINGLE_SELECT"}
         for status in ({"__typename": "ProjectV2Field", "name": "Status", "dataType": "TEXT"},
-                       {"__typename": "ProjectV2SingleSelectField", "name": "Status", "dataType": "SINGLE_SELECT",
-                        "options": [{"name": "Todo"}, {"name": "Done"}]}, None):
+                       dict(select, options=[{"name": "Todo"}, {"name": "Done"}]),
+                       dict(select, options=[{"name": "Todo"}, {"name": "In Progress"}]),  # complete needs Done.
+                       dict(select, options=[{"name": n} for n in ("Todo", "In Progress", "Done", "Done")]),
+                       None):
             with self.subTest(status=status):
                 self.state.write_text(json.dumps({"projects": 0, "first_fields": [status] if status else []}))
                 code, report, calls = self.invoke("--project-number", "7")
                 self.assertEqual(code, 2)
                 self.assertIn("Status", report["failure"]["message"])
-                self.assertIn("Verified Status single-select field with Todo/In Progress options", report["missing"])
+                self.assertIn("Verified Status single-select field with Todo/In Progress/Done options", report["missing"])
                 # Status is GitHub's field: init creates or repairs only Priority and AI execution.
                 # Status is verified first, so nothing is created when it is unusable, and it is never repaired.
                 self.assertEqual(self.mutations(calls), [])

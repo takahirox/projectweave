@@ -17,7 +17,8 @@ from .workspace import NAME, PROJECTS, ROOT_CONFIG, percent, validate_root
 
 PRIORITIES = ["P0", "P1", "P2"]
 # Only Todo Tasks are claimed; claim marks the Task In Progress before it runs.
-STATUSES = ["Todo", "In Progress"]
+# claim sets In Progress and complete sets Done, so all three lifecycle options must exist.
+STATUSES = ["Todo", "In Progress", "Done"]
 FILES = ("project.json", "graph.json", "gitweave.json")
 PROVIDERS = ("codex", "claude")
 
@@ -67,7 +68,7 @@ def ensure_fields(backend, report):
     ensure_field(backend, report, fields, "Status", STATUSES, create=False)
     for name, options in required:
         ensure_field(backend, report, fields, name, options)
-    report["fields"] = f"Priority, {ELIGIBILITY_FIELD} and Status (Todo/In Progress) verified"
+    report["fields"] = f"Priority, {ELIGIBILITY_FIELD} and Status ({'/'.join(STATUSES)}) verified"
 
 
 def link_repositories(backend, report, repositories):
@@ -387,7 +388,7 @@ def initialize(args, workspace, root):
                     output.write(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
                 report["created"].append(str(path))
         operation = (f"Check Project field read access and write access for missing Priority/{ELIGIBILITY_FIELD} creation; "
-                     "add Todo/In Progress options to the Project's Status field if missing; review incompatible fields manually. Rerun init to read all fields and reuse any "
+                     "add Todo/In Progress/Done options to the Project's Status field if missing; review incompatible fields manually. Rerun init to read all fields and reuse any "
                      "field created before a failure; existing fields are never repaired")
         ensure_fields(backend, report)
         if links:
