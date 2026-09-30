@@ -202,8 +202,30 @@ projectweave init-project api --project-owner my-team --create-project "API" --r
 `--provider claude` (which also enables Claude's `bypassPermissions` mode: the
 agent edits files and runs commands without asking) or `--model MODEL`; the
 default is Codex with its native default model. Init never overwrites files.
-Then add an Issue to the Project, set its `AI execution` field to `Ready` and its
-Status to `Todo`, and run either:
+Choose how Issues enter the Project and become executable:
+
+- **Manual:** add an open Issue, set `AI execution = Ready` and Status `Todo`.
+  GitHub's built-in auto-add can handle membership, with fields set manually.
+- **Optional Actions (recommended for continuous operation):** configure each
+  tracked repository to synchronize open Issues labeled `task` without `draft`
+  into the Project as `Ready`. Initialize only new/unset Status to `Todo`;
+  preserve existing Status. Removing `task`, adding `draft`, or closing an Issue
+  makes existing items `Not ready` while retaining membership. Becoming eligible
+  again restores `Ready`. Verify GitHub's Issue-closed workflow sets `Done`;
+  the close reason distinguishes completed from not-planned work.
+
+Follow the [repository Actions setup guide](docs/usage.md#optional-repository-actions)
+for workflow availability, labels, Project access, an expiring Actions secret,
+and verification. Built-in auto-add workflow counts are plan-limited; Actions
+can cover multiple repositories sharing one Project. Init does not install
+repository workflows, create labels, provision secrets, or mark Issues Ready.
+The linked implementation tasks are separate; this setup is not preinstalled.
+
+Actions only synchronizes metadata; it does not invoke AI. ProjectWeave never
+sets Ready itself: `coordinate` selects open, Todo, Ready Issues under the
+configured resource policy. No Pending Status is needed. Not ready does not stop
+an active execution; cancellation and pre-merge eligibility gates are deferred.
+After onboarding and verification, run either:
 
 ```sh
 projectweave run app       # one Task: admission -> claim -> run-task
