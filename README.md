@@ -183,6 +183,7 @@ Validate the canonical and example graphs and run the tests:
 
 ```sh
 python3 -m projectweave validate --graph projectweave/templates/graph.json
+gitweave validate --graph projectweave/templates/gitweave.json
 python3 -m projectweave validate --graph examples/review-fix.json
 python3 -m unittest discover -s tests -v
 ```
@@ -232,6 +233,43 @@ Each Project workspace holds two packaged templates:
   and comment the outcome on it.
   **It merges without a human review** once the review agent approves; edit it
   if you want a human to merge.
+
+The Task graph's terminal `close_issue` data always includes `pr`, `merged`,
+`merge_commit`, and `closed`. `merge_commit` is a required string: the actual
+merge commit SHA when `merged` is true, or `""` when it is false. `close_issue`
+forwards `pr`, `merged`, and `merge_commit` unchanged from `merge` and reports
+whether the Issue is closed. Every object property in the packaged Codex output
+schemas is required.
+
+### Repairing existing workspace graphs
+
+Init never overwrites existing files, so updating ProjectWeave or rerunning
+`init-project` does not repair an existing `projects/weave/gitweave.json`.
+Before dispatching Tasks through an older graph, edit that file (or the
+equivalent path for your Project) as follows, preserving your other settings:
+
+1. In both `nodes.merge.schema.required` and
+   `nodes.close_issue.schema.required`, add `"merge_commit"`. Keep
+   `properties.merge_commit.type` as `"string"`.
+2. In both `merge_commit` schema descriptions and in the `merge` instruction,
+   require the actual merge commit SHA when `merged` is true and the empty
+   string `""` when it is false. Remove any wording permitting omission.
+3. In the `close_issue` instruction, replace the conditional forwarding of
+   `merge_commit` with always forwarding `pr`, `merged`, and `merge_commit`
+   unchanged, including the empty string on an unsuccessful merge.
+4. Run `gitweave validate --graph projects/weave/gitweave.json` and inspect
+   each Codex output schema recursively: every object property's name must be
+   in `required`. Static GitWeave validation alone does not check this Codex
+   requirement. The packaged regression tests check it without live AI calls
+   or GitHub mutations.
+
+Keep the repair Task Not ready until the bootstrap workspace graph is fixed,
+or implement the repair through a separate manual development flow. Do not
+repeatedly dispatch the unchanged graph. Failed Tasks stay In Progress and are
+not automatically retried. Before retrying ProjectWeave #61, GitWeave #100, or
+ProjectWeave #63, inspect their existing PRs and checkpoints and reuse existing
+work as appropriate to avoid duplicate PRs. Retrying these Tasks is a separate
+operational follow-up.
 
 [examples/](examples/) holds specialized feature examples such as the
 [review/fix loop](examples/review-fix.json) and a manual

@@ -207,6 +207,17 @@ graph conditions inspect `data.outputs` for task semantics. GitWeave can publish
 provenance automatically and its graph may mutate remote state: operators must
 review its graph/repository configuration before live use.
 
+The packaged GitWeave Task graph returns terminal `close_issue` data with
+required `pr`, `merged`, `merge_commit`, and `closed` properties. Both `merge`
+and `close_issue` require `merge_commit` to be a string: the actual merge commit
+SHA when `merged` is true, or `""` when it is false. `close_issue` always forwards
+`pr`, `merged`, and `merge_commit` unchanged from `merge`; it ensures the Issue
+is closed after a successful merge and otherwise leaves it open. Omitting
+`merge_commit` is invalid. All object properties in the packaged Codex schemas
+are required, including nested PR properties. See the README's
+[existing workspace migration](../README.md#repairing-existing-workspace-graphs)
+before dispatching Tasks with a previously generated graph.
+
 Studied GitWeave docs/runtime.md and model.py, graph.py, runtime.py, cli.py in the
 local reference checkout before implementation. Transferred the small node model,
 structured control, bounded execution, explicit actions, and outcome/failure
