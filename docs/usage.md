@@ -66,7 +66,8 @@ supported. Run every command below from the root workspace.
 
 A Task that fails, or whose PR is left open, stays `In Progress`: it is not
 retried automatically and never moved back to `Todo`. Set its Status to `Todo`
-yourself to retry. `AI execution` is never changed.
+yourself to retry. ProjectWeave never changes `AI execution`; optional repository
+Actions can synchronize it as described below.
 
 ## Shared AI resources
 
@@ -255,7 +256,8 @@ single-select with `Todo`, `In Progress` and `Done` options (claim sets
 Status: a missing field or option is reported for you to add in the Project.
 Init verifies/creates the `AI execution` single-select field with `Ready` and
 `Not ready` options in the same way (other options are allowed; incompatible
-fields are reported, never repaired). Init creates no repository labels.
+fields are reported, never repaired). Init does not install repository workflows,
+create labels, provision secrets, or mark Issues Ready.
 Init never selects Issues, adds Project items, assigns priorities, marks items
 ready, runs AI, installs tools, changes auth, or pushes. Unknown or unset
 Priority values sort below P0/P1/P2; setting an Issue priority remains a human
@@ -315,10 +317,157 @@ There is no migration from earlier layouts (a single workspace with
 `projectweave-ready` labels, and so on): create a root workspace and run
 `init-project` again, then reapply provider/model edits.
 
+## Onboard Issues
+
+Choose manual onboarding, built-in auto-add, or optional repository Actions
+before starting `coordinate`. ProjectWeave itself never sets `Ready` and never
+uses labels for runtime selection: it selects open, nonarchived repository
+Issues with Status `Todo` and `AI execution = Ready`, subject to the configured
+resource policy. Actions synchronizes metadata only and does not invoke AI.
+No `Pending` Status is needed.
+
+For **manual onboarding**, add an open Issue to the Project, set `AI execution`
+to `Ready` and Status to `Todo` (see [Running a Task](#running-a-task)). Labels
+are not required for this path. GitHub's **built-in auto-add** can supply
+membership with a filter such as `is:issue is:open label:task -label:draft`;
+you still need to arrange field updates. Auto-add alone does not implement the
+Ready/Not ready policy below. Its limits are 1 workflow on Free, 5 on Pro or
+Team, and 20 on Enterprise Cloud or Server; each workflow targets one repository.
+It does not backfill existing matching items on enablement. These limits were
+checked against [GitHub's auto-add documentation](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/adding-items-automatically)
+on 2026-09-30. Repository Actions is an optional alternative when the limit
+cannot cover all repositories or you want label-driven execution permission.
+
+### Optional repository Actions
+
+For continuous operation, use the existing repository workflow implementing this
+policy. The implementation issues are closed:
+[ProjectWeave #61](https://github.com/takahirox/projectweave/issues/61) and
+[GitWeave #100](https://github.com/takahirox/gitweave/issues/100). ProjectWeave's
+default branch includes
+[`sync-task-project.yml`](https://github.com/takahirox/projectweave/blob/main/.github/workflows/sync-task-project.yml)
+and its [owner setup and live verification guide](https://github.com/takahirox/projectweave/blob/main/docs/project-automation.md).
+The supplied workflow targets `takahirox` Project #4; adapt that target when
+installing it in another repository. Installed code does not establish live
+operation: provision `ADD_TO_PROJECT_PAT` in each tracked repository and complete
+the documented live verification before relying on automation. Until setup and
+verification are complete, use manual onboarding.
+
+| Current Issue condition / event | Required Project behavior |
+| --- | --- |
+| Open, `task` present, `draft` absent | Ensure membership once and set `AI execution = Ready`. |
+| Eligible item newly added, or existing eligible item with unset Status | Initialize Status to `Todo`. |
+| Eligible item with an existing Status | Preserve it, including `In Progress` and `Done`; never reset it to `Todo`. Preserve Priority and other fields too. |
+| `task` removed, `draft` added, or Issue closed | Set existing items to `Not ready`, retain membership, and leave Status to its separate lifecycle. Do not add ineligible Issues just to update fields. |
+| Issue closed | GitHub's built-in Issue-closed workflow sets `Done`. The Issue close reason (`Completed` or `Not planned`) distinguishes the outcome. |
+| Issue becomes eligible again (including removing `draft`, re-adding `task`, or reopening) | Restore `Ready`, preserving any already-set Status. A reopened `Done` item therefore remains unselectable until deliberately moved to `Todo`. |
+
+Changing to `Not ready` prevents future selection; it does **not** stop an
+already-running execution. Cancellation and pre-merge eligibility gates are
+deferred work. GitWeave does not read Project state for this synchronization.
+Here `draft` means a repository label, not a draft Project item.
+
+#### Configure each repository
+
+1. Choose the Project owner, owner type (`user` or `organization`), number, and
+   repositories. For example, Project `my-team` #7 can track `my-team/app` and
+   `my-team/api`; configure both repositories separately for the same Project.
+   Repository linking during init only affects discovery in GitHub's UI.
+2. Verify `AI execution` has `Ready` and `Not ready`, and Status has `Todo`,
+   `In Progress`, and `Done`. In the Project's menu → **Workflows**, verify
+   **Item closed** is enabled and sets Status to `Done`; edit and choose
+   **Save and turn on workflow** if needed. GitHub enables closure automation
+   by default, but verify reused Projects too. See
+   [GitHub's built-in automations](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-built-in-automations).
+3. In each repository's **Issues → Labels**, create `task` and `draft` if
+   absent. Install the reviewed synchronization workflow under
+   `.github/workflows/` on that repository's **default branch**. Configure its
+   owner/type/number and authentication, following the
+   [existing workflow's setup instructions](https://github.com/takahirox/projectweave/blob/main/docs/project-automation.md#owner-setup).
+   Do not retain a dogfooding Project target when copying it.
+   For GraphQL Project lookup, use `user(login: OWNER)` for a personal Project
+   or `organization(login: OWNER)` for an organization, with
+   `projectV2(number: NUMBER)`; see [GitHub's Project API guide](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-api-to-manage-projects).
+   The [Issue event configuration](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#issues)
+   must include all of:
+
+   ```yaml
+   # Event fragment only, not a complete runnable workflow.
+   on:
+     issues:
+       types: [opened, reopened, closed, labeled, unlabeled]
+   ```
+
+   Every event must reconcile the Issue's current state and labels with the
+   table above, including `unlabeled` when `draft` is removed. Do not filter the
+   entire job to eligible Issues: that would skip revocation. Repeated or
+   delayed events must not duplicate items or restore stale permission.
+   Locate existing items and fields across API pages; add eligible items with
+   `addProjectV2ItemById` and update fields with `updateProjectV2ItemFieldValue`.
+   GitHub's [Actions/API example](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/automating-projects-using-actions)
+   is a starting point, but its unconditional Todo update is not this policy.
+4. Provision authentication as below in **every** tracked repository, then
+   perform the live verification before starting continuous execution. Installing
+   a workflow does not backfill old Issues; onboard them manually or trigger a
+   supported label event after setup.
+
+#### Project authentication and secrets
+
+Ordinary `GITHUB_TOKEN` cannot access Projects. The credential needs Project
+write access and read access to the tracked Issues. GitHub recommends PATs for
+user Projects and GitHub Apps for organization Projects. For an organization
+App, grant **organization Projects: read and write** and repository **Issues:
+read**, install it for the tracked repositories, and generate an installation
+token in the workflow. Repository Projects permission alone is insufficient.
+See [GitHub's Actions authentication examples](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/automating-projects-using-actions).
+
+For a user Project, an owner with Project write access can create a dedicated,
+**expiring classic PAT** under GitHub **Settings → Developer settings → Personal
+access tokens → Tokens (classic)**. Select `project` for Project writes;
+private repository access also requires `repo` (GitHub's general example uses
+both). Fine-grained PATs currently cannot access user-owned Projects. For an
+organization, a classic PAT is also an option where organization policy permits;
+complete any required SSO authorization. The token cannot exceed its owner's
+access. See [GitHub's PAT guidance](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
+(authentication details checked 2026-09-30).
+
+In each repository, open **Settings → Secrets and variables → Actions → New
+repository secret**, name it `ADD_TO_PROJECT_PAT`, and enter the newly issued
+PAT. The PAT workflow reads `${{ secrets.ADD_TO_PROJECT_PAT }}` as `GH_TOKEN`.
+Record the expiry and replace the secret before it expires. Do not retrieve or
+repurpose existing CLI credentials, print tokens, or commit them. Provisioning
+is an owner action, not part of init. A missing/expired secret leaves
+synchronization unavailable; check the Actions run's error and credential access
+before relying on automatic Ready updates.
+
+#### Small live verification before continuous operation
+
+Keep `coordinate` stopped during this metadata check so it cannot claim the
+test Issue. These are operator checks after installation; the documentation and
+CLI report tests require no credentials, live mutations, or AI execution.
+
+1. In each tracked repository, open a disposable Issue without `task`, then add
+   `draft` and `task`: neither condition should add it. Remove `draft`: check
+   the Actions run succeeds and the Issue appears **once**, `Ready` and `Todo`.
+2. Remove/re-add `task`, then add/remove `draft`. Verify `Not ready`/`Ready`
+   transitions, retained membership, and no duplicate. Set Status to
+   `In Progress`, then `Done`, and repeat to confirm Status and Priority stay
+   unchanged. Clear Status and trigger an eligible event to verify `Todo`
+   initialization for an existing item.
+3. Close it: verify `Not ready` and `Done`, with the appropriate close reason.
+   Reopen it: verify `Ready` while `Done` is preserved. Close an unregistered
+   ineligible test Issue too and confirm it is not added. Finish by closing
+   the disposable Issues and checking they cannot be selected.
+4. Onboard a real intended Task, confirm open + `Todo` + `Ready`, review the
+   resource policy (limits are opt-in), and authenticate the executor as above.
+   From the root workspace, start `projectweave coordinate`. Label changes now
+   synchronize permission; the coordinator polls and admits eligible work.
+
 ## Running a Task
 
-After installing/authenticating your provider CLI, add an Issue to the GitHub
-Project and mark it ready:
+After installing/authenticating your provider CLI, use either onboarding path
+above. For manual onboarding, add an Issue to the GitHub Project and mark it
+ready:
 
 ```sh
 # From the root workspace; replace 7, my-team, app, and the Issue URL.
