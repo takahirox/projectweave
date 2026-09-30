@@ -340,14 +340,18 @@ cannot cover all repositories or you want label-driven execution permission.
 
 ### Optional repository Actions
 
-For continuous operation, we recommend a repository workflow implementing this
-policy. Workflow implementation and secret provisioning are separate work:
+For continuous operation, use the existing repository workflow implementing this
+policy. The implementation issues are closed:
 [ProjectWeave #61](https://github.com/takahirox/projectweave/issues/61) and
-[GitWeave #100](https://github.com/takahirox/gitweave/issues/100). At the time of
-this guide's update, both are open and this checkout has no synchronization
-workflow. Use their reviewed implementation when available, adapting its Project
-target; until installed and authenticated, use manual onboarding. This guide
-does not imply either repository's automation is deployed or working.
+[GitWeave #100](https://github.com/takahirox/gitweave/issues/100). ProjectWeave's
+default branch includes
+[`sync-task-project.yml`](https://github.com/takahirox/projectweave/blob/main/.github/workflows/sync-task-project.yml)
+and its [owner setup and live verification guide](https://github.com/takahirox/projectweave/blob/main/docs/project-automation.md).
+The supplied workflow targets `takahirox` Project #4; adapt that target when
+installing it in another repository. Installed code does not establish live
+operation: provision `ADD_TO_PROJECT_PAT` in each tracked repository and complete
+the documented live verification before relying on automation. Until setup and
+verification are complete, use manual onboarding.
 
 | Current Issue condition / event | Required Project behavior |
 | --- | --- |
@@ -378,8 +382,9 @@ Here `draft` means a repository label, not a draft Project item.
 3. In each repository's **Issues → Labels**, create `task` and `draft` if
    absent. Install the reviewed synchronization workflow under
    `.github/workflows/` on that repository's **default branch**. Configure its
-   owner/type/number and authentication, following the implementation's setup
-   instructions. Do not retain a dogfooding Project target when copying it.
+   owner/type/number and authentication, following the
+   [existing workflow's setup instructions](https://github.com/takahirox/projectweave/blob/main/docs/project-automation.md#owner-setup).
+   Do not retain a dogfooding Project target when copying it.
    For GraphQL Project lookup, use `user(login: OWNER)` for a personal Project
    or `organization(login: OWNER)` for an organization, with
    `projectV2(number: NUMBER)`; see [GitHub's Project API guide](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-api-to-manage-projects).
