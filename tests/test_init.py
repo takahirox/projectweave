@@ -114,7 +114,7 @@ class InitTests(unittest.TestCase):
         self.assertIn("If inputs[0].data.merged is true", nodes["close_issue"]["instruction"])
         self.assertIn("Comment the outcome on the Issue.", nodes["close_issue"]["instruction"])
         # The terminal output names the PR so ProjectWeave's Issue comment includes it.
-        self.assertEqual(nodes["close_issue"]["schema"]["required"], ["pr", "merged", "closed"])
+        self.assertEqual(nodes["close_issue"]["schema"]["required"], ["pr", "merged", "merge_commit", "closed"])
         self.assertTrue(any("MERGES it into the default branch" in a for a in report["human_actions"]))
         self.assertTrue(any(".gitweave/repos/OWNER/REPO.git" in a for a in report["human_actions"]))
         self.assertFalse(any("provider and model" in entry for entry in report["missing"]))
