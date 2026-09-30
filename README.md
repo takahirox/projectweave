@@ -210,6 +210,9 @@ projectweave run app       # one Task: admission -> claim -> run-task
 projectweave coordinate    # all Projects, concurrently, until stopped (--once for one pass)
 ```
 
+For this repository's shared Project #4, see [Project automation setup](docs/project-automation.md)
+to configure automatic task addition and Ready permission from Issue state and labels.
+
 ProjectWeave owns Project lifecycle: `claim` selects one runnable Task and sets it
 `In Progress` under a per-Project lock, `run-task` runs the Project graph for a
 claimed Task, and `complete` sets `Done` explicitly (by default GitHub does that
