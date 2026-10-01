@@ -6,7 +6,8 @@
       "action": "execute",
       "executor": {
         "type": "gitweave",
-        "graph": "gitweave.json"
+        "graph": "gitweave.json",
+        "timeout": null
       },
       "inputs": {
         "task": "/task"

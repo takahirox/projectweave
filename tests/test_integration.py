@@ -348,6 +348,19 @@ class BoundaryTests(unittest.TestCase):
                 with self.assertRaises(Failure):
                     invoke(config, {"task": {"repository": "o/r", "number": 1}})
 
+    def test_executor_timeout_default_finite_and_explicit_unlimited(self):
+        record = {"status": "completed", "outputs": [{"commit": "sha", "message": "Closed", "data": {"status": "closed"}}],
+                  "run_id": "run", "repository": "repo", "run_ref": "ref", "notes_ref": "notes"}
+        for config in ({"type": "gitweave", "graph": "g"},
+                       {"type": "command", "argv": ["worker"]}):
+            raw = json.dumps(record if config["type"] == "gitweave" else
+                             {"message": "Done", "data": {}, "references": [], "usage": {}})
+            for extra, expected in (({}, 3600), ({"timeout": 10}, 10), ({"timeout": None}, None)):
+                with self.subTest(config=config, extra=extra), \
+                        patch("projectweave.executors.process", return_value=raw) as boundary:
+                    invoke(dict(config, **extra), {"task": {"repository": "o/r", "number": 71}}, "workspace")
+                    self.assertEqual(boundary.call_args.args[2], expected)
+
     def test_pagination_repeated_cursor_fails(self):
         backend = GitHub({"owner": "o", "owner_type": "user", "number": 1})
         with patch.object(backend, "query", return_value={"node": {"items": {"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": "same"}}}}):

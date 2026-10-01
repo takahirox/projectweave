@@ -163,6 +163,9 @@ def compatible(name, value, expected):
         # Per agent node, provider/instruction and the optional model/permission knobs are human-editable.
         for node_id, default in expected["nodes"].items():
             node = candidate["nodes"][node_id]
+            require(isinstance(node, dict), f"{node_id} must be an object")
+            if default["kind"] != "agent":
+                continue
             for key in ("provider", "instruction"):
                 require(text(node[key]), f"{node_id}.{key} must be nonblank")
                 node[key] = default[key]
@@ -410,7 +413,7 @@ def initialize(args, workspace, root):
             if any(node.get("permission_mode") == "bypassPermissions" for node in workers) else []) + ([
             "Claude has no permission_mode on some gitweave.json nodes, so a non-interactive Run may be unable to edit files or run commands there; choose one deliberately."]
             if any(node["provider"] == "claude" and "permission_mode" not in node for node in workers) else []) + [
-            "The GitWeave Task graph implements the Issue, opens a pull request whose body says Closes #N, iterates review and fix until the review agent approves, then MERGES it into the default branch with a merge commit and closes the Issue, without a human review. Agents push, open and merge PRs with your gh and Git credentials. Edit gitweave.json first if you want a human to review before merging.",
+            "The GitWeave Task graph first reviews Issue readiness, comments missing questions and waits for meaningful updates until ready. The resident wait retains resource reservations and has no timeout; coordinator shutdown/--once waits for it. Closure before implementation ends the Run without a PR. Once ready, it implements the Issue, opens a pull request whose body says Closes #N, iterates review and fix until the review agent approves, then MERGES it into the default branch with a merge commit and closes the Issue, without a human review. Agents push, open and merge PRs with your gh and Git credentials. Edit gitweave.json first if you want a human to review before merging.",
             "gitweave.json agents run " + "; ".join(choices)
             + ". Install and authenticate that provider CLI yourself. To change provider/model later, edit gitweave.json (init never rewrites it).",
             f"Shared AI resource admission is opt-in: only providers listed for {key} in the root {ROOT_CONFIG} (init-project --resource PROVIDER:MIN:ESTIMATE) are observed (Claude `/usage`, Codex app-server; read-only) and must keep every window at or above min_remaining_percent after reserving estimated_usage_percent_per_task per running Task. Without an entry, {key} is not limited and coordinate may start all its eligible Tasks at once.",

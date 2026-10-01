@@ -15,7 +15,8 @@ def executor(config):
         require(config["type"] == "gitweave", "Unknown executor type")
         require(all(text(v) for k, v in config.items() if k != "timeout"),
                 "GitWeave configuration must be nonblank text")
-    require(number(config.get("timeout", 3600), True), "timeout must be positive and finite")
+    timeout = config.get("timeout", 3600)
+    require(timeout is None or number(timeout, True), "timeout must be null or positive and finite")
 
 
 def validate(graph):

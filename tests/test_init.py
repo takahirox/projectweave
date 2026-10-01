@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 from projectweave.github import GitHub
 from projectweave.graph import validate
-from projectweave.setup import templates
+from projectweave.setup import agents, templates
 from projectweave.workspace import run_task
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,7 +78,7 @@ class InitTests(unittest.TestCase):
                          "priority_order": ["P0", "P1", "P2"], "eligible_statuses": ["Todo"]})
         graph = validate(self.read("graph.json"))
         executor = graph["nodes"]["execute"]["executor"]
-        self.assertEqual(executor, {"type": "gitweave", "graph": str(self.root / "gitweave.json")})
+        self.assertEqual(executor, {"type": "gitweave", "graph": str(self.root / "gitweave.json"), "timeout": None})
         self.assertFalse((self.root / "resources.json").exists())  # Resource policy lives in the root, opt-in.
         self.assertEqual(self.root_config(), {"projects": {}})
         # The generated files are the packaged canonical templates; only the GitWeave graph path is materialized.
@@ -90,8 +90,9 @@ class InitTests(unittest.TestCase):
         self.assertEqual(graph["nodes"]["execute"]["inputs"], {"task": "/task"})
         self.assertNotIn("requires", graph["nodes"]["execute"])
         nodes = self.read("gitweave.json")["nodes"]
-        self.assertEqual(list(nodes), ["implement", "publish", "review", "fix", "merge", "close_issue"])
-        for node in nodes.values():  # Quick-start default: Codex with its native default model everywhere.
+        self.assertEqual(list(nodes), ["issue_snapshot", "readiness", "ask_information", "wait_for_issue_update",
+                                      "check_issue_open", "implement", "publish", "review", "fix", "merge", "close_issue"])
+        for node in agents(self.read("gitweave.json")):  # Provider choices apply only to agents.
             self.assertEqual(node["provider"], "codex")
             self.assertNotIn("model", node)
             self.assertNotIn("permission_mode", node)
@@ -100,7 +101,7 @@ class InitTests(unittest.TestCase):
         self.assertIn("Closes #N", nodes["publish"]["instruction"])
         self.assertIn("missing scope", nodes["review"]["instruction"])
         self.assertIn("cannot be merged cleanly into the current default branch", nodes["review"]["instruction"])
-        flow = self.read("gitweave.json")["flow"]
+        flow = self.read("gitweave.json")["flow"][1]["if"]["then"]
         # review ⇄ fix until approved, then merge; retried from review while the merge did not happen.
         self.assertEqual(flow[:2] + flow[3:], ["implement", "publish", "close_issue"])
         self.assertEqual(flow[2]["loop"]["while"], {"path": "/0/data/merged", "equals": False})
@@ -513,7 +514,7 @@ class InitTests(unittest.TestCase):
     def test_provider_and_model_overrides(self):
         code, report, calls = self.invoke("--project-number", "7", "--provider", "claude", "--model", "opus")
         self.assertEqual(code, 0, report)
-        for work in self.read("gitweave.json")["nodes"].values():
+        for work in agents(self.read("gitweave.json")):
             self.assertEqual((work["provider"], work["model"], work["permission_mode"]), ("claude", "opus", "bypassPermissions"))
         self.assertTrue(any("bypassPermissions" in a for a in report["human_actions"]))
         self.assertTrue(any("model opus" in a for a in report["human_actions"]))
@@ -524,7 +525,7 @@ class InitTests(unittest.TestCase):
                 code, report, calls = self.invoke(*flags)
                 self.assertEqual(code, 0, report)
                 self.assertEqual((self.directory / "gitweave.json").read_bytes(), before)
-        for work in templates(self.root, "codex", "gpt-x")["gitweave.json"]["nodes"].values():
+        for work in agents(templates(self.root, "codex", "gpt-x")["gitweave.json"]):
             self.assertEqual((work["provider"], work["model"]), ("codex", "gpt-x"))
             self.assertNotIn("permission_mode", work)
 

@@ -7,6 +7,7 @@ import threading
 from .contracts import Failure, decode
 from .coordinator import coordinate, run_one
 from .graph import validate
+from .readiness import execute as issue_readiness
 from .setup import add_init_arguments, init_project, init_root
 from .workspace import claim, complete, failure_record, project_dir, read_task, run_task
 
@@ -31,6 +32,8 @@ def main(argv=None):
     add_init_arguments(setup)
     check = commands.add_parser("validate", help="Validate a graph without external operations")
     check.add_argument("--graph", required=True, type=Path)
+    readiness = commands.add_parser("issue-readiness", help="GitWeave command helper: read Issue context from stdin")
+    readiness.add_argument("operation", choices=("snapshot", "comment", "wait", "guard"))
     for name, text in (("claim", "Select one runnable Task and set it In Progress"),
                        ("run-task", "Run the Project graph for an already-claimed Task"),
                        ("complete", "Set a claimed Task's Project item to Done"),
@@ -49,6 +52,9 @@ def main(argv=None):
         return 0 if report["initialized"] else 2
     root = Path.cwd()
     try:
+        if args.command == "issue-readiness":
+            emit(issue_readiness(args.operation, decode(sys.stdin.read())))
+            return 0
         if args.command == "validate":
             validate(decode(args.graph.read_text()))
             emit({"status": "valid"})
