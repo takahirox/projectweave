@@ -205,36 +205,30 @@ agent edits files and runs commands without asking) or `--model MODEL`; the
 default is Codex with its native default model. Init never overwrites files.
 Choose how Issues enter the Project and become executable:
 
-- **Manual:** add an open Issue, set `AI execution = Ready` and Status `Todo`.
-  GitHub's built-in auto-add can handle membership, with fields set manually.
-- **Optional Actions (recommended for continuous operation):** configure each
-  tracked repository to synchronize open Issues labeled `task` without `draft`
-  into the Project as `Ready`. Initialize only new/unset Status to `Todo`;
-  preserve existing Status. Removing `task`, adding `draft`, or closing an Issue
-  makes existing items `Not ready` while retaining membership. Becoming eligible
-  again restores `Ready`. Verify GitHub's Issue-closed workflow sets `Done`;
-  the close reason distinguishes completed from not-planned work.
+- **Manual:** add an open Issue, then manually set Status to `Todo` and
+  `AI execution = Ready`.
+- **GitHub built-in auto-add:** use one Project per repository and configure one
+  auto-add workflow in each Project for its repository. Auto-add handles
+  membership; manually set Status to `Todo` and `AI execution = Ready` afterward.
 
-Follow the [repository Actions setup guide](docs/usage.md#optional-repository-actions)
-for workflow availability, labels, Project access, an expiring Actions secret,
-and verification. Built-in auto-add workflow counts are plan-limited; Actions
-can cover multiple repositories sharing one Project. Init does not install
-repository workflows, create labels, provision secrets, or mark Issues Ready.
-The linked implementation tasks are separate; this setup is not preinstalled.
+See [Issue onboarding](docs/usage.md#onboard-issues) for setup and verification.
+Init does not configure Project workflows or mark Issues Ready. Labels and Issue
+closure do not automatically synchronize `AI execution`; after completion you
+can manually set it to `Not ready`. Closed Issues are not executable, even if
+`AI execution` remains `Ready`. Verify the Project's built-in **Item closed**
+workflow sets Status to `Done`, or use `projectweave complete` explicitly.
 
-Actions only synchronizes metadata; it does not invoke AI. ProjectWeave never
-sets Ready itself: `coordinate` selects open, Todo, Ready Issues under the
-configured resource policy. No Pending Status is needed. Not ready does not stop
-an active execution; cancellation and pre-merge eligibility gates are deferred.
+ProjectWeave never sets Ready itself: `coordinate` selects open, Todo, Ready
+Issues under the configured resource policy. No Pending Status is needed.
+Not ready does not stop an active execution; cancellation and pre-merge
+eligibility gates are deferred.
+
 After onboarding and verification, run either:
 
 ```sh
 projectweave run app       # one Task: admission -> claim -> run-task
 projectweave coordinate    # all Projects, concurrently, until stopped (--once for one pass)
 ```
-
-For this repository's shared Project #4, see [Project automation setup](docs/project-automation.md)
-to configure automatic task addition and Ready permission from Issue state and labels.
 
 ProjectWeave owns Project lifecycle: `claim` selects one runnable Task and sets it
 `In Progress` under a per-Project lock, `run-task` runs the Project graph for a
