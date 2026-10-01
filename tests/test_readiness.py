@@ -284,33 +284,43 @@ class GitWeaveRoutingTests(unittest.TestCase):
         post.assert_not_called()
 
     def test_open_issue_merge_succeeds_without_retry(self):
-        called, result, _ = self.run_route([(False, SNAPSHOT, [])] * 2)
-        self.assertEqual(called, ["issue_route", "issue_snapshot", "readiness", "check_issue_open", "implement", "publish",
-                                 "review", "merge", "close_issue"])
-        self.merge_pr.assert_called_once()
-        self.assertTrue(result["merged"])
-        self.assertEqual(result["merge_commit"], "b" * 40)
+        for labels, assessment in (((), "readiness"), (("bug",), "diagnose")):
+            with self.subTest(labels=labels):
+                called, result, _ = self.run_route([(False, SNAPSHOT, [])] * 2, labels=labels)
+                self.assertEqual(called, ["issue_route", "issue_snapshot", assessment, "check_issue_open",
+                                         "implement", "publish", "review", "merge", "close_issue"])
+                self.merge_pr.assert_called_once()
+                self.assertTrue(result["merged"])
+                self.assertEqual(result["merge_commit"], "b" * 40)
 
     def test_closed_issue_before_merge_skips_merge_and_retry(self):
-        called, result, _ = self.run_route([(False, SNAPSHOT, [])] * 2,
-                                          merge_issue_states=("closed",), merge_results=())
-        self.assertEqual(called, ["issue_route", "issue_snapshot", "readiness", "check_issue_open", "implement", "publish",
-                                 "review", "merge", "close_issue"])
-        self.merge_pr.assert_not_called()
-        self.assertFalse(result["merged"])
-        self.assertEqual(result["merge_commit"], "")
-        self.assertTrue(result["closed"])
-        self.assertEqual(result["pr"]["head_sha"], "a" * 40)
+        for labels, assessment in (((), "readiness"), (("bug",), "diagnose")):
+            with self.subTest(labels=labels):
+                called, result, _ = self.run_route([(False, SNAPSHOT, [])] * 2, labels=labels,
+                                                  merge_issue_states=("closed",), merge_results=())
+                self.assertEqual(called, ["issue_route", "issue_snapshot", assessment, "check_issue_open",
+                                         "implement", "publish", "review", "merge", "close_issue"])
+                self.merge_pr.assert_not_called()
+                self.assertFalse(result["merged"])
+                self.assertEqual(result["merge_commit"], "")
+                self.assertTrue(result["closed"])
+                self.assertEqual(result["pr"], {"number": 1, "url": "https://github.com/owner/repo/pull/1",
+                                              "head_sha": "a" * 40})
 
     def test_issue_closed_after_failed_merge_stops_next_attempt(self):
-        called, result, _ = self.run_route([(False, SNAPSHOT, [])] * 2, merge_results=(False,),
-                                          review_results=(True, True), merge_issue_states=("open", "closed"))
-        self.assertEqual(called[-5:], ["review", "merge", "review", "merge", "close_issue"])
-        self.merge_pr.assert_called_once()
-        self.assertEqual(called.count("review"), 2)
-        self.assertFalse(result["merged"])
-        self.assertEqual(result["merge_commit"], "")
-        self.assertTrue(result["closed"])
+        for labels, assessment in (((), "readiness"), (("bug",), "diagnose")):
+            with self.subTest(labels=labels):
+                called, result, _ = self.run_route([(False, SNAPSHOT, [])] * 2, labels=labels,
+                                                  merge_results=(False,), review_results=(True, True),
+                                                  merge_issue_states=("open", "closed"))
+                self.assertEqual(called[:5], ["issue_route", "issue_snapshot", assessment,
+                                             "check_issue_open", "implement"])
+                self.assertEqual(called[-5:], ["review", "merge", "review", "merge", "close_issue"])
+                self.merge_pr.assert_called_once()
+                self.assertEqual(called.count("review"), 2)
+                self.assertFalse(result["merged"])
+                self.assertEqual(result["merge_commit"], "")
+                self.assertTrue(result["closed"])
 
     def test_not_ready_unchanged_polls_then_update_and_ready(self):
         changed = dict(SNAPSHOT, body="Acceptance criteria supplied")
