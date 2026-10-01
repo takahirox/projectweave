@@ -16,4 +16,4 @@ projectweave = "projectweave.cli:main"
 packages = ["projectweave"]
 
 [tool.setuptools.package-data]
-projectweave = ["templates/*.json"]
+projectweave = ["templates/*.json", "web/*.html", "web/*.js", "web/*.css"]

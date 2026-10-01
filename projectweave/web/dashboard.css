@@ -1,0 +1,33 @@
+:root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; background: #101722; color: #e6edf7; }
+body { margin: 0; }
+header { display: flex; gap: 2rem; padding: 1rem 2rem; background: #1a2535; align-items: baseline; }
+header a { font-size: 1.5rem; font-weight: 700; }
+main { max-width: 1200px; margin: auto; padding: 1rem 2rem 3rem; }
+a { color: #8dc6ff; }
+h1, h2 { line-height: 1.2; }
+.muted { color: #afbacb; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; }
+.card { border: 1px solid #435268; border-radius: 8px; padding: 1rem; background: #1a2535; }
+.counts { display: flex; flex-wrap: wrap; gap: 1rem; }
+.counts strong { display: block; font-size: 1.6rem; }
+.running, .active { color: #8dc6ff; }
+.failed, #connection { color: #ff9999; }
+.completed { color: #8bdcb4; }
+.long { border-left: 5px solid #ffd17a; background: #332d21; }
+.badge { display: inline-block; border: 1px solid currentColor; border-radius: 5px; padding: .1rem .4rem; margin: .2rem; }
+.table-wrap, .graph-wrap { overflow: auto; }
+table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+th, td { text-align: left; padding: .75rem; border-bottom: 1px solid #435268; vertical-align: top; }
+th { color: #afbacb; }
+small { display: block; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: .4rem 1.5rem; }
+dd { margin: 0; overflow-wrap: anywhere; }
+pre { background: #0b111a; padding: 1rem; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 30rem; overflow: auto; }
+.graph { display: block; }
+.graph .edge { stroke: #7f92ae; fill: none; stroke-width: 2; }
+.graph rect { fill: #243146; stroke: #7f92ae; stroke-width: 2; }
+.graph .completed rect { fill: #173d31; stroke: #8bdcb4; }
+.graph .active rect { fill: #1a4267; stroke: #8dc6ff; stroke-width: 4; }
+.graph .failed rect { fill: #4b2530; stroke: #ff9999; }
+.graph text { fill: #e6edf7; font-size: 12px; }
+@media (max-width: 600px) { main { padding: 1rem; } header { gap: 1rem; padding: 1rem; } dl { grid-template-columns: 1fr; } }
