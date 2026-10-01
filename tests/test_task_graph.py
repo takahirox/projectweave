@@ -8,7 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class TaskGraphTests(unittest.TestCase):
     def setUp(self):
-        self.nodes = json.loads((ROOT / "projectweave/templates/gitweave.json").read_text())["nodes"]
+        self.graph = json.loads((ROOT / "projectweave/templates/gitweave.json").read_text())
+        self.nodes = self.graph["nodes"]
         self.fixtures = json.loads((ROOT / "tests/fixtures/task-results.json").read_text())
 
     def test_codex_schemas_require_every_property_recursively(self):
@@ -49,6 +50,8 @@ class TaskGraphTests(unittest.TestCase):
                     result = dict(fixture)
                     if name == "merge":
                         del result["closed"]
+                    else:
+                        del result["retry"]
                     self.assert_result_matches(schema, result)
                     if result["merged"]:
                         self.assertRegex(result["merge_commit"], r"^[0-9a-f]{40}$")
@@ -60,6 +63,35 @@ class TaskGraphTests(unittest.TestCase):
                     result["merge_commit"] = None
                     with self.assertRaises(AssertionError):
                         self.assert_result_matches(schema, result)
+
+    def test_merge_retry_contract_and_loop_condition(self):
+        schema = self.nodes["merge"]["schema"]
+        self.assertEqual(schema["properties"]["retry"]["type"], "boolean")
+        self.assertIn("retry", schema["required"])
+        condition = self.graph["flow"][1]["if"]["then"][2]["loop"]["while"]
+        self.assertEqual(condition, {"path": "/0/data/retry", "equals": True})
+        for outcome, expected_retry in (("successful_merge", False), ("unsuccessful_merge", True),
+                                        ("closed_before_merge", False)):
+            with self.subTest(outcome=outcome):
+                result = dict(self.fixtures[outcome])
+                del result["closed"]
+                self.assert_result_matches(schema, result)
+                self.assertIs(result["retry"], expected_retry)
+                del result["retry"]
+                with self.assertRaises(AssertionError):
+                    self.assert_result_matches(schema, result)
+
+    def test_merge_instructions_guard_issue_and_preserve_github_policy(self):
+        instruction = self.nodes["merge"]["instruction"]
+        for text in ("Immediately before each attempt to merge", "github_repository and run_input.number",
+                     "If the Issue is closed, do not merge the PR", "merged=false, retry=false",
+                     "its open state cannot be confirmed, stop without merging",
+                     "its head is still inputs[0].data.pr.head_sha", "with a merge commit",
+                     "Do not bypass required checks or reviews", "retry=false when merged is true",
+                     "retry=true only when the Issue was confirmed open"):
+            with self.subTest(text=text):
+                self.assertIn(text, instruction)
+        self.assertIn("never reopen a closed Issue", self.nodes["close_issue"]["instruction"])
 
     def test_instructions_and_descriptions_agree_on_merge_commit(self):
         for name in ("merge", "close_issue"):
