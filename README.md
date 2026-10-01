@@ -241,7 +241,14 @@ After onboarding and verification, run either:
 ```sh
 projectweave run app       # one Task: admission -> claim -> run-task
 projectweave coordinate    # all Projects, concurrently, until stopped (--once for one pass)
+projectweave coordinate --web  # also serve a live dashboard at http://127.0.0.1:8765/
 ```
+
+The optional dashboard shows current-process Project counts, Task/run details,
+GitWeave graphs and available logs. Set `--web-port PORT` (default 8765) or
+`--long-running-seconds N` (default 3600) as needed. State and bounded logs stay
+in memory and disappear on restart. See [dashboard behavior](docs/runtime.md#local-execution-dashboard)
+for GitWeave progress/event support and the read-only JSON API.
 
 ProjectWeave owns Project lifecycle: `claim` selects one runnable Task and sets it
 `In Progress` under a per-Project lock, `run-task` runs the Project graph for a

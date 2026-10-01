@@ -122,14 +122,16 @@ def claim(directory, backend=None):
     return task
 
 
-def run_task(directory, task, backend=None, executor=invoke):
+def run_task(directory, task, backend=None, executor=invoke, observer=None):
     """Run the Project's required graph.json for an already-claimed Task (at /task); no lifecycle side effects."""
     require(isinstance(task, dict), "run-task needs a claimed Task object", "input")
     directory = Path(directory)
     graph = check_project(directory)
     project = load_project(directory)
+    if observer and executor is invoke:
+        executor = partial(invoke, on_event=observer)
     return Runtime(graph, project, backend=backend, executor=executor, checkout=partial(worktree, directory),
-                   workspace=str(directory), task=task).run()
+                   workspace=str(directory), task=task, observer=observer).run()
 
 
 def complete(directory, task, backend=None):

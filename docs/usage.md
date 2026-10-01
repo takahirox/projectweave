@@ -44,7 +44,7 @@ supported. Run every command below from the root workspace.
 | `projectweave run-task NAME --task FILE\|-` | Run the Project's `graph.json` for an already-claimed Task (JSON from a file or stdin) and print the Run receipt. |
 | `projectweave complete NAME --task FILE\|-` | Explicitly set the claimed Task's Project item to `Done`. |
 | `projectweave run NAME` | One Task, synchronously: resource admission → `claim` → `run-task` → wait. |
-| `projectweave coordinate [--once] [--poll-seconds N]` | The multi-Project loop (below). |
+| `projectweave coordinate [--once] [--poll-seconds N] [--web]` | The multi-Project loop and optional local dashboard (below). |
 | `projectweave validate --graph FILE` | Static graph validation; no external calls. |
 
 ## Task lifecycle
@@ -138,6 +138,16 @@ left `In Progress` by a broken setup. The root config and the set of Projects
 are read at start: restart `coordinate` after editing `projectweave.json` or
 adding a Project. Any unexpected error also waits for the Tasks already running
 before `coordinate` exits.
+
+Add `--web` to serve the current process's execution dashboard at
+`http://127.0.0.1:8765/`; the URL is announced on stderr. `--web-port PORT`
+changes the port (`0` selects an available one), and `--long-running-seconds N`
+sets the duration threshold (default 3600). The dashboard lists Project counts,
+Tasks, execution details, available logs, and GitWeave graph progress. State is
+held in memory and disappears when the process exits. The server stays available
+while graceful shutdown waits for launched Tasks, then closes with the
+coordinator. See [dashboard details](runtime.md#local-execution-dashboard) for
+progress/event support and API endpoints.
 
 ## Default Project workflow
 

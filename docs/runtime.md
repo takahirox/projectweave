@@ -211,7 +211,8 @@ The GitWeave adapter invokes the public `gitweave run --graph ... --repo OWNER/R
 the default branch itself and gives nodes `run_input`/`github_repository`; REQUEST
 embeds the ProjectWeave request JSON (without `checkout`) as optional guidance. It translates the CLI's completed record and terminal
 outputs into a Result; terminal commit strings become references and original
-outputs remain in data. It does not import GitWeave or read its private refs.
+outputs remain in data. It does not import GitWeave. The optional dashboard can
+read the returned Run's local provenance refs for progress (see below).
 GitWeave CLI does not expose aggregate usage, so this adapter supports reservation
 accounting only. Completion means graph completion, not task acceptance. Downstream
 graph conditions inspect `data.outputs` for task semantics. GitWeave can publish
@@ -278,3 +279,73 @@ structured control, bounded execution, explicit actions, and outcome/failure
 separation. Did not transfer worktree ownership or Git provenance as project state.
 GitHub operations use native `gh api graphql` authentication and the documented
 [Projects API](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-api-to-manage-projects).
+
+## Local execution dashboard
+
+`projectweave coordinate --web` serves a read-only dashboard at
+`http://127.0.0.1:8765/` alongside the coordinator. `--web-port PORT` changes the
+port; `--web-port 0` chooses an available port. The actual URL is printed to
+stderr as `{"dashboard_url": "..."}`. `--long-running-seconds N` sets the elapsed
+threshold (default 3600 seconds). The server binds only to IPv4 loopback, uses no
+external assets or dependencies, and closes when coordination exits, including
+`--once`, errors, and graceful SIGINT/SIGTERM shutdown. During graceful shutdown
+it remains available while already launched Tasks finish.
+
+The top page lists every managed Project, including idle or misconfigured
+Projects, with Running, Long running, and Failed execution counts. Project links
+show Tasks launched by this process; Task links show run identity, status, times,
+failure details, executor information, recent output, and a GitWeave graph when
+configured. Durations and views refresh every second. Running means a Task
+actually launched by this coordinator and not yet finished; a GitHub Project
+item's In Progress status does not determine this count. Long running means
+Running with elapsed time strictly greater than the threshold. Failed counts
+failed executions, including worker exceptions. Terminal executions remain
+visible for this process's lifetime. Setup/claim problems remain in the normal
+coordinator reports and are not counted as failed Task executions.
+
+The optional thread-safe registry holds this state directly in memory. Nothing
+is recovered from earlier coordinator processes, and no database or history file
+is written. Each Task retains at most 500 recent log entries of at most 2000
+characters each, including captured executor stdout/stderr. Command executors
+keep their normal single-JSON-result stdout contract and have a useful generic
+view without requiring a GitWeave graph. Without `--web`, executor collection and
+coordinator behavior use the original paths.
+
+For GitWeave, ProjectWeave loads each executor's configured graph relative to
+its Project workspace (absolute graph paths also work). Structured flow is
+rendered as node edges, including parallel branches, conditionals, maps, and
+loops. Multiple executor invocations have separate graphs and GitWeave Run IDs;
+the ProjectWeave Run ID is displayed separately. On completion or failure,
+returned terminal outputs identify known completed nodes. When the returned
+repository, run ref, and notes ref are locally available, ProjectWeave reads
+`run.json` and attempt notes using read-only Git commands to show intermediate
+completed/failed nodes too. Missing provenance never changes the Task outcome.
+Only refs belonging to the returned Run are consulted; other Runs are not
+scanned or recovered.
+
+The currently supported GitWeave CLI emits only a final Run summary. Thus active
+nodes and internal agent/command logs are unknown until an executor supplies
+live events. The dashboard adapter also consumes optional JSON-lines events on
+GitWeave stderr alongside ordinary text, while stdout remains the final Run
+JSON. Supported flat event objects use `type` (or `event`): `run_started` with
+`run_id`; `node_started`, `node_completed`, and `node_failed` with `node_id` and
+optional `instance_id`/`run_id`; and `agent_output`, `command_stdout`,
+`command_stderr`, or `log` with `text` (also accepting `message` or `output`).
+For example:
+
+```json
+{"type":"node_started","run_id":"abc","node_id":"implement","instance_id":"implement-1"}
+{"type":"command_stdout","text":"Running checks"}
+{"type":"node_completed","node_id":"implement","instance_id":"implement-1"}
+```
+
+Such events update active nodes and logs immediately without waiting for the
+executor to finish. Concurrent instances are tracked separately. Progress is
+observed rather than guessed: branches may never execute, and active nodes that
+lack a terminal event become unknown when the executor ends. A future GitWeave
+event protocol can be translated at this adapter boundary without moving UI
+code into GitWeave.
+
+The same registry is available through read-only JSON endpoints: `/api/state`,
+`/api/projects`, `/api/projects/NAME`, and `/api/runs/ID` (the last uses the
+process-local execution ID supplied by the API). All responses disable caching.

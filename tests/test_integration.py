@@ -3,10 +3,14 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import signal
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
+from urllib.error import URLError
+from urllib.request import urlopen
 from projectweave.contracts import Failure
 from projectweave.executors import invoke, process
 from projectweave.github import GitHub
@@ -347,6 +351,68 @@ class CLITests(unittest.TestCase):
         self.config["projects"]["q"]["resources"]["codex"]["estimated_usage_percent_per_task"] = 10
         code, summary, calls = self.cli("coordinate", "--once")
         self.assertEqual([(run["project"], run["task"]["number"]) for run in summary["runs"]], [("q", 8)])
+
+    def test_web_coordinates_live_events_duration_and_graceful_shutdown(self):
+        (self.root / "projectweave.json").write_text(json.dumps(self.config))
+        release = self.directory / "release"
+        record = {"status": "completed", "run_id": "live-gw", "repository": "missing",
+                  "run_ref": "ref", "notes_ref": "notes", "outputs": [
+                      {"node_id": "issue_route", "commit": "sha", "message": "done", "data": {}}]}
+        (self.bin / "gitweave").write_text(f"#!{sys.executable}\n" + "\n".join([
+            "import json,sys,time", "from pathlib import Path",
+            'print(json.dumps({"type":"run_started","run_id":"live-gw"}),file=sys.stderr,flush=True)',
+            'print(json.dumps({"type":"node_started","node_id":"issue_route"}),file=sys.stderr,flush=True)',
+            'print(json.dumps({"type":"agent_output","text":"working live"}),file=sys.stderr,flush=True)',
+            f"while not Path({str(release)!r}).exists(): time.sleep(.02)",
+            'print(json.dumps({"type":"node_completed","node_id":"issue_route"}),file=sys.stderr,flush=True)',
+            f"print(json.dumps({record!r}),flush=True)",
+        ]))
+        child = subprocess.Popen([sys.executable, "-m", "projectweave", "coordinate", "--web", "--web-port", "0",
+                                  "--poll-seconds", "1", "--long-running-seconds", "1"],
+                                 cwd=self.root, env=dict(self.env, PYTHONPATH=str(ROOT)),
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            # The URL is announced before any claims, while stdout keeps its normal summary contract.
+            url = json.loads(child.stderr.readline())["dashboard_url"]
+            def snapshot():
+                with urlopen(url + "api/state", timeout=2) as response:
+                    return json.load(response)
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                state = snapshot()
+                if state["runs"] and any(log["text"] == "working live" for log in state["runs"][0]["logs"]):
+                    break
+                time.sleep(.02)
+            self.assertTrue(state["runs"])
+            execution = state["runs"][0]["executions"][0]
+            self.assertEqual(execution["current_nodes"], ["issue_route"])
+            self.assertEqual(execution["run_id"], "live-gw")
+            self.assertEqual(state["projects"][0]["running"], 1)
+            before = state["runs"][0]["elapsed_seconds"]
+            while time.monotonic() < deadline and not state["projects"][0]["long_running"]:
+                time.sleep(.02)
+                state = snapshot()
+            self.assertGreater(state["runs"][0]["elapsed_seconds"], before)
+            self.assertEqual(state["projects"][0]["long_running"], 1)
+            child.send_signal(signal.SIGTERM)
+            self.assertEqual(snapshot()["projects"][0]["running"], 1)  # Server remains available while draining.
+            release.touch()
+            stdout, stderr = child.communicate(timeout=8)
+            self.assertEqual(child.returncode, 0, stderr)
+            summary = json.loads(stdout)
+            self.assertEqual(summary["runs"][0]["record"]["status"], "completed")
+            with self.assertRaises(URLError):
+                urlopen(url, timeout=1)
+        finally:
+            release.touch()
+            if child.poll() is None:
+                child.kill()
+            child.communicate(timeout=5)
+
+    def test_web_once_preserves_executor_failure_exit_status(self):
+        code, summary, _ = self.cli("coordinate", "--once", "--web", "--web-port", "0", mode="executor_failure")
+        self.assertEqual(code, 1, summary)
+        self.assertEqual(summary["runs"][0]["record"]["failure"]["kind"], "transport")
 
 
 class BoundaryTests(unittest.TestCase):

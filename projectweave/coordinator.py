@@ -5,7 +5,7 @@ import time
 from .contracts import Failure
 from . import usage
 from .workspace import (claim, check_project, failure_record, load_root, policy, project_dir, projects, run_task,
-                        weights, POLL_SECONDS)
+                        load_project, weights, POLL_SECONDS)
 
 
 class Admission:
@@ -88,7 +88,7 @@ def run_one(root, name, observe=usage.observe, claim_task=claim, run=run_task):
 
 
 def coordinate(root, once=False, poll_seconds=None, stop=None, observe=usage.observe, claim_task=claim, run=run_task,
-               report=None):
+               report=None, registry=None):
     """Observe managed Projects and shared resources, claim and launch every admitted Task concurrently, and
     re-observe when a Task ends or every poll interval. With once, make one pass and wait for what it launched."""
     config = load_root(root)
@@ -102,17 +102,30 @@ def coordinate(root, once=False, poll_seconds=None, stop=None, observe=usage.obs
     finished = queue.Queue()
     running = {}
     runs = []
+    if registry:
+        for name in names:
+            try:
+                project = load_project(project_dir(root, name))
+            except Exception:
+                project = None  # Broken Projects still appear; the normal setup check reports the error.
+            registry.add_project(name, project)
 
     def launch(name, directory, task):
         reservation = admission.reserve(name)
         key = object()
         running[key] = (reservation, task.get("item_id"))
+        identity = registry.start(name, task, directory) if registry else None
 
         def work():
             try:
-                record = run(directory, task)
+                if registry and run is run_task:
+                    record = run(directory, task, observer=lambda event: registry.event(identity, event))
+                else:
+                    record = run(directory, task)
             except Exception as exc:  # A crashed Task must still release its reservation.
                 record = {"status": "failed", "failure": failure_record(exc)}
+            if registry:
+                registry.finish(identity, record)
             finished.put((key, {"project": name, "task": task, "record": record}))
 
         threading.Thread(target=work, name=f"projectweave-{name}", daemon=True).start()

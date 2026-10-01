@@ -12,7 +12,7 @@ from .executors import invoke
 
 class Runtime:
     def __init__(self, graph, project, envelope=None, backend=None, executor=invoke, checkout=None, workspace=None,
-                 task=None):
+                 task=None, observer=None):
         self.graph = validate(graph)
         self.resources = Resources(envelope or {})
         self.backend = backend or GitHub(project)
@@ -28,6 +28,11 @@ class Runtime:
         self.steps = 0
         self.active = None
         self.events = []
+        self.observer = observer
+
+    def notify(self, event):
+        if self.observer:
+            self.observer(event)
 
     def node(self, node, inputs):
         action = node.get("action")
@@ -52,6 +57,8 @@ class Runtime:
             else:
                 require(self.checkout is not None, "Execution needs a Project workspace", "checkout")
             output = None
+            self.notify({"type": "executor_started", "execution_id": f"{self.active}-{self.steps}",
+                         "config": node["executor"]})
             try:
                 if gitweave:
                     output = check_result(self.executor(node["executor"], deepcopy(request), self.workspace))
@@ -67,6 +74,8 @@ class Runtime:
                 if output is not None:
                     exc.details["result"] = output
                 raise
+            finally:
+                self.notify({"type": "executor_finished"})
             return output
         if action == "load":
             return result("Project loaded", {"items": self.backend.load()})
@@ -117,6 +126,7 @@ class Runtime:
 
     def run(self):
         failure = None
+        self.notify({"type": "run_started", "run_id": self.context["run_id"]})
         try:
             self.flow(self.graph["flow"])
         except Failure as exc:

@@ -7,6 +7,7 @@ import unittest
 
 from projectweave.contracts import Failure
 from projectweave.coordinator import Admission, RoundRobin, coordinate, run_one
+from projectweave.execution import ExecutionRegistry
 from projectweave.github import GitHub
 from projectweave.workspace import claim, load_root, validate_root
 
@@ -246,6 +247,22 @@ class CoordinatorTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(Failure):
                     coordinate(self.root, poll_seconds=value, observe=lambda p: {}, claim_task=self.claim)
+
+    def test_registry_tracks_launch_and_crash_including_idle_projects(self):
+        self.project("a", ["a1"])
+        self.project("idle", [])
+        registry = ExecutionRegistry()
+
+        def run(directory, claimed):
+            self.assertEqual(registry.snapshot()["projects"][0]["running"], 1)
+            raise RuntimeError("boom")
+
+        coordinate(self.root, once=True, claim_task=self.claim, run=run, registry=registry)
+        snapshot = registry.snapshot()
+        self.assertEqual([project["name"] for project in snapshot["projects"]], ["a", "idle"])
+        self.assertEqual(snapshot["projects"][0]["running"], 0)
+        self.assertEqual(snapshot["projects"][0]["failed"], 1)
+        self.assertEqual(snapshot["runs"][0]["failure"]["message"], "boom")
 
     def test_run_one_admission_no_work_and_config_errors(self):
         self.project("a", ["a1"], {"codex": CODEX})
