@@ -68,7 +68,7 @@ class TaskGraphTests(unittest.TestCase):
         schema = self.nodes["merge"]["schema"]
         self.assertEqual(schema["properties"]["retry"]["type"], "boolean")
         self.assertIn("retry", schema["required"])
-        condition = self.graph["flow"][1]["if"]["then"][2]["loop"]["while"]
+        condition = self.graph["flow"][2]["if"]["then"][2]["loop"]["while"]
         self.assertEqual(condition, {"path": "/0/data/retry", "equals": True})
         for outcome, expected_retry in (("successful_merge", False), ("unsuccessful_merge", True),
                                         ("closed_before_merge", False)):

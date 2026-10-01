@@ -218,16 +218,33 @@ graph conditions inspect `data.outputs` for task semantics. GitWeave can publish
 provenance automatically and its graph may mutate remote state: operators must
 review its graph/repository configuration before live use.
 
-The packaged GitWeave Task graph first captures the Issue's title/body and
-external comments, then runs a readiness agent. A deterministic command posts
-missing questions once per reviewed snapshot and waits for relevant content
+The packaged GitWeave Task graph first runs the deterministic `issue_route`
+command. It reads the source Issue's labels through `gh api`, trims and
+case-folds names, and returns sorted unique `labels` plus a `route`: the exact
+`bug` label selects `bug`; missing or unrelated labels select `default`.
+The ordered `LABEL_ROUTES` mapping in `projectweave/routing.py` defines label
+precedence explicitly. Classification uses no AI model. GitHub failures stop
+the Run rather than silently choosing a route. An `if` on `/0/data/route`
+selects one pre-implementation loop for the Run; label-only changes during
+the Run do not re-route it.
+
+Each loop captures the Issue's title/body and external comments. The default
+route runs the readiness agent; the bug route runs `diagnose`, which inspects
+the repository and relevant tests, reproduces the failure where practical,
+and returns evidence, likely cause, fix approach and validation in a
+`diagnosis` string. An undiagnosed bug returns `needs_information` with
+blocking questions instead of approving implementation. A deterministic command
+posts missing questions once per reviewed snapshot and waits for relevant content
 changes or closure. Polls consume no model calls or additional graph steps:
 60 seconds for the first hour, 300 seconds until 24 hours, then 3600 seconds
 indefinitely. Automation markers identify its own comments; the authenticated
 account's unmarked replies still count. Commands carry the reviewed baseline
 through the handoff, so replies during review/commenting are not missed. A
 deterministic guard rechecks closure and content immediately before implementation.
-Closure exits with schema-validated `{status: "closed", questions: [], snapshot}`
+For an unchanged, open Issue it forwards the approved technical diagnosis to
+implementation. Content changes discard that diagnosis and repeat the selected
+review phase. Both routes converge on the same implement/publish/review/fix/merge
+flow. Closure exits with schema-validated `{status: "closed", questions: [], snapshot}`
 data and no PR. This is a completed graph receipt, with no implementation.
 The resident wait retains the Task's coordinator reservation, and shutdown or
 `--once` waits for it; resume after process/host restart is out of scope.
