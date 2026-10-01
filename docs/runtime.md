@@ -123,11 +123,20 @@ scoped to one Run, not concurrent processes or a billing ledger.
 A Project's `project.json` contains `owner`, `number`, and `owner_type`
 (`organization` or `user`). `priority_field`, `status_field` default to Priority
 and Status; `priority_order` defaults to `["P0", "P1", "P2"]`; optional
-`eligible_statuses` further restricts selection (AND). Read all pages of items,
-labels, item field values, and project fields. Eligibility is the fixed Project
-single-select field `AI execution`: only nonarchived open Issues whose value is
-`Ready` qualify. Labels play no part and a `label` setting is rejected. Drafts,
-PRs, inaccessible content, and closed Issues are excluded. Rank by configured priority, then oldest
+`eligible_statuses` further restricts selection (AND), but only Status `Todo`
+is runnable even when that setting is absent or lists other statuses. Read all
+pages of items, labels, item field values, and project fields. Only nonarchived
+open repository Issues in the configured Project qualify. Optional `repository`
+filters by owner/name (case-insensitive). Optional `required_labels` and
+`excluded_labels` are arrays of nonblank label names: all required labels must
+be present, and no excluded label may be present (case-insensitive). Defaults
+impose no repository or label restriction. Labels are freshly loaded at each
+selection, including for existing members; Auto-add controls membership only.
+No permission field is required or read for eligibility; an existing
+`AI execution` field is ignored. The legacy singular `label` setting is rejected
+with instructions to migrate manually to `required_labels`. Draft Project items,
+PRs, inaccessible content, closed Issues, and archived items are excluded.
+Rank by configured priority, then oldest
 createdAt, then Issue URL and item ID. Missing/unknown priorities sort last.
 `select` returns task null for empty work. `claim` runs load → select and sets
 the selected Task's Status to `In Progress` while holding a local per-Project file

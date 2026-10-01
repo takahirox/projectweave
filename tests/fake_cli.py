@@ -139,10 +139,13 @@ elif "items(first:" in query:
             "url": f"https://github.com/o/r/issues/{issue}", "state": "OPEN", "createdAt": "2026-01-01T00:00:00Z",
             "repository": {"nameWithOwner": "o/r"}}}])
 elif "labels(first:" in query:
-    connection("labels", [{"name": "other"}] if variables["cursor"] is None else [{"name": "projectweave-ready"}], variables["cursor"] is None)
+    labels = [] if mode == "missing_task_label" else [{"name": "task"}]
+    if mode == "draft_label":
+        labels.append({"name": "draft"})
+    connection("labels", [{"name": "other"}] if variables["cursor"] is None else labels, variables["cursor"] is None)
 elif "fieldValues(first:" in query:
     status = state.get(variables["id"], "Todo")
-    values = [("Status", status)] if variables["cursor"] is None else [("Priority", "P0"), ("AI execution", mode != "not_ready" and "Ready" or "Not ready")]
+    values = [("Status", status)] if variables["cursor"] is None else [("Priority", "P0")]
     connection("fieldValues", [{"field": {"name": f}, "name": v} for f, v in values], variables["cursor"] is None)
 elif "fields(first:" in query:
     connection("fields", [{}] if variables["cursor"] is None else [

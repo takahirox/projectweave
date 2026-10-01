@@ -49,8 +49,9 @@ supported. Run every command below from the root workspace.
 
 ## Task lifecycle
 
-- **claim** selects one runnable Task (open, nonarchived Issue with
-  `AI execution` = `Ready` and Status `Todo`, ranked P0/P1/P2 then oldest) and
+- **claim** selects one runnable Task (open, nonarchived repository Issue in the
+  configured Project with Status `Todo`, matching any configured repository and
+  label rules, ranked P0/P1/P2 then oldest) and
   sets its Status to `In Progress`, holding a local per-Project file lock
   (`projects/NAME/.projectweave.lock`) only around select → mark. Manual `claim`
   and `coordinate` share the lock, so concurrent claims on one machine never pick
@@ -66,8 +67,8 @@ supported. Run every command below from the root workspace.
 
 A Task that fails, or whose PR is left open, stays `In Progress`: it is not
 retried automatically and never moved back to `Todo`. Set its Status to `Todo`
-yourself to retry. ProjectWeave never changes `AI execution`; set it manually
-as described in [Issue onboarding](#onboard-issues).
+yourself to retry after reviewing the failure and existing artifacts. See
+[Issue onboarding](#onboard-issues) for eligibility rules.
 
 ## Shared AI resources
 
@@ -254,6 +255,11 @@ projectweave init-project api --project-owner my-team --create-project "API" \
   unconstrained, and init never invents a policy.
 - `--link-repository OWNER/REPO` (repeatable) links same-owner repositories to
   the GitHub Project (see below).
+- `--repository OWNER/REPO` restricts runtime Task selection to that repository;
+  it does not link the repository or add Issues.
+- `--required-label LABEL` and `--excluded-label LABEL` (repeatable) set runtime
+  label rules. All required labels must be present; any excluded label prevents
+  selection. No label names are required by default.
 - `--provider codex|claude` and `--model MODEL` shape a new `gitweave.json`
   (below).
 
@@ -261,7 +267,7 @@ It writes three files into `projects/NAME/`:
 
 | File | Purpose / human input |
 | --- | --- |
-| `project.json` | Project owner/type/number, standard Priority order `P0`, `P1`, `P2`, `eligible_statuses: ["Todo"]` |
+| `project.json` | Project owner/type/number, standard Priority order `P0`, `P1`, `P2`, `eligible_statuses: ["Todo"]`, plus any explicit repository/label rules |
 | `graph.json` | The Project graph: `execute` GitWeave in Issue mode for the claimed Task; only the GitWeave graph path is made absolute |
 | `gitweave.json` | The Task graph (Issue readiness → implement → PR → review/fix → merge, retried only for an open Issue's merge failure → close_issue); every agent node uses Codex with its native default model, or the `--provider`/`--model` choices (Claude adds `bypassPermissions`) |
 
@@ -298,16 +304,15 @@ Init also verifies that the Project's `Status` field (GitHub's built-in one) is 
 single-select with `Todo`, `In Progress` and `Done` options (claim sets
 `In Progress`; `complete` sets `Done`). It never creates or repairs
 Status: a missing field or option is reported for you to add in the Project.
-Init verifies/creates the `AI execution` single-select field with `Ready` and
-`Not ready` options in the same way (other options are allowed; incompatible
-fields are reported, never repaired). Init does not configure Project workflows,
-create labels, or mark Issues Ready.
-Init never selects Issues, adds Project items, assigns priorities, marks items
-ready, runs AI, installs tools, changes auth, or pushes. Unknown or unset
-Priority values sort below P0/P1/P2; setting an Issue priority remains a human
-choice. Draft Issues are not Tasks. An optional `repository` setting in
-`project.json` restricts selection to one repository; init does not emit it but
-accepts it in an existing `project.json` as deliberate policy.
+Init never creates or requires an `AI execution` field and ignores any existing
+one, including incompatible types or options. It does not configure Project
+workflows, create labels, select Issues, add Project items, assign priorities,
+run AI, install tools, change auth, or push. Unknown or unset Priority values
+sort below P0/P1/P2; setting an Issue priority remains a human choice. Draft
+Project items are not Tasks. Repository and label scope rules are optional and
+stored in `project.json`; setup accepts human edits to these rules on reruns.
+Explicit flags must match saved settings; conflicts are reported without
+rewriting files. Repository linking is independent of runtime scope.
 
 ### Optionally link repositories
 
@@ -317,8 +322,8 @@ linked (nothing is inferred from the current directory or Project items). Init
 reads every page of the Project's linked repositories first; an already-linked
 repository (compared case-insensitively) is reported under `existing`, and init
 never unlinks. A repository with a different owner is rejected before any GitHub
-change. Linking does not affect Task selection, add Issues, mark anything
-`Ready`, or write anything to the workspace files. A failed link is an init
+change. Linking does not affect Task selection, add Issues, or write anything
+to the workspace files. A failed link is an init
 failure (exit 2): completed pieces stay in the report, and rerunning init with
 the same option reuses them.
 
@@ -356,44 +361,86 @@ but its response or local save fails, inspect
 `--project-number NUMBER` before considering another creation. Avoid concurrent
 init invocations.
 
-There is no migration from earlier layouts (a single workspace with
-`resources.json`, a Project graph that selected and marked Tasks itself,
-`projectweave-ready` labels, and so on): create a root workspace and run
-`init-project` again, then reapply provider/model edits.
+For earlier layouts (a single workspace with `resources.json` or a Project
+graph that selected and marked Tasks itself), create a separate root workspace
+and run `init-project`, then deliberately reapply provider/model edits. Do not
+replace a customized workspace with generated files. Existing root workspaces
+can use the eligibility migration below without regenerating their graphs.
 
 ## Onboard Issues
 
 Choose manual onboarding or GitHub's built-in auto-add before starting
-`coordinate`. ProjectWeave itself never sets `Ready` and never uses labels for
-runtime selection: it selects open, nonarchived repository Issues with Status
-`Todo` and `AI execution = Ready`, subject to the configured resource policy.
-No `Pending` Status is needed. GitWeave remains independent of Project state.
+`coordinate`. Runtime eligibility requires an open repository Issue that is a
+nonarchived member of the intended Project with Status `Todo`, matching any
+configured repository and label criteria. No additional permission field or
+`Pending` Status is needed. GitWeave remains independent of Project state.
 
-For **manual onboarding**, add an open Issue to the Project, then manually set
-Status to `Todo` and `AI execution` to `Ready` (see [Running a Task](#running-a-task)).
-Labels are not required for this path.
+### Configure runtime eligibility
+
+For a Project scoped to one repository with `task` required and `draft` excluded,
+initialize it with:
+
+```sh
+projectweave init-project app --project-owner my-team --project-number 7 \
+  --repository my-team/app --required-label task --excluded-label draft
+```
+
+Or deliberately edit the scope settings in an existing `projects/app/project.json`
+while keeping its owner, number, graph and provider/model choices:
+
+```json
+{
+  "owner": "my-team",
+  "owner_type": "organization",
+  "number": 7,
+  "priority_order": ["P0", "P1", "P2"],
+  "eligible_statuses": ["Todo"],
+  "repository": "my-team/app",
+  "required_labels": ["task"],
+  "excluded_labels": ["draft"]
+}
+```
+
+These labels are examples, not universal defaults. Both label arrays default to
+empty, and an omitted repository filter allows Issues from any repository in
+the Project. Repository and label comparisons are case-insensitive. Every
+required label must be present and none of the excluded labels may be present;
+other labels do not matter. `eligible_statuses` can further restrict `Todo`,
+but cannot make `In Progress`, `Done` or an unset Status runnable.
+
+For **manual onboarding**, add an open Issue to the Project and set Status to
+`Todo` (see [Running a Task](#running-a-task)). The same runtime label and
+repository rules apply to manually added items.
 
 For **built-in auto-add**, use one GitHub Project per repository and configure
 one auto-add workflow in each Project for that repository. In the Project's
 menu → **Workflows**, edit **Auto-add to project**, select the repository and a
 filter such as `is:issue is:open label:task -label:draft`, then choose
 **Save and turn on workflow**. Here `draft` means a repository label, not a draft
-Project item. Auto-add supplies membership only; manually set Status to `Todo`
-and `AI execution` to `Ready` afterward. Existing matching Issues are not
-backfilled when the workflow is enabled; add them manually. See
+Project item. Auto-add supplies membership only; set Status to `Todo` afterward.
+Existing matching Issues are not backfilled when the workflow is enabled; add
+them manually. See
 [GitHub's auto-add documentation](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/adding-items-automatically).
-Init does not configure Project workflows or mark Issues Ready.
+Init does not configure Project workflows.
 
-### Execution permission and completion
+Auto-add filtering does not recheck labels on an item already in a Project.
+ProjectWeave separately loads current labels and applies the configured runtime
+rules at every selection. With the example settings, removing `task` or adding
+`draft` prevents future selection even when the Issue remains in the Project.
+If you configure only Auto-add and omit runtime label rules, existing members
+are eligible regardless of their labels.
 
-Labels and Issue closure do not automatically synchronize `AI execution`.
-Removing `task`, adding `draft`, or reopening an Issue does not change that
-field. To prevent future selection of an open Issue, manually set `AI execution`
-to `Not ready`. Closed Issues are not executable, even if the field remains
-`Ready`; after completion you can manually set it to `Not ready` for clarity.
-Changing to `Not ready` does **not** stop an already-running execution.
-The generated Task graph checks Issue closure immediately before merging.
-Cancellation and other pre-merge eligibility gates are deferred work.
+### Lifecycle and completion
+
+Claim sets eligible Tasks to `In Progress` before execution; failed Tasks stay
+there and are never automatically reset to `Todo` or retried. Closed Issues and
+archived Project items are excluded. To prevent future selection, change the
+Issue's labels under the configured rules, move its Status out of `Todo`, or
+archive/remove its Project item. Changing eligibility does **not** cancel an
+already-running Task. The generated Task graph separately checks source Issue
+closure immediately before each merge attempt; closure skips merging and stops
+retries. Other eligibility changes are not rechecked before merge. Cancellation
+and human-approval Pause/Resume are outside this Issue's scope.
 
 In the Project's menu → **Workflows**, verify **Item closed** is enabled and
 sets Status to `Done`; edit and choose **Save and turn on workflow** if needed.
@@ -401,20 +448,43 @@ GitHub enables closure automation by default, but verify reused Projects too.
 See [GitHub's built-in automations](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-built-in-automations).
 The Issue close reason (`Completed` or `Not planned`) distinguishes the outcome.
 `projectweave complete` (or a graph complete action) also sets `Done` explicitly.
-A reopened Issue needs deliberate review of Status and execution permission
-before another run; an item with Status `Done` is not selected.
+A reopened Issue needs deliberate review of Status and eligibility before
+another run; an item with Status `Done` is not selected.
+
+### Migrate existing Projects
+
+Before upgrading a continuously running coordinator, stop new launches and
+review every Project's open `Todo` items: existing `AI execution = Not ready`
+values will no longer exclude them. In each `projects/NAME/project.json`,
+deliberately set the desired `repository`, `required_labels` and
+`excluded_labels`, and move any other items out of `Todo` or archive/remove them.
+For the example onboarding filter, use `required_labels: ["task"]` and
+`excluded_labels: ["draft"]`. An older singular `label` setting must be manually
+replaced with `required_labels: ["YOUR_LABEL"]`; validation reports this rather
+than silently converting it.
+
+Existing root workspace configuration without label rules remains valid, but
+selects all open, nonarchived `Todo` Issues in the Project subject to its optional
+repository filter. The old `AI execution` field may stay in GitHub or be manually
+removed after review; its values are ignored. Init never deletes existing
+GitHub fields, converts permissions into labels, or overwrites workspace files.
+Rerunning init without scope flags preserves manually edited label/repository
+settings; passing conflicting flags fails with instructions to edit manually.
+Graphs, resource admission and explicit provider/model choices are unchanged.
+ProjectWeave never resets usage limits, buys allowance, or switches models or
+providers to bypass a limit. Restart the coordinator after verifying the rules.
+Eligibility changes do not cancel Tasks already running; inspect their state
+and artifacts before any deliberate retry.
 
 ### Verify onboarding before continuous operation
 
-Keep `coordinate` stopped while checking membership and fields:
+Keep `coordinate` stopped while checking membership and settings:
 
 1. Add an intended open Issue manually or through the configured auto-add
    filter. Confirm it appears once in the intended repository's Project.
-2. Manually set Status to `Todo` and `AI execution` to `Ready`. Verify the
-   Project also has the `In Progress`, `Done`, and `Not ready` options.
+2. Set Status to `Todo`. Verify the Project also has `In Progress` and `Done`
+   options, and that the Issue matches the runtime repository and label rules.
 3. Verify **Item closed** sets `Done`, or plan to use explicit `complete`.
-   Closing an Issue does not change `AI execution`; set `Not ready` manually
-   after completion if desired.
 4. Review the resource policy (limits are opt-in) and authenticate the executor
    as above. From the root workspace, start `projectweave coordinate`; the
    coordinator polls and admits eligible work.
@@ -422,14 +492,14 @@ Keep `coordinate` stopped while checking membership and fields:
 ## Running a Task
 
 After installing/authenticating your provider CLI, use either onboarding path
-above. For manual onboarding, add an Issue to the GitHub Project and mark it
-ready:
+above. For manual onboarding, add an eligible Issue to the GitHub Project and
+set its Status:
 
 ```sh
 # From the root workspace; replace 7, my-team, app, and the Issue URL.
 ISSUE_URL=https://github.com/owner/repo/issues/123
 GH_HOST=github.com gh project item-add 7 --owner my-team --url "$ISSUE_URL"
-# Then set the item's "AI execution" field to "Ready" and its Status to "Todo".
+# Then set the item's Status to "Todo" and verify configured repository/label rules.
 projectweave run app          # or: projectweave coordinate
 ```
 

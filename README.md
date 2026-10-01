@@ -93,8 +93,8 @@ For a project hosted on GitHub, existing primitives may already provide:
 ```text
 Issue         → Task
 Priority      → Work priority
-Project field → Eligibility (`AI execution`)
-Label         → Classification
+Status        → Task lifecycle and Todo eligibility
+Label         → Configurable eligibility and classification
 Pull Request  → Proposed result
 Git           → Artifacts and history
 ```
@@ -205,24 +205,36 @@ agent edits files and runs commands without asking) or `--model MODEL`; the
 default is Codex with its native default model. Init never overwrites files.
 Choose how Issues enter the Project and become executable:
 
-- **Manual:** add an open Issue, then manually set Status to `Todo` and
-  `AI execution = Ready`.
-- **GitHub built-in auto-add:** use one Project per repository and configure one
-  auto-add workflow in each Project for its repository. Auto-add handles
-  membership; manually set Status to `Todo` and `AI execution = Ready` afterward.
+- **Manual:** add an open Issue to the Project and set Status to `Todo`.
+- **GitHub built-in auto-add:** use one Project per repository and configure an
+  auto-add workflow for its repository, for example with
+  `is:issue is:open label:task -label:draft`. Auto-add supplies membership only;
+  set Status to `Todo` afterward.
 
-See [Issue onboarding](docs/usage.md#onboard-issues) for setup and verification.
-Init does not configure Project workflows or mark Issues Ready. Labels and Issue
-closure do not automatically synchronize `AI execution`; after completion you
-can manually set it to `Not ready`. Closed Issues are not executable, even if
-`AI execution` remains `Ready`. Verify the Project's built-in **Item closed**
-workflow sets Status to `Done`, or use `projectweave complete` explicitly.
+Runtime selection requires an open, nonarchived repository Issue in the Project
+with Status `Todo`. Optional `project.json` settings restrict the repository,
+require all `required_labels`, and reject any `excluded_labels`. Configure the
+same label policy for runtime to recheck existing Project members:
 
-ProjectWeave never sets Ready itself: `coordinate` selects open, Todo, Ready
-Issues under the configured resource policy. No Pending Status is needed.
-Not ready does not stop an active execution. The generated Task graph checks
-Issue closure before merging; cancellation and other pre-merge eligibility
-gates are deferred.
+```sh
+projectweave init-project app --project-owner my-team --project-number 7 \
+  --repository my-team/app --required-label task --excluded-label draft
+```
+
+These label names are examples; defaults impose no label or repository filter.
+See [Issue onboarding](docs/usage.md#onboard-issues) and
+[migration](docs/usage.md#migrate-existing-projects) before starting the
+coordinator on an existing workspace. Init never creates or requires an
+`AI execution` field, and leaves existing GitHub fields and configuration files
+untouched. Verify the Project's built-in **Item closed** workflow sets Status to
+`Done`, or use `projectweave complete` explicitly.
+
+Changing eligibility does not cancel an already-running Task. The generated
+Task graph checks source Issue closure immediately before each merge attempt;
+closure skips merging and stops retries. Cancellation and human-approval
+Pause/Resume are outside this change's scope. Resource admission
+and explicit provider/model selection are unchanged: ProjectWeave never resets
+usage limits, buys allowance, or switches providers/models to bypass a limit.
 
 After onboarding and verification, run either:
 
@@ -329,7 +341,7 @@ your Project) before dispatching Tasks, preserving your other settings:
    requirement. The packaged regression tests check it without live AI calls
    or GitHub mutations.
 
-Keep the repair Task Not ready until the bootstrap workspace graph is fixed,
+Keep the repair Task out of Todo until the bootstrap workspace graph is fixed,
 or implement the repair through a separate manual development flow. Do not
 repeatedly dispatch the unchanged graph. Failed Tasks stay In Progress and are
 not automatically retried. Before retrying ProjectWeave #61, GitWeave #100, or

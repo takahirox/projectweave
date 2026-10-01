@@ -5,18 +5,14 @@ from .contracts import Failure, keys, require, text, decode, result, check_resul
 from .executors import process
 
 PAGE = "pageInfo { hasNextPage endCursor }"
-# Standard Project-native eligibility switch; deliberately not configurable.
-ELIGIBILITY_FIELD = "AI execution"
-ELIGIBILITY_OPTIONS = ["Ready", "Not ready"]
-READY = "Ready"
 
 
 def validate_project(config):
     require(not isinstance(config, dict) or "label" not in config,
-            f"Label eligibility was removed: delete \"label\" and set the Project field "
-            f"\"{ELIGIBILITY_FIELD}\" to {READY} instead")
+            'Legacy "label" setting: migrate manually to "required_labels": ["LABEL"]')
     keys(config, {"owner", "number", "owner_type", "priority_field", "status_field",
-                  "priority_order", "eligible_statuses", "repository"}, {"owner", "number", "owner_type"})
+                  "priority_order", "eligible_statuses", "repository", "required_labels", "excluded_labels"},
+         {"owner", "number", "owner_type"})
     require(text(config["owner"]) and re.fullmatch(r"[A-Za-z0-9_-]+", config["owner"]), "Invalid project owner")
     require(type(config["number"]) is int and config["number"] > 0, "Invalid project number")
     require(config["owner_type"] in ("user", "organization"), "Invalid owner_type")
@@ -25,11 +21,14 @@ def validate_project(config):
                 and config["repository"].split("/")[1] not in (".", ".."), "Invalid repository")
     for field in ("priority_field", "status_field"):
         require(field not in config or text(config[field]), f"Invalid {field}")
-    for field in ("priority_order", "eligible_statuses"):
+    for field in ("priority_order", "eligible_statuses", "required_labels", "excluded_labels"):
         if field in config:
             values = config[field]
             require(isinstance(values, list) and all(text(v) for v in values)
                     and len(set(values)) == len(values), f"Invalid {field}")
+    require(not ({v.casefold() for v in config.get("required_labels", [])}
+                 & {v.casefold() for v in config.get("excluded_labels", [])}),
+            "A label cannot be both required and excluded")
     return config
 
 
@@ -103,7 +102,7 @@ class GitHub:
                               "repository": issue["repository"]["nameWithOwner"], "labels": labels,
                               "priority": fields.get(self.config.get("priority_field", "Priority")),
                               "status": fields.get(self.config.get("status_field", "Status")),
-                              "ai_execution": fields.get(ELIGIBILITY_FIELD)})
+                              "is_archived": item["isArchived"]})
         except (KeyError, TypeError, AttributeError) as exc:
             raise Failure("github", "Malformed project item") from exc
         return tasks
@@ -112,12 +111,25 @@ class GitHub:
         require(isinstance(tasks, list), "select items must be an array", "input")
         priorities = self.config.get("priority_order", ["P0", "P1", "P2"])
         ranks = {name: i for i, name in enumerate(priorities)}
+        required = {label.casefold() for label in self.config.get("required_labels", [])}
+        excluded = {label.casefold() for label in self.config.get("excluded_labels", [])}
+
+        def matches(task):
+            # load supplies membership in this Project and filters archived/non-Issue items.
+            # Also honor archived metadata when selecting a supplied snapshot in a custom graph.
+            if task["state"] != "OPEN" or task.get("is_archived", False) or task["status"] != "Todo":
+                return False
+            if "repository" in self.config and task["repository"].lower() != self.config["repository"].lower():
+                return False
+            if "eligible_statuses" in self.config and task["status"] not in self.config["eligible_statuses"]:
+                return False
+            if required or excluded:
+                labels = {label.casefold() for label in task["labels"]}
+                return required <= labels and not (excluded & labels)
+            return True
+
         try:
-            eligible = [t for t in tasks if t["state"] == "OPEN"
-                        and ("repository" not in self.config or
-                             t["repository"].lower() == self.config["repository"].lower())
-                        and t["ai_execution"] == READY
-                        and ("eligible_statuses" not in self.config or t["status"] in self.config["eligible_statuses"])]
+            eligible = [t for t in tasks if matches(t)]
             return min(eligible, key=lambda t: (ranks.get(t["priority"], len(ranks)),
                                                t["created_at"], t["url"], t["item_id"]), default=None)
         except (KeyError, TypeError, AttributeError) as exc:

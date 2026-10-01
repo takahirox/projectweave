@@ -289,7 +289,7 @@ class ClaimTests(unittest.TestCase):
             self.status = dict(statuses)
 
         def load(self):
-            snapshot = [{"id": name, "item_id": name, "state": "OPEN", "ai_execution": "Ready", "status": status,
+            snapshot = [{"id": name, "item_id": name, "state": "OPEN", "status": status,
                          "priority": "P1", "created_at": name, "url": name} for name, status in self.status.items()]
             time.sleep(0.05)  # Widen the race window between selection and marking.
             return snapshot
