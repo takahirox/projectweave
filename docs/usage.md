@@ -155,8 +155,10 @@ readiness ─┬─ missing information → comment → wait for Issue update �
            ├─ closed → finish without implementation or a PR
            └─ ready → check Issue is still open → implement
 implement → publish PR → review ─┬─ findings → fix → publish PR → review (again)
-                                 └─ approved → merge ─┬─ merged → close_issue
-                                                      └─ not merged → review (again)
+                                 └─ approved → check source Issue → merge if open
+                                                ├─ merged → close_issue
+                                                ├─ open + merge failed → review (again)
+                                                └─ closed → close_issue (no merge or retry)
 ```
 
 - `issue_snapshot` reads the Issue identified by `github_repository` and
@@ -196,14 +198,21 @@ implement → publish PR → review ─┬─ findings → fix → publish PR �
 - `fix` addresses the findings, and the PR is updated again. For a conflict with
   the default branch, the fix agent fetches the current default branch itself
   and brings the PR up to date.
-- `merge` merges only the reviewed head, **with a merge commit** so GitWeave's
-  checkpoint notes stay in the branch history, and never bypasses required checks.
-  If it reports `merged: false` (for example because another PR changed the
-  default branch meanwhile), the flow returns to review and the review/fix loop,
-  then tries `merge` again.
-- `close_issue` runs after a successful merge: it makes sure the Issue is closed
-  and comments the outcome (in whatever form the repository's conventions
-  suggest).
+- `merge` reads the source Issue from `github_repository` and `run_input.number`
+  immediately before each merge attempt. If closed, it skips the merge and
+  returns `merged: false`, `retry: false`, and `merge_commit: ""`. If the Issue
+  cannot be read or confirmed open, execution stops without merging. When open,
+  it merges only the reviewed head, **with a merge commit** so GitWeave's
+  checkpoint notes stay in the branch history, and never bypasses required
+  checks or reviews. Success returns `retry: false`; a failed or blocked merge
+  (for example because another PR changed the default branch meanwhile) returns
+  `retry: true`. Only `retry: true` returns to review and the review/fix loop,
+  then tries `merge` again with a fresh Issue read.
+- `close_issue` runs after success or a merge skipped due to Issue closure.
+  On success it makes sure the Issue is closed; otherwise it preserves the
+  Issue's current state and never reopens it. It comments the outcome and
+  forwards `pr`, `merged`, and `merge_commit` unchanged. Closure therefore ends
+  with `merged: false`, `merge_commit: ""`, and `closed: true`, keeping the PR.
 - `max_steps: 30` is shared by readiness, review/fix and merge iterations.
   Only meaningful updates invoke readiness again and consume additional steps.
   With `retries: 0`, a Run that cannot
@@ -260,7 +269,7 @@ It writes three files into `projects/NAME/`:
 | --- | --- |
 | `project.json` | Project owner/type/number, standard Priority order `P0`, `P1`, `P2`, `eligible_statuses: ["Todo"]`, plus any explicit repository/label rules |
 | `graph.json` | The Project graph: `execute` GitWeave in Issue mode for the claimed Task; only the GitWeave graph path is made absolute |
-| `gitweave.json` | The six-node Task graph (implement → PR → review/fix → merge, retried until merged → close_issue); every agent node uses Codex with its native default model, or the `--provider`/`--model` choices (Claude adds `bypassPermissions`) |
+| `gitweave.json` | The Task graph (Issue readiness → implement → PR → review/fix → merge, retried only for an open Issue's merge failure → close_issue); every agent node uses Codex with its native default model, or the `--provider`/`--model` choices (Claude adds `bypassPermissions`) |
 
 ### Provider and model
 
@@ -428,8 +437,10 @@ there and are never automatically reset to `Todo` or retried. Closed Issues and
 archived Project items are excluded. To prevent future selection, change the
 Issue's labels under the configured rules, move its Status out of `Todo`, or
 archive/remove its Project item. Changing eligibility does **not** cancel an
-already-running Task. Cancellation and human-approval Pause/Resume are outside
-this Issue's scope; this is not a pre-merge eligibility gate.
+already-running Task. The generated Task graph separately checks source Issue
+closure immediately before each merge attempt; closure skips merging and stops
+retries. Other eligibility changes are not rechecked before merge. Cancellation
+and human-approval Pause/Resume are outside this Issue's scope.
 
 In the Project's menu → **Workflows**, verify **Item closed** is enabled and
 sets Status to `Done`; edit and choose **Save and turn on workflow** if needed.
@@ -768,5 +779,9 @@ handoff races and simulated long-wait cadence. To additionally validate the
 generated template with a local GitWeave checkout's public CLI and exercise its
 actual control-flow code with mocked node results, run
 `GITWEAVE_SOURCE=/path/to/gitweave python3 -m unittest discover -s tests -v`.
-These optional checks cover ready, not-ready/update/review, closed, and
-step-budget routes, and perform no AI execution or GitHub mutation.
+These optional checks cover ready, not-ready/update/review, closed, successful
+merge, open-Issue merge failure/retry, closure before merge (including after a
+failed merge), and step-budget routes. They perform no AI execution or GitHub
+mutation. Existing workspace configs are never rewritten by init; see the
+[workspace migration guide](../README.md#repairing-existing-workspace-graphs)
+to apply the guard to an older config.

@@ -6,6 +6,7 @@
       "head_sha": "1234567890abcdef1234567890abcdef12345678"
     },
     "merged": true,
+    "retry": false,
     "merge_commit": "abcdef1234567890abcdef1234567890abcdef12",
     "closed": true
   },
@@ -16,7 +17,19 @@
       "head_sha": "1234567890abcdef1234567890abcdef12345678"
     },
     "merged": false,
+    "retry": true,
     "merge_commit": "",
     "closed": false
+  },
+  "closed_before_merge": {
+    "pr": {
+      "number": 65,
+      "url": "https://github.com/takahirox/projectweave/pull/66",
+      "head_sha": "1234567890abcdef1234567890abcdef12345678"
+    },
+    "merged": false,
+    "retry": false,
+    "merge_commit": "",
+    "closed": true
   }
 }

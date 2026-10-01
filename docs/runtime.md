@@ -234,14 +234,24 @@ The resident wait retains the Task's coordinator reservation, and shutdown or
 Repeated meaningful updates share `max_steps: 30` with the remaining workflow;
 exhaustion produces GitWeave's normal step-limit failure and stops further work.
 
+Immediately before every merge attempt, the merge agent reads the source Issue
+from `github_repository` and `run_input.number`. A closed Issue produces
+`merged: false`, `retry: false`, and `merge_commit: ""`, without merging.
+A successful merge also returns `retry: false`; an open Issue's failed or
+blocked merge returns `retry: true`. The outer review/merge loop repeats only
+on `retry: true`, so closure ends it cleanly. If the Issue cannot be read or its
+open state cannot be confirmed, execution stops without merging. The reviewed
+head SHA, merge-commit strategy, and required GitHub checks/reviews still apply.
+
 After implementation, the graph returns terminal `close_issue` data with
 required `pr`, `merged`, `merge_commit`, and `closed` properties. Both `merge`
 and `close_issue` require `merge_commit` to be a string: the actual merge commit
 SHA when `merged` is true, or `""` when it is false. `close_issue` always forwards
 `pr`, `merged`, and `merge_commit` unchanged from `merge`; it ensures the Issue
-is closed after a successful merge and otherwise leaves it open. Omitting
-`merge_commit` is invalid. All object properties in the packaged Codex schemas
-are required, including nested PR properties. See the README's
+is closed after a successful merge and otherwise preserves its current state,
+never reopening an Issue closed before merge. It comments the outcome in both
+cases. Omitting `merge_commit` is invalid. All object properties in the packaged
+Codex schemas are required, including nested PR properties. See the README's
 [existing workspace migration](../README.md#repairing-existing-workspace-graphs)
 before dispatching Tasks with a previously generated graph.
 

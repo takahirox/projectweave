@@ -475,7 +475,7 @@
     "merge": {
       "kind": "agent",
       "provider": "codex",
-      "instruction": "Merge the pull request in inputs[0].data.pr only if its head is still inputs[0].data.pr.head_sha, with a merge commit (not squash or rebase) so the GitWeave checkpoint commits and their notes stay in the branch history, following GitHub policy. Do not bypass required checks or reviews. Report whether it merged and forward pr. Always include merge_commit as a string: the actual merge commit SHA when merged is true, or the empty string \"\" when merged is false. Do not reset usage limits, buy allowance, or switch models/providers; stop on a usage limit.",
+      "instruction": "Immediately before each attempt to merge, read the source GitHub Issue identified by github_repository and run_input.number using available tools; do not rely on an earlier Issue snapshot or the PR state. If the Issue is closed, do not merge the PR; return merged=false, retry=false and merge_commit=\"\", and forward pr unchanged. If the Issue cannot be read or its open state cannot be confirmed, stop without merging. If the Issue is open, merge the pull request in inputs[0].data.pr only if its head is still inputs[0].data.pr.head_sha, with a merge commit (not squash or rebase) so the GitWeave checkpoint commits and their notes stay in the branch history, following GitHub policy. Do not bypass required checks or reviews. Report whether it merged and forward pr unchanged. Return retry=false when merged is true; return retry=true only when the Issue was confirmed open and merging failed or was blocked, including a head SHA mismatch or pending required checks/reviews. Always include merge_commit as a string: the actual merge commit SHA when merged is true, or the empty string \"\" when merged is false. Do not reset usage limits, buy allowance, or switch models/providers; stop on a usage limit.",
       "schema": {
         "type": "object",
         "properties": {
@@ -504,6 +504,10 @@
           "merged": {
             "type": "boolean"
           },
+          "retry": {
+            "type": "boolean",
+            "description": "True only when the source Issue was confirmed open and merging failed or was blocked; false after a successful merge or when the source Issue is closed."
+          },
           "merge_commit": {
             "type": "string",
             "description": "Required string: the actual merge commit SHA when merged is true, or the empty string \"\" when merged is false."
@@ -512,6 +516,7 @@
         "required": [
           "pr",
           "merged",
+          "retry",
           "merge_commit"
         ],
         "additionalProperties": false
@@ -520,7 +525,7 @@
     "close_issue": {
       "kind": "agent",
       "provider": "codex",
-      "instruction": "If inputs[0].data.merged is true, make sure the GitHub Issue identified by run_input in github_repository is closed, referencing the merged pull request in inputs[0].data.pr; do nothing if it is already closed. Otherwise leave it open. Comment the outcome on the Issue. Report whether it is closed, and always forward pr, merged and merge_commit from inputs[0].data unchanged so the Run's result names the pull request. merge_commit is a required string: the actual merge commit SHA when merged is true, or the empty string \"\" when merged is false. Do not reset usage limits, buy allowance, or switch models/providers; stop on a usage limit.",
+      "instruction": "If inputs[0].data.merged is true, make sure the GitHub Issue identified by run_input in github_repository is closed, referencing the merged pull request in inputs[0].data.pr; do nothing if it is already closed. Otherwise preserve the Issue's current state; never reopen a closed Issue. Comment the outcome on the Issue, including when merging was skipped because the source Issue was closed. Report whether it is closed, and always forward pr, merged and merge_commit from inputs[0].data unchanged so the Run's result names the pull request. merge_commit is a required string: the actual merge commit SHA when merged is true, or the empty string \"\" when merged is false. Do not reset usage limits, buy allowance, or switch models/providers; stop on a usage limit.",
       "schema": {
         "type": "object",
         "properties": {
@@ -668,8 +673,8 @@
                 "merge"
               ],
               "while": {
-                "path": "/0/data/merged",
-                "equals": false
+                "path": "/0/data/retry",
+                "equals": true
               }
             }
           },
