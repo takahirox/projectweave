@@ -131,18 +131,23 @@ class InitTests(unittest.TestCase):
         self.assertTrue(any("AI execution field to Ready" in a for a in report["human_actions"]))
         guidance = "\n".join(report["human_actions"])
         for expected in (
-            "manual onboarding or optional repository Actions",
-            "every tracked repository", "default branch", "ADD_TO_PROJECT_PAT",
-            "docs/usage.md#optional-repository-actions",
-            "Init does not install repository workflows, create labels, provision secrets, or mark Issues Ready",
-            "initialize only new/unset Status to Todo", "preserve existing Status",
-            "without removing membership or adding ineligible Issues",
-            "becoming eligible again restores Ready", "Issue-closed workflow sets Done",
+            "manual onboarding or GitHub's built-in auto-add",
+            "one Project per repository", "one auto-add workflow in each Project",
+            "membership only", "manually set Status to Todo and AI execution to Ready",
+            "Existing matching Issues are not backfilled", "docs/usage.md#onboard-issues",
+            "Init does not configure Project workflows or mark Issues Ready",
+            "Labels and Issue closure do not automatically synchronize AI execution",
+            "Closed Issues are not executable even if Ready",
+            "after completion you can manually set AI execution to Not ready",
+            "Item closed workflow sets Status to Done",
+            "projectweave complete also sets Done explicitly",
             "ProjectWeave never sets Ready", "No Pending Status",
             "Not ready does not stop a running execution",
         ):
             self.assertIn(expected, guidance)
-        self.assertTrue(any(c.startswith("# Manual onboarding only") for c in report["next_commands"]))
+        self.assertTrue(any(c.startswith("# Manual onboarding;") for c in report["next_commands"]))
+        self.assertNotIn("optional repository Actions", guidance)
+        self.assertNotIn("provision", guidance)
         # run-task executes the generated graph for an already-claimed Task and nothing else.
         task = {"id": "I", "item_id": "ITEM", "project_id": "P", "number": 7, "repository": "o/r"}
         backend, executor = Mock(), Mock(return_value={"message": "done", "data": {}, "references": [], "usage": {}})
