@@ -131,18 +131,15 @@ class InitTests(unittest.TestCase):
         self.assertTrue(any("AI execution field to Ready" in a for a in report["human_actions"]))
         guidance = "\n".join(report["human_actions"])
         for expected in (
-            "manual onboarding or optional repository Actions",
-            "every tracked repository", "default branch", "ADD_TO_PROJECT_PAT",
-            "docs/usage.md#optional-repository-actions",
-            "Init does not install repository workflows, create labels, provision secrets, or mark Issues Ready",
-            "initialize only new/unset Status to Todo", "preserve existing Status",
-            "without removing membership or adding ineligible Issues",
-            "becoming eligible again restores Ready", "Issue-closed workflow sets Done",
-            "ProjectWeave never sets Ready", "No Pending Status",
-            "Not ready does not stop a running execution",
+            "built-in auto-add", "one Project per repository",
+            "does not set AI execution", "Manage Ready/Not ready manually",
+            "docs/usage.md#onboard-issues",
+            "Init does not configure auto-add, create labels, or mark Issues Ready",
+            "ProjectWeave never sets Ready", "including after completion",
+            "Not ready does not stop a running execution", "Item closed workflow sets Done",
         ):
             self.assertIn(expected, guidance)
-        self.assertTrue(any(c.startswith("# Manual onboarding only") for c in report["next_commands"]))
+        self.assertTrue(any(c.startswith("# Manual onboarding") for c in report["next_commands"]))
         # run-task executes the generated graph for an already-claimed Task and nothing else.
         task = {"id": "I", "item_id": "ITEM", "project_id": "P", "number": 7, "repository": "o/r"}
         backend, executor = Mock(), Mock(return_value={"message": "done", "data": {}, "references": [], "usage": {}})
