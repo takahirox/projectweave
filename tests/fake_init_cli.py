@@ -30,8 +30,11 @@ if name == "gitweave":
         fail("AI execution forbidden")
     graph = json.loads(Path(args[2]).read_text())
     assert graph["version"] == 1 and graph["retries"] == 0 and graph["max_steps"] == 30
-    assert list(graph["nodes"]) == ["implement", "publish", "review", "fix", "merge", "close_issue"]
-    assert all(node["kind"] == "agent" for node in graph["nodes"].values())
+    assert list(graph["nodes"]) == ["issue_snapshot", "readiness", "ask_information", "wait_for_issue_update",
+                                   "check_issue_open", "implement", "publish", "review", "fix", "merge", "close_issue"]
+    assert all(graph["nodes"][name]["kind"] == "command"
+               for name in ("issue_snapshot", "ask_information", "wait_for_issue_update", "check_issue_open"))
+    assert graph["nodes"]["readiness"]["kind"] == "agent"
     if mode == "invalid_graph":
         fail("graph rejected")
     print("Graph passes static validation")

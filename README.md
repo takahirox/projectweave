@@ -246,14 +246,30 @@ Each Project workspace holds two packaged templates:
   (`--repo OWNER/REPO --issue N`). ProjectWeave posts no comment itself.
 - [projectweave/templates/gitweave.json](projectweave/templates/gitweave.json),
   the **GitWeave Task graph** (how one selected Issue is carried to a merge):
-  implement → open a PR (`Closes #N`) → review ⇄ fix until approved (including
-  conflicts with the current default branch) → merge with a merge commit, going
+  review Issue readiness → ask for missing information and wait for meaningful
+  Issue updates until ready → implement → open a PR (`Closes #N`) → review ⇄ fix
+  until approved (including conflicts with the current default branch) → merge with a merge commit, going
   back to review and retrying if the merge fails → make sure the Issue is closed
   and comment the outcome on it.
   **It merges without a human review** once the review agent approves; edit it
   if you want a human to merge.
 
-The Task graph's terminal `close_issue` data always includes `pr`, `merged`,
+Readiness uses `github_repository` and `run_input.number`. Command nodes read
+the Issue, post deduplicated questions, and poll without invoking an AI model:
+every minute for the first hour, every five minutes until 24 hours, then hourly
+without a cutoff. Title/body changes and external comment additions, edits or
+deletions trigger another readiness review; the automation's marked comments
+and metadata-only updates do not. The reviewed snapshot is preserved so replies
+during review are not missed. An open-state check immediately before implementation
+also re-reviews any intervening content changes. Closure before implementation
+ends the graph with schema-validated `status: "closed"`, `questions`, and
+`snapshot` data, with no PR. The resident waiting command holds the Task's
+resource reservation; coordinator shutdown and `--once` wait for it. Restart
+recovery is out of scope. The generated Project executor uses `timeout: null`
+to allow this wait; omitted executor timeouts still default to 3600 seconds.
+
+After implementation, the Task graph's terminal `close_issue` data always
+includes `pr`, `merged`,
 `merge_commit`, and `closed`. `merge_commit` is a required string: the actual
 merge commit SHA when `merged` is true, or `""` when it is false. `close_issue`
 forwards `pr`, `merged`, and `merge_commit` unchanged from `merge` and reports
@@ -264,8 +280,16 @@ schemas is required.
 
 Init never overwrites existing files, so updating ProjectWeave or rerunning
 `init-project` does not repair an existing `projects/weave/gitweave.json`.
-Before dispatching Tasks through an older graph, edit that file (or the
-equivalent path for your Project) as follows, preserving your other settings:
+For the readiness scaffold, regenerate both `graph.json` and `gitweave.json`
+from the current packaged templates, materialize the GitWeave graph path in
+`graph.json`, and reapply your provider/model/instruction choices. Preserve
+`project.json` and root resource policies. Init reports older scaffolds as
+incompatible and never rewrites them. Ensure the Project executor has
+`timeout: null` and the waiting command has no GitWeave node or graph timeout;
+a finite timeout would terminate the wait.
+
+For older merge result schemas, edit that file (or the equivalent path for
+your Project) before dispatching Tasks, preserving your other settings:
 
 1. In both `nodes.merge.schema.required` and
    `nodes.close_issue.schema.required`, add `"merge_commit"`. Keep

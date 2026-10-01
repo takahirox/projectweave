@@ -10,7 +10,7 @@ Task. The responsibilities are:
   work under each Project's resource policy, **claims** Tasks (select one and set
   it `In Progress`), runs each claimed Task's Project graph, and runs independent
   Tasks concurrently when resources permit.
-- **GitWeave:** the workflow inside one Task (implement → PR → review/fix →
+- **GitWeave:** the workflow inside one Task (Issue readiness → implement → PR → review/fix →
   merge → close), defined by the Project's `gitweave.json`.
 
 Canonical state stays where it already lives: GitHub Projects (Task state), Git
@@ -150,11 +150,43 @@ A Project workspace holds two packaged templates:
 The GitWeave Task graph runs, entirely inside GitWeave:
 
 ```text
+readiness ─┬─ missing information → comment → wait for Issue update → readiness
+           ├─ closed → finish without implementation or a PR
+           └─ ready → check Issue is still open → implement
 implement → publish PR → review ─┬─ findings → fix → publish PR → review (again)
                                  └─ approved → merge ─┬─ merged → close_issue
                                                       └─ not merged → review (again)
 ```
 
+- `issue_snapshot` reads the Issue identified by `github_repository` and
+  `run_input.number`, including all external comments. `readiness` reviews
+  that snapshot for clear behavior, scope and acceptance criteria, returning
+  `status: "ready"` or `"needs_information"`, concrete `questions`, and the
+  unchanged `snapshot`. Routine implementation choices use repository conventions.
+- `ask_information` posts only the missing questions, with an automation marker
+  keyed to the reviewed content to prevent duplicate comments for unchanged
+  content. It rechecks for closure or changes before posting. Replies by the
+  authenticated account count as external comments unless marked by automation.
+- `wait_for_issue_update` is a resident command, with no AI invocation during
+  polling. It compares title/body and external comment IDs/content, including
+  edits and deletions, rather than `updated_at`. Automation comments and label
+  or other metadata-only changes do not trigger another review. The reviewed
+  snapshot survives the comment/wait handoff, including replies arriving during
+  review. Polls run every 60 seconds for the first hour, every 300 seconds until
+  24 hours, and every 3600 seconds thereafter, without a cutoff. Each wait
+  invocation uses one graph step regardless of its number of polls.
+- `check_issue_open` checks closure immediately before implementation and
+  returns to readiness if content changed since approval. If closed initially,
+  while waiting, or at this guard, the graph finishes without implementation,
+  publishing, merging or commenting an outcome. Its terminal data is
+  `{status: "closed", questions: [], snapshot: {title, body, comments}}`;
+  there is no PR identity. Graph completion still produces a completed Run receipt.
+- The generated Project executor has `timeout: null`, allowing unlimited
+  waiting. GitWeave command/graph timeouts are omitted. Waiting holds the Task's
+  resource reservation and its In Progress status. `coordinate --once` and
+  coordinator shutdown wait for launched Tasks, including these waiting Runs.
+  Process/host restart recovery is out of scope; inspect checkpoints before
+  manually retrying an interrupted Task.
 - `implement` implements the Issue and commits with a human-readable message.
 - `publish` opens (or updates) a PR that says `Closes #N`.
 - `review` checks the PR against the Issue for missing and unnecessary scope,
@@ -171,11 +203,14 @@ implement → publish PR → review ─┬─ findings → fix → publish PR �
 - `close_issue` runs after a successful merge: it makes sure the Issue is closed
   and comments the outcome (in whatever form the repository's conventions
   suggest).
-- `max_steps: 30` bounds both loops. With `retries: 0`, a Run that cannot
+- `max_steps: 30` is shared by readiness, review/fix and merge iterations.
+  Only meaningful updates invoke readiness again and consume additional steps.
+  With `retries: 0`, a Run that cannot
   converge (for example a merge that keeps failing for another reason, such as
   pending required checks, after repeated review/merge attempts) or fails at
-  runtime stops without merging. **It leaves no comment on the Issue**; it stays
-  visible as an open PR and an `In Progress` Task for a human.
+  runtime stops without merging. No failure comment is added; any earlier
+  readiness questions or published PR remain, and the Task stays In Progress
+  for a human.
 
 **This merges into the default branch without a human review** once the review
 agent approves. Agents push, open PRs and merge with your `gh` and Git
@@ -567,8 +602,14 @@ or:
 GitWeave receives the selected Task's `OWNER/REPO` as `--repo` and its Issue
 number as `--issue`, and runs from the workspace; `repo` is not configurable.
 
-The timeout is positive seconds; default 3600. GitHub requests each have a
-120-second timeout. Timeout terminates the direct process group; descendants
+The timeout is positive seconds or explicit `null` for no timeout; default
+3600 when omitted. The generated GitWeave executor uses `null` for resident
+readiness waits. `projectweave issue-readiness snapshot|comment|wait|guard`
+is the deterministic GitWeave command helper: it reads the GitWeave context
+from stdin and emits one `{message, data}` envelope. It requires ProjectWeave
+on PATH in GitWeave worktrees; provider/model flags apply only to agent nodes.
+GitHub requests each have a 120-second timeout. Timeout terminates the direct
+process group; descendants
 that deliberately detach are outside that control. No requests are retried.
 
 Command stdin is one JSON object:
@@ -652,7 +693,11 @@ provider accounting, or network behavior. Real GitWeave execution can consume AI
 allowance and publish provenance; live validation remains an operator action.
 
 Init tests use strict external-command fixtures for Git/GitHub/GitWeave, including
-first use, reruns, incompatible files, failures and partial recovery. To additionally
-validate the generated template with a local GitWeave checkout's public CLI, run
+first use, reruns, incompatible files, failures and partial recovery. Readiness
+tests cover pagination, question deduplication, meaningful updates, closure,
+handoff races and simulated long-wait cadence. To additionally validate the
+generated template with a local GitWeave checkout's public CLI and exercise its
+actual control-flow code with mocked node results, run
 `GITWEAVE_SOURCE=/path/to/gitweave python3 -m unittest discover -s tests -v`.
-This optional check is static and performs no AI execution or GitHub mutation.
+These optional checks cover ready, not-ready/update/review, closed, and
+step-budget routes, and perform no AI execution or GitHub mutation.

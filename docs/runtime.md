@@ -189,7 +189,9 @@ Command executors are argv arrays (no shell). They receive one JSON request on
 stdin: `{task, checkout, context, resources, allocation, instruction, run_id}`,
 where `checkout` is the invocation's isolated worktree path. Exit zero
 must emit exactly one common Result as JSON; nonzero is infrastructure failure.
-A finite timeout (default 3600 seconds) kills the subprocess group. Instructions
+A finite timeout (default 3600 seconds) kills the subprocess group. Explicit
+`timeout: null` disables the outer timeout for either executor; the packaged
+GitWeave Project graph uses it for resident readiness waits. Instructions
 and command configuration are trusted; task content is data. Children inherit
 the environment; this is not an OS sandbox.
 
@@ -207,7 +209,23 @@ graph conditions inspect `data.outputs` for task semantics. GitWeave can publish
 provenance automatically and its graph may mutate remote state: operators must
 review its graph/repository configuration before live use.
 
-The packaged GitWeave Task graph returns terminal `close_issue` data with
+The packaged GitWeave Task graph first captures the Issue's title/body and
+external comments, then runs a readiness agent. A deterministic command posts
+missing questions once per reviewed snapshot and waits for relevant content
+changes or closure. Polls consume no model calls or additional graph steps:
+60 seconds for the first hour, 300 seconds until 24 hours, then 3600 seconds
+indefinitely. Automation markers identify its own comments; the authenticated
+account's unmarked replies still count. Commands carry the reviewed baseline
+through the handoff, so replies during review/commenting are not missed. A
+deterministic guard rechecks closure and content immediately before implementation.
+Closure exits with schema-validated `{status: "closed", questions: [], snapshot}`
+data and no PR. This is a completed graph receipt, with no implementation.
+The resident wait retains the Task's coordinator reservation, and shutdown or
+`--once` waits for it; resume after process/host restart is out of scope.
+Repeated meaningful updates share `max_steps: 30` with the remaining workflow;
+exhaustion produces GitWeave's normal step-limit failure and stops further work.
+
+After implementation, the graph returns terminal `close_issue` data with
 required `pr`, `merged`, `merge_commit`, and `closed` properties. Both `merge`
 and `close_issue` require `merge_commit` to be a string: the actual merge commit
 SHA when `merged` is true, or `""` when it is false. `close_issue` always forwards

@@ -23,7 +23,7 @@ class TaskGraphTests(unittest.TestCase):
                 check(schema["items"], f"{path}[]")
 
         for name, node in self.nodes.items():
-            if node["provider"] == "codex" and "schema" in node:
+            if node.get("provider") == "codex" and "schema" in node:
                 check(node["schema"], name)
 
     def assert_result_matches(self, schema, result):
