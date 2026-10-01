@@ -16,7 +16,7 @@ class Issue:
         source = context.get("run_input")
         require(valid_repository(repository) and isinstance(source, dict)
                 and source.get("kind") == "issue" and type(source.get("number")) is int
-                and source["number"] > 0, "Readiness requires github_repository and an Issue run_input", "input")
+                and source["number"] > 0, "Issue commands require github_repository and an Issue run_input", "input")
         self.endpoint = f"repos/{repository}/issues/{source['number']}"
 
     def api(self, endpoint, *, body=None, paginate=False):
@@ -67,7 +67,9 @@ def reviewed(context):
     require(isinstance(inputs, list) and inputs and isinstance(inputs[0], dict)
             and isinstance(inputs[0].get("data"), dict), "Missing reviewed Issue snapshot", "input")
     data = inputs[0]["data"]
-    keys(data, {"status", "questions", "snapshot"}, {"status", "questions", "snapshot"})
+    keys(data, {"status", "questions", "snapshot", "diagnosis"}, {"status", "questions", "snapshot"})
+    if "diagnosis" in data:
+        require(text(data["diagnosis"]), "Invalid technical diagnosis", "input")
     snapshot = data["snapshot"]
     keys(snapshot, {"title", "body", "comments"}, {"title", "body", "comments"})
     require(isinstance(snapshot["title"], str) and isinstance(snapshot["body"], str)
@@ -115,7 +117,10 @@ def execute(operation, context, *, clock=time.monotonic, sleep=time.sleep):
         return outcome("updated", snapshot)
     if operation == "guard":
         require(data["status"] == "ready", "Open-state guard requires readiness approval", "input")
-        return outcome("ready", baseline)
+        result = outcome("ready", baseline)
+        if "diagnosis" in data:
+            result["data"]["diagnosis"] = data["diagnosis"]
+        return result
     require(data["status"] == "needs_information" and data["questions"],
             "A not-ready Issue requires concrete questions", "input")
     digest = hashlib.sha256(json.dumps(baseline, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
