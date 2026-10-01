@@ -155,16 +155,39 @@ class CLITests(unittest.TestCase):
         self.assertFalse(any(c["command"] == "gitweave" for c in calls))
         self.assertTrue(outcome["record"]["results"]["execute"]["data"]["approved"])
 
-    def test_no_work_not_ready_and_non_todo(self):
-        for mode in ("empty", "not_ready"):
-            with self.subTest(mode=mode):
-                code, outcome, calls = self.cli("run", "p", mode=mode)
-                self.assertEqual((code, outcome["status"]), (0, "no_work"))
-                self.assertEqual(self.mutation_options(calls), [])
+    def test_no_work_and_non_todo(self):
+        code, outcome, calls = self.cli("run", "p", mode="empty")
+        self.assertEqual((code, outcome["status"]), (0, "no_work"))
+        self.assertEqual(self.mutation_options(calls), [])
         project = json.loads((self.project_dir / "project.json").read_text())
         (self.project_dir / "project.json").write_text(json.dumps(dict(project, eligible_statuses=["Done"])))
         code, outcome, calls = self.cli("run", "p")
         self.assertEqual((code, outcome["status"]), (0, "no_work"))
+
+    def test_runtime_rechecks_labels_on_existing_project_members(self):
+        path = self.project_dir / "project.json"
+        project = json.loads(path.read_text())
+        path.write_text(json.dumps(dict(project, repository="o/r", required_labels=["task"], excluded_labels=["draft"])))
+        for mode in ("missing_task_label", "draft_label"):
+            with self.subTest(mode=mode):
+                code, outcome, calls = self.cli("run", "p", mode=mode)
+                self.assertEqual((code, outcome["status"]), (0, "no_work"))
+                self.assertEqual(self.mutation_options(calls), [])
+                self.assertFalse(any(c["command"] == "gitweave" for c in calls))
+        code, outcome, calls = self.cli("run", "p")
+        self.assertEqual((code, outcome["status"]), (0, "completed"))
+        self.assertNotIn("ai_execution", outcome["task"])
+        self.assertEqual(self.mutation_options(calls), ["PROGRESS"])
+
+    def test_eligibility_changes_do_not_stop_claimed_execution(self):
+        code, task, _ = self.cli("claim", "p")
+        self.assertEqual(code, 0)
+        path = self.project_dir / "project.json"
+        path.write_text(json.dumps(dict(json.loads(path.read_text()), required_labels=["new-label"])))
+        code, record, calls = self.cli("run-task", "p", "--task", "-", stdin=json.dumps(task))
+        self.assertEqual((code, record["status"]), (0, "completed"))
+        self.assertTrue(any(c["command"] == "gitweave" for c in calls))
+        self.assertEqual(self.mutation_options(calls), [])
 
     def test_resource_policy_admits_or_blocks_before_claim(self):
         self.config["projects"]["p"] = {"resources": {"codex": {"min_remaining_percent": 20, "estimated_usage_percent_per_task": 10}}}
@@ -196,6 +219,10 @@ class CLITests(unittest.TestCase):
                 self.assertEqual(len([c for c in calls if c["command"] == command]), 1)
                 # The Task stays In Progress, so the next claim does not select it again; nothing is commented.
                 self.assertEqual(self.mutation_options(calls), ["PROGRESS"])
+                code, outcome, calls = self.cli("run", "p")
+                self.assertEqual((code, outcome["status"]), (0, "no_work"))
+                self.assertEqual(self.mutation_options(calls), [])
+                self.assertFalse(any(c["command"] == command for c in calls))
 
     def test_existing_checkout_is_reused_after_origin_check(self):
         self.use_command_agent()  # Checkouts are resolved only for command executors.

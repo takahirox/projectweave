@@ -10,7 +10,7 @@ import tempfile
 from .checkout import valid_repository
 from .contracts import Failure, decode, equal, require, text
 from .executors import process
-from .github import ELIGIBILITY_FIELD, ELIGIBILITY_OPTIONS, READY, GitHub, validate_project
+from .github import GitHub, validate_project
 from .graph import validate
 from .usage import OBSERVERS
 from .workspace import NAME, PROJECTS, ROOT_CONFIG, percent, validate_root
@@ -56,7 +56,7 @@ def pending(name, options):
 
 
 def ensure_fields(backend, report):
-    required = (("Priority", PRIORITIES), (ELIGIBILITY_FIELD, ELIGIBILITY_OPTIONS))
+    required = (("Priority", PRIORITIES),)
     report["missing"].extend(pending(name, options) for name, options in required + (("Status", STATUSES),))
     # Exhaust pagination before deciding a field is absent (or unambiguous).
     fields = list(backend.pages(backend.resolve(), "ProjectV2", "fields",
@@ -67,7 +67,7 @@ def ensure_fields(backend, report):
     ensure_field(backend, report, fields, "Status", STATUSES, create=False)
     for name, options in required:
         ensure_field(backend, report, fields, name, options)
-    report["fields"] = f"Priority, {ELIGIBILITY_FIELD} and Status ({'/'.join(STATUSES)}) verified"
+    report["fields"] = f"Priority and Status ({'/'.join(STATUSES)}) verified"
 
 
 def link_repositories(backend, report, repositories):
@@ -107,6 +107,11 @@ def add_init_arguments(parser):
     parser.add_argument("--model", help="Explicit model (default: the provider's native default model)")
     parser.add_argument("--link-repository", action="append", default=[], metavar="OWNER/REPO",
                         help="Link this repository to the Project (repeatable; same owner as the Project)")
+    parser.add_argument("--repository", metavar="OWNER/REPO", help="Restrict runnable Tasks to this repository (does not link it)")
+    parser.add_argument("--required-label", action="append", metavar="LABEL",
+                        help="Require every named label at Task selection (repeatable; default no label restriction)")
+    parser.add_argument("--excluded-label", action="append", metavar="LABEL",
+                        help="Exclude Tasks with any named label at selection (repeatable)")
     parser.add_argument("--resource", action="append", default=[], metavar="PROVIDER:MIN:ESTIMATE",
                         help="Opt in to shared resource admission for this Project, e.g. codex:20:10 "
                              "(min_remaining_percent 20, estimated_usage_percent_per_task 10); repeatable")
@@ -324,10 +329,22 @@ def initialize(args, workspace, root):
         project = {"owner": owner, "owner_type": saved["owner_type"] if saved else "user",
                    "number": number or 1, "priority_order": PRIORITIES, "eligible_statuses": STATUSES[:1]}
         if saved is not None:
-            # An explicit repository filter from older setups remains an accepted optional policy.
-            unscoped = {key: value for key, value in saved.items() if key != "repository"}
+            # Reuse human-edited scope rules without rewriting the workspace.
+            unscoped = {key: value for key, value in saved.items()
+                        if key not in ("repository", "required_labels", "excluded_labels")}
             require(equal(unscoped, project), "Incompatible project.json; default setup uses Priority order P0/P1/P2 and eligible_statuses [\"Todo\"]; review manually or regenerate")
+            project = dict(saved)
             report["existing"].append(str(workspace / "project.json"))
+        operation = "Review --repository, --required-label and --excluded-label; existing project.json is never overwritten"
+        for field, flag, value in (("repository", "--repository", args.repository),
+                                  ("required_labels", "--required-label", args.required_label),
+                                  ("excluded_labels", "--excluded-label", args.excluded_label)):
+            if value is not None:
+                require(saved is None or project.get(field) == value,
+                        f"Existing project.json conflicts with {flag}; edit it manually or omit the flag")
+                project[field] = value
+        validate_project(project)
+        operation = review_files
         values = {}
         for name, default in expected.items():
             value = read_file(workspace / name)
@@ -389,7 +406,7 @@ def initialize(args, workspace, root):
                 with path.open("x") as output:
                     output.write(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
                 report["created"].append(str(path))
-        operation = (f"Check Project field read access and write access for missing Priority/{ELIGIBILITY_FIELD} creation; "
+        operation = ("Check Project field read access and write access for missing Priority creation; "
                      "add Todo/In Progress/Done options to the Project's Status field if missing; review incompatible fields manually. Rerun init to read all fields and reuse any "
                      "field created before a failure; existing fields are never repaired")
         ensure_fields(backend, report)
@@ -417,13 +434,15 @@ def initialize(args, workspace, root):
             "gitweave.json agents run " + "; ".join(choices)
             + ". Install and authenticate that provider CLI yourself. To change provider/model later, edit gitweave.json (init never rewrites it).",
             f"Shared AI resource admission is opt-in: only providers listed for {key} in the root {ROOT_CONFIG} (init-project --resource PROVIDER:MIN:ESTIMATE) are observed (Claude `/usage`, Codex app-server; read-only) and must keep every window at or above min_remaining_percent after reserving estimated_usage_percent_per_task per running Task. Without an entry, {key} is not limited and coordinate may start all its eligible Tasks at once.",
-            f"Choose manual onboarding or GitHub's built-in auto-add. For manual onboarding, choose an open Issue and add it to the Project using the commands below, then manually set its {ELIGIBILITY_FIELD} field to {READY} and its Status to Todo in the Project. Only Todo Tasks are selected. No Issue has been selected or changed.",
-            "For built-in auto-add, use one Project per repository and configure one auto-add workflow in each Project for its repository, optionally filtering on is:issue is:open label:task -label:draft. Auto-add supplies membership only; manually set Status to Todo and AI execution to Ready afterward. Existing matching Issues are not backfilled; add them manually. See docs/usage.md#onboard-issues. Init does not configure Project workflows or mark Issues Ready.",
-            "Labels and Issue closure do not automatically synchronize AI execution. Closed Issues are not executable even if Ready; after completion you can manually set AI execution to Not ready. Verify the Project's built-in Item closed workflow sets Status to Done; the close reason distinguishes Completed from Not planned. projectweave complete also sets Done explicitly.",
-            "ProjectWeave never sets Ready; coordinate selects open, Todo, Ready Issues under the configured resource policy. No Pending Status is needed. Not ready does not stop a running execution; cancellation and pre-merge eligibility gates are deferred.",
+            "Choose manual onboarding or GitHub's built-in auto-add. For manual onboarding, choose an open Issue and add it to the Project using the commands below, then set its Status to Todo in the Project. Only Todo Tasks are selected. No Issue has been selected or changed.",
+            "For built-in auto-add, use one Project per repository and configure one auto-add workflow in each Project for its repository, optionally filtering on is:issue is:open label:task -label:draft. Auto-add supplies membership only; set Status to Todo afterward. Existing matching Issues are not backfilled; add them manually. See docs/usage.md#onboard-issues. Init does not configure Project workflows.",
+            "Runtime eligibility requires open, nonarchived repository Issues in this Project with Status Todo, matching project.json repository, required_labels (all present) and excluded_labels (none present), when configured. Runtime rechecks labels on existing members at each selection. For task without draft, use --required-label task --excluded-label draft; label names are optional user policy. Init never creates or requires an AI execution field; existing fields are left untouched.",
+            "Before starting coordinate on an existing Project, review open Todo items: old AI execution values no longer prevent selection. Deliberately edit repository/label rules in project.json or move unwanted items out of Todo. Init never overwrites saved scope rules. See docs/usage.md#migrate-existing-projects.",
+            "Closed Issues are not executable. Verify the Project's built-in Item closed workflow sets Status to Done; the close reason distinguishes Completed from Not planned. projectweave complete also sets Done explicitly.",
+            "Changing eligibility does not cancel an already-running Task. Cancellation and human-approval Pause/Resume are outside this change's scope. No Pending Status is needed.",
             "A Run invokes `gitweave run --repo OWNER/REPO --issue N` from this workspace. GitWeave fetches the repository's default branch into its shared per-repository store .gitweave/repos/OWNER/REPO.git here (reused across Runs, so only new objects are fetched) and pushes provenance refs/notes to the repository. Git transport uses your Git credentials: for HTTPS run `gh auth setup-git` or use SSH. Init fetches nothing.",
             "Run readiness is not certified: provider credentials, repository access, push/PR/merge permission, Issue comment permission, Project item-add access and Git identity need human verification. Init never runs AI or pushes.",
-            f"claim sets the Task's Status to In Progress before it runs, so it is not selected again, even if the Run then fails. The default path to Done is GitHub's Project workflow when the Issue closes; `projectweave complete` (or a graph complete action) sets Done explicitly. To retry a Task left In Progress, set its Status back to Todo; {ELIGIBILITY_FIELD} is never changed by ProjectWeave; review it manually before retrying."
+            "claim sets the Task's Status to In Progress before it runs, so it is not selected again, even if the Run then fails. The default path to Done is GitHub's Project workflow when the Issue closes; `projectweave complete` (or a graph complete action) sets Done explicitly. Failed Tasks are never automatically reset to Todo or retried. To retry a Task left In Progress, review the failure and manually set its Status back to Todo."
         ]
     except (Failure, OSError, UnicodeError, KeyError, TypeError, AttributeError, RecursionError) as exc:
         report["failure"] = {"message": str(exc), "action": operation}

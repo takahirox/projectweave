@@ -72,8 +72,8 @@ class InitTests(unittest.TestCase):
         self.assertEqual(code, 0, report)
         self.assertTrue(report["initialized"])
         self.assertFalse(report["ready"])
-        self.assertEqual(len(report["created"]), 5)
-        self.assertEqual(len(self.mutations(calls)), 2)
+        self.assertEqual(len(report["created"]), 4)
+        self.assertEqual(len(self.mutations(calls)), 1)
         self.assertEqual(self.read("project.json"), {"owner": "o", "owner_type": "organization", "number": 7,
                          "priority_order": ["P0", "P1", "P2"], "eligible_statuses": ["Todo"]})
         graph = validate(self.read("graph.json"))
@@ -125,25 +125,26 @@ class InitTests(unittest.TestCase):
         self.assertFalse(any("bypassPermissions" in a for a in report["human_actions"]))
         self.assertTrue(any("item-add 7 --owner o" in c for c in report["next_commands"]))
         self.assertIn("projectweave run p  # one Task; or: projectweave coordinate", report["next_commands"])
-        self.assertIn("AI execution field (Ready/Not ready)", report["created"])
+        self.assertFalse(any("AI execution" in entry for entry in report["created"]))
         self.assertIn("Status field (Todo/In Progress/Done)", report["existing"])
         self.assertTrue(any("Status to Todo" in a for a in report["human_actions"]))
         self.assertFalse(any("label" in c for c in report["next_commands"]))
-        self.assertTrue(any("AI execution field to Ready" in a for a in report["human_actions"]))
+        self.assertTrue(any("never creates or requires an AI execution field" in a for a in report["human_actions"]))
         guidance = "\n".join(report["human_actions"])
         for expected in (
             "manual onboarding or GitHub's built-in auto-add",
             "one Project per repository", "one auto-add workflow in each Project",
-            "membership only", "manually set Status to Todo and AI execution to Ready",
+            "membership only; set Status to Todo afterward",
             "Existing matching Issues are not backfilled", "docs/usage.md#onboard-issues",
-            "Init does not configure Project workflows or mark Issues Ready",
-            "Labels and Issue closure do not automatically synchronize AI execution",
-            "Closed Issues are not executable even if Ready",
-            "after completion you can manually set AI execution to Not ready",
+            "Init does not configure Project workflows",
+            "Runtime rechecks labels on existing members at each selection",
+            "required_labels (all present)", "excluded_labels (none present)",
+            "Closed Issues are not executable",
             "Item closed workflow sets Status to Done",
-            "projectweave complete also sets Done explicitly",
-            "ProjectWeave never sets Ready", "No Pending Status",
-            "Not ready does not stop a running execution",
+            "projectweave complete also sets Done explicitly", "No Pending Status",
+            "Changing eligibility does not cancel an already-running Task",
+            "Cancellation and human-approval Pause/Resume",
+            "Failed Tasks are never automatically reset to Todo or retried",
         ):
             self.assertIn(expected, guidance)
         self.assertTrue(any(c.startswith("# Manual onboarding;") for c in report["next_commands"]))
@@ -358,7 +359,7 @@ class InitTests(unittest.TestCase):
                 self.assertEqual(code, 2)
                 self.assertIn("Status", report["failure"]["message"])
                 self.assertIn("Verified Status single-select field with Todo/In Progress/Done options", report["missing"])
-                # Status is GitHub's field: init creates or repairs only Priority and AI execution.
+                # Status is GitHub's field: init creates only Priority.
                 # Status is verified first, so nothing is created when it is unusable, and it is never repaired.
                 self.assertEqual(self.mutations(calls), [])
                 self.assertIn("Status field", report["failure"]["action"])
@@ -373,7 +374,7 @@ class InitTests(unittest.TestCase):
         code, report, calls = self.invoke("--project-number", "7")
         self.assertEqual(code, 0, report)
         self.assertIn("Priority field (P0/P1/P2)", report["existing"])
-        self.assertIn("AI execution field (Ready/Not ready)", report["existing"])
+        self.assertFalse(any("AI execution" in entry for entry in report["existing"]))
         self.assertEqual(self.mutations(calls), [])
         self.assertEqual(json.loads(self.state.read_text()), state)
         reads = [c for c in calls if c["request"] and "fields(first:" in c["request"]["query"]]
@@ -424,9 +425,9 @@ class InitTests(unittest.TestCase):
                 before = {p.name: p.read_bytes() for p in self.directory.iterdir()}
                 code, report, calls = self.invoke()
                 self.assertEqual(code, 0, report)
-                # Priority is created first; a lost Priority response leaves only AI execution to create.
-                self.assertEqual(len(self.mutations(calls)), 1 if mode == "field_lost" else 2)
-                self.assertEqual(len(json.loads(self.state.read_text())["fields"]), 2)
+                # A lost Priority response is recovered by reusing the field.
+                self.assertEqual(len(self.mutations(calls)), 0 if mode == "field_lost" else 1)
+                self.assertEqual(len(json.loads(self.state.read_text())["fields"]), 1)
                 self.assertEqual(before, {p.name: p.read_bytes() for p in self.directory.iterdir()})
                 code, report, calls = self.invoke()
                 self.assertEqual(code, 0, report)
@@ -443,21 +444,17 @@ class InitTests(unittest.TestCase):
         self.assertEqual(self.read("project.json"), project)
         self.assertEqual(self.mutations(calls), [])
 
-    def test_second_field_lost_creation_recovers_without_duplicate(self):
+    def test_project_without_ai_execution_and_existing_priority_needs_no_mutation(self):
         priority = {"__typename": "ProjectV2SingleSelectField", "name": "Priority", "dataType": "SINGLE_SELECT",
                     "options": [{"name": n} for n in ("P0", "P1", "P2")]}
-        self.state.write_text(json.dumps({"projects": 0, "fields": [priority]}))
-        code, report, calls = self.invoke("--project-number", "7", mode="field_lost")
-        self.assertEqual(code, 2, report)
-        self.assertTrue(any("AI execution" in entry for entry in report["missing"]))
-        self.assertEqual(len(self.mutations(calls)), 1)
-        code, report, calls = self.invoke()
+        state = {"projects": 0, "fields": [priority]}
+        self.state.write_text(json.dumps(state))
+        code, report, calls = self.invoke("--project-number", "7")
         self.assertEqual(code, 0, report)
         self.assertEqual(self.mutations(calls), [])
-        self.assertIn("AI execution field (Ready/Not ready)", report["existing"])
-        self.assertEqual([f["name"] for f in json.loads(self.state.read_text())["fields"]], ["Priority", "AI execution"])
+        self.assertEqual(json.loads(self.state.read_text()), state)
 
-    def test_incompatible_ai_execution_field_never_repaired(self):
+    def test_existing_ai_execution_fields_are_ignored_and_untouched(self):
         for kind, datatype, options in (("ProjectV2Field", "TEXT", []),
                 ("ProjectV2SingleSelectField", "SINGLE_SELECT", ["Ready"]),
                 ("ProjectV2SingleSelectField", "SINGLE_SELECT", ["ready", "Not ready"])):
@@ -469,9 +466,9 @@ class InitTests(unittest.TestCase):
                      "options": [{"name": n} for n in options]}]}
                 self.state.write_text(json.dumps(state))
                 code, report, calls = self.invoke("--project-number", "7")
-                self.assertEqual(code, 2)
-                self.assertIn("Incompatible AI execution", report["failure"]["message"])
-                self.assertTrue(any("AI execution" in entry for entry in report["missing"]))
+                self.assertEqual(code, 0, report)
+                self.assertFalse(any("AI execution" in entry for key in ("created", "existing", "missing")
+                                     for entry in report[key]))
                 self.assertEqual(self.mutations(calls), [])
                 self.assertEqual(json.loads(self.state.read_text()), state)
 
@@ -481,13 +478,15 @@ class InitTests(unittest.TestCase):
         self.write("project.json", project)
         code, report, calls = self.invoke()
         self.assertEqual(code, 2)
-        self.assertIn("Label eligibility was removed", report["failure"]["message"])
+        self.assertIn('migrate manually to "required_labels"', report["failure"]["message"])
         self.assertEqual(self.read("project.json"), project)
         self.assertEqual(self.mutations(calls), [])
 
     def test_generated_project_runs_one_task_using_external_fixtures(self):
         # Quick start: nothing is edited. `projectweave run p` claims (In Progress) then runs the graph.
-        self.assertEqual(self.invoke("--project-number", "7", "--resource", "codex:20:10")[0], 0)
+        self.assertEqual(self.invoke("--project-number", "7", "--resource", "codex:20:10",
+                                     "--repository", "o/r", "--required-label", "task", "--excluded-label", "draft")[0], 0)
+        self.assertEqual([field["name"] for field in json.loads(self.state.read_text())["fields"]], ["Priority"])
         for name in ("gh", "gitweave", "git", "codex"):
             (self.bin / name).write_text(f"#!{sys.executable}\n" + (ROOT / "tests/fake_cli.py").read_text())
             (self.bin / name).chmod(0o755)
@@ -510,6 +509,41 @@ class InitTests(unittest.TestCase):
         self.assertEqual(len(mutations), 1)  # Only the claim's In Progress, before launch; no comment.
         self.assertEqual(mutations[0]["request"]["variables"]["option"], "PROGRESS")
         self.assertLess(calls.index(mutations[0]), calls.index(launch))
+
+    def test_eligibility_flags_and_human_edits_are_reused_without_overwriting(self):
+        flags = ("--repository", "o/r", "--required-label", "task", "--required-label", "approved",
+                 "--excluded-label", "draft")
+        code, report, _ = self.invoke("--project-number", "7", *flags)
+        self.assertEqual(code, 0, report)
+        project = self.read("project.json")
+        self.assertEqual(project["repository"], "o/r")
+        self.assertEqual(project["required_labels"], ["task", "approved"])
+        self.assertEqual(project["excluded_labels"], ["draft"])
+        for args in (flags, ()):
+            code, report, calls = self.invoke(*args)
+            self.assertEqual(code, 0, report)
+            self.assertEqual(report["project"], project)
+            self.assertEqual(self.read("project.json"), project)
+            self.assertEqual(self.mutations(calls), [])
+        project.update(required_labels=["custom"], excluded_labels=["hold"])
+        self.write("project.json", project)
+        before = (self.directory / "project.json").read_bytes()
+        self.assertEqual(self.invoke()[0], 0)
+        for flags in (("--repository", "o/other"), ("--required-label", "task"), ("--excluded-label", "draft")):
+            code, report, calls = self.invoke(*flags)
+            self.assertEqual(code, 2, report)
+            self.assertIn("conflicts", report["failure"]["message"])
+            self.assertEqual(calls, [])
+        self.assertEqual((self.directory / "project.json").read_bytes(), before)
+
+    def test_invalid_eligibility_flags_fail_before_external_operations(self):
+        for flags in (("--repository", "o/.."), ("--required-label", " "),
+                      ("--excluded-label", ""), ("--required-label", "task", "--excluded-label", "TASK")):
+            with self.subTest(flags=flags):
+                code, report, calls = self.invoke("--project-number", "7", *flags)
+                self.assertEqual(code, 2, report)
+                self.assertEqual(calls, [])
+                self.assertEqual(list(self.root.iterdir()), [])
 
     def test_provider_and_model_overrides(self):
         code, report, calls = self.invoke("--project-number", "7", "--provider", "claude", "--model", "opus")
@@ -680,7 +714,7 @@ class InitTests(unittest.TestCase):
                 if mode != "link_read":
                     self.assertIn("Cannot link o/r", report["failure"]["message"])
                 self.assertIn("Project o #9", report["created"])
-                self.assertIn("AI execution field (Ready/Not ready)", report["created"])
+                self.assertFalse(any("AI execution" in entry for entry in report["created"]))
                 self.state.write_text(json.dumps(dict(json.loads(self.state.read_text()), absent_repositories=[])))
                 code, report, calls = self.invoke("--link-repository", "o/r")
                 self.assertEqual(code, 0, report)
@@ -690,7 +724,7 @@ class InitTests(unittest.TestCase):
     def test_multi_repository_selection_and_optional_saved_filter(self):
         self.assertEqual(self.invoke("--project-number", "7")[0], 0)
         backend = GitHub(self.read("project.json"))
-        old = {"state": "OPEN", "ai_execution": "Ready", "status": "Todo", "priority": "P2", "created_at": "2025", "url": "url", "item_id": "1", "repository": "O/R"}
+        old = {"state": "OPEN", "status": "Todo", "priority": "P2", "created_at": "2025", "url": "url", "item_id": "1", "repository": "O/R"}
         new = dict(old, priority="P0", created_at="2026")
         foreign = dict(old, priority="P0", created_at="2020", repository="o/other")
         middle = dict(old, priority="P1")

@@ -89,7 +89,7 @@ if request:
     if "createProjectV2Field(" in query:
         assert query.startswith("mutation($input:CreateProjectV2FieldInput!)")
         field_input = request["variables"]["input"]
-        options = {"Priority": ["P0", "P1", "P2"], "AI execution": ["Ready", "Not ready"]}[field_input["name"]]
+        options = {"Priority": ["P0", "P1", "P2"]}[field_input["name"]]
         assert field_input == {"projectId": "P", "name": field_input["name"], "dataType": "SINGLE_SELECT",
             "singleSelectOptions": [{"name": n, "color": "GRAY", "description": ""} for n in options]}
         assert not any(f["name"] == field_input["name"] for f in state.get("fields", [])), "duplicate field"
