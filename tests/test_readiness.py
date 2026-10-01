@@ -13,6 +13,7 @@ from projectweave.cli import main
 from projectweave.contracts import Failure
 from projectweave.graph import executor
 from projectweave.readiness import Issue, MARKER, execute, outcome, poll_seconds
+from projectweave.routing import execute as route_issue
 from projectweave.setup import compatible, templates
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -162,6 +163,31 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(set(envelope), {"message", "data"})
         self.assertEqual(envelope["data"]["status"], "review")
 
+    def test_diagnosis_reaches_implementation_only_for_unchanged_open_issue(self):
+        diagnosed = context("ready", questions=())
+        diagnosed["inputs"][0]["data"]["diagnosis"] = "Reproduced with test_x; fix the missing bounds check."
+        with patch.object(Issue, "read", return_value=(False, SNAPSHOT, [])):
+            result = execute("guard", diagnosed)["data"]
+        self.assertEqual(result, diagnosed["inputs"][0]["data"])
+        for closed, snapshot, status in ((False, dict(SNAPSHOT, body="Changed"), "updated"),
+                                         (True, SNAPSHOT, "closed")):
+            with patch.object(Issue, "read", return_value=(closed, snapshot, [])):
+                result = execute("guard", diagnosed)["data"]
+            self.assertEqual(result["status"], status)
+            self.assertNotIn("diagnosis", result)
+
+    def test_undiagnosed_bug_can_ask_for_information_and_wait(self):
+        diagnosed = context()
+        diagnosed["inputs"][0]["data"]["diagnosis"] = "Cannot reproduce without a failing input."
+        with patch.object(Issue, "read", return_value=(False, SNAPSHOT, [])), \
+                patch.object(Issue, "comment") as post:
+            result = execute("comment", diagnosed)
+        self.assertEqual(result["data"]["status"], "needs_information")
+        post.assert_called_once()
+        diagnosed["inputs"][0]["data"]["diagnosis"] = " "
+        with self.assertRaises(Failure):
+            execute("guard", diagnosed)
+
     def test_unlimited_executor_timeout_is_explicit_and_mixed_nodes_are_compatible(self):
         for kind in ("command", "gitweave"):
             config = {"type": kind, **({"argv": ["worker"]} if kind == "command" else {"graph": "graph.json"})}
@@ -195,7 +221,8 @@ class GitWeaveRoutingTests(unittest.TestCase):
         cls.model = importlib.import_module("gitweave.model")
         cls.graph = templates(ROOT)["gitweave.json"]
 
-    def run_route(self, reads, approvals=("ready",), *, merge_results=(True,), review_results=(True,)):
+    def run_route(self, reads, approvals=("ready",), *, merge_results=(True,), review_results=(True,),
+                  labels=(), diagnosis_inputs=None):
         runtime = self.runtime.Runtime.__new__(self.runtime.Runtime)
         runtime.graph = self.runtime.validate_graph(copy.deepcopy(self.graph))
         runtime.steps, runtime.stopped = 0, False
@@ -204,13 +231,19 @@ class GitWeaveRoutingTests(unittest.TestCase):
             runtime.tick()
             called.append(name)
             spec = runtime.graph["nodes"][name]
-            if spec["kind"] == "command":
+            if name == "issue_route":
+                data = route_issue(CONTEXT)["data"]
+            elif spec["kind"] == "command":
                 data = execute(spec["argv"][-1], dict(CONTEXT, inputs=inputs), clock=lambda: 0, sleep=Mock())["data"]
-            elif name == "readiness":
+            elif name in ("readiness", "diagnose"):
                 status = next(approved)
                 data = outcome(status, inputs[0]["data"]["snapshot"],
                                ["What is expected?"] if status == "needs_information" else [])["data"]
+                if name == "diagnose":
+                    data["diagnosis"] = "Reproduced: missing bounds check. Add validation and regression coverage."
             elif name == "implement":
+                if diagnosis_inputs is not None:
+                    diagnosis_inputs.append(inputs[0]["data"])
                 data = None
             else:
                 pr = {"number": 1, "url": "https://github.com/owner/repo/pull/1", "head_sha": "a" * 40}
@@ -229,14 +262,15 @@ class GitWeaveRoutingTests(unittest.TestCase):
             return {"node_id": name, "commit": "c" * 40, "message": name, "data": data,
                     "data_validated": "schema" in spec}
         runtime.node = node
-        with patch.object(Issue, "read", side_effect=reads), patch.object(Issue, "comment") as post:
+        with patch.object(Issue, "read", side_effect=reads), patch.object(Issue, "comment") as post, \
+                patch.object(Issue, "api", return_value={"state": "open", "labels": list(labels)}):
             outputs = asyncio.run(runtime.flow(runtime.graph["flow"], [{"data": None}]))
         return called, outputs[0]["data"], post
 
     def test_ready_and_existing_review_fix_merge_retries(self):
         called, result, post = self.run_route([(False, SNAPSHOT, [])] * 2,
                                              merge_results=(False, True), review_results=(False, True, True))
-        self.assertEqual(called, ["issue_snapshot", "readiness", "check_issue_open", "implement", "publish",
+        self.assertEqual(called, ["issue_route", "issue_snapshot", "readiness", "check_issue_open", "implement", "publish",
                                  "review", "fix", "publish", "review", "merge", "review", "merge", "close_issue"])
         self.assertTrue(result["merged"])
         post.assert_not_called()
@@ -245,7 +279,7 @@ class GitWeaveRoutingTests(unittest.TestCase):
         changed = dict(SNAPSHOT, body="Acceptance criteria supplied")
         reads = [(False, SNAPSHOT, [])] * 4 + [(False, changed, [])] * 3
         called, result, post = self.run_route(reads, ("needs_information", "ready"))
-        self.assertEqual(called[:7], ["issue_snapshot", "readiness", "ask_information", "wait_for_issue_update",
+        self.assertEqual(called[:8], ["issue_route", "issue_snapshot", "readiness", "ask_information", "wait_for_issue_update",
                                      "issue_snapshot", "readiness", "check_issue_open"])
         self.assertEqual(called.count("wait_for_issue_update"), 1)
         self.assertEqual(called.count("readiness"), 2)
@@ -261,7 +295,7 @@ class GitWeaveRoutingTests(unittest.TestCase):
         for reads, approvals, expected in cases:
             with self.subTest(expected=expected):
                 called, result, _ = self.run_route(reads, approvals)
-                self.assertEqual(called, expected)
+                self.assertEqual(called, ["issue_route"] + expected)
                 self.assertEqual(result["status"], "closed")
                 self.assertNotIn("pr", result)
 
@@ -269,7 +303,7 @@ class GitWeaveRoutingTests(unittest.TestCase):
         changed = dict(SNAPSHOT, body="Answered")
         called, _, post = self.run_route([(False, SNAPSHOT, [])] + [(False, changed, [])] * 3,
                                         ("needs_information", "ready"))
-        self.assertEqual(called[:6], ["issue_snapshot", "readiness", "ask_information", "issue_snapshot",
+        self.assertEqual(called[:7], ["issue_route", "issue_snapshot", "readiness", "ask_information", "issue_snapshot",
                                      "readiness", "check_issue_open"])
         self.assertNotIn("wait_for_issue_update", called)
         post.assert_not_called()
@@ -278,8 +312,56 @@ class GitWeaveRoutingTests(unittest.TestCase):
         changed = dict(SNAPSHOT, body="Changed scope")
         called, _, _ = self.run_route([(False, SNAPSHOT, [])] + [(False, changed, [])] * 3,
                                      ("ready", "ready"))
-        self.assertEqual(called[:7], ["issue_snapshot", "readiness", "check_issue_open", "issue_snapshot",
+        self.assertEqual(called[:8], ["issue_route", "issue_snapshot", "readiness", "check_issue_open", "issue_snapshot",
                                      "readiness", "check_issue_open", "implement"])
+
+    def test_bug_selects_diagnosis_and_forwards_it_through_guard(self):
+        inputs = []
+        called, result, post = self.run_route([(False, SNAPSHOT, [])] * 2, labels=({"name": " BUG "},),
+                                             diagnosis_inputs=inputs,
+                                             merge_results=(False, True), review_results=(False, True, True))
+        self.assertEqual(called[:5], ["issue_route", "issue_snapshot", "diagnose", "check_issue_open", "implement"])
+        self.assertNotIn("readiness", called)
+        self.assertIn("missing bounds check", inputs[0]["diagnosis"])
+        self.assertEqual(called[5:], ["publish", "review", "fix", "publish", "review", "merge", "review", "merge", "close_issue"])
+        self.assertTrue(result["merged"])
+        post.assert_not_called()
+
+    def test_missing_and_unrelated_labels_use_normal_readiness(self):
+        for labels in ((), ({"name": "task"},)):
+            with self.subTest(labels=labels):
+                inputs = []
+                called, _, _ = self.run_route([(False, SNAPSHOT, [])] * 2, labels=labels, diagnosis_inputs=inputs)
+                self.assertEqual(called[:4], ["issue_route", "issue_snapshot", "readiness", "check_issue_open"])
+                self.assertNotIn("diagnose", called)
+                self.assertNotIn("diagnosis", inputs[0])
+
+    def test_bug_needing_information_waits_and_diagnoses_updated_content(self):
+        changed = dict(SNAPSHOT, body="Reproduction provided")
+        called, result, post = self.run_route([(False, SNAPSHOT, [])] * 3 + [(False, changed, [])] * 3,
+                                             ("needs_information", "ready"), labels=("bug",))
+        self.assertEqual(called[:8], ["issue_route", "issue_snapshot", "diagnose", "ask_information", "wait_for_issue_update",
+                                     "issue_snapshot", "diagnose", "check_issue_open"])
+        self.assertEqual(called.index("implement"), 8)
+        self.assertTrue(result["merged"])
+        post.assert_called_once()
+
+    def test_undiagnosed_bug_closure_never_reaches_implementation(self):
+        called, result, post = self.run_route([(False, SNAPSHOT, [])] * 2 + [(True, SNAPSHOT, [])],
+                                             ("needs_information",), labels=("bug",))
+        self.assertEqual(called, ["issue_route", "issue_snapshot", "diagnose", "ask_information", "wait_for_issue_update"])
+        self.assertEqual(result["status"], "closed")
+        self.assertNotIn("pr", result)
+        post.assert_called_once()
+
+    def test_content_change_after_diagnosis_requires_another_diagnosis(self):
+        changed = dict(SNAPSHOT, body="Changed reproduction")
+        inputs = []
+        called, _, _ = self.run_route([(False, SNAPSHOT, [])] + [(False, changed, [])] * 3,
+                                     ("ready", "ready"), labels=("bug",), diagnosis_inputs=inputs)
+        self.assertEqual(called[:8], ["issue_route", "issue_snapshot", "diagnose", "check_issue_open", "issue_snapshot",
+                                     "diagnose", "check_issue_open", "implement"])
+        self.assertEqual(inputs[0]["snapshot"], changed)
 
     def test_meaningful_update_iterations_obey_shared_step_budget(self):
         snapshots = [dict(SNAPSHOT, body=str(i)) for i in range(50)]

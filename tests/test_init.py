@@ -90,7 +90,7 @@ class InitTests(unittest.TestCase):
         self.assertEqual(graph["nodes"]["execute"]["inputs"], {"task": "/task"})
         self.assertNotIn("requires", graph["nodes"]["execute"])
         nodes = self.read("gitweave.json")["nodes"]
-        self.assertEqual(list(nodes), ["issue_snapshot", "readiness", "ask_information", "wait_for_issue_update",
+        self.assertEqual(list(nodes), ["issue_route", "issue_snapshot", "readiness", "diagnose", "ask_information", "wait_for_issue_update",
                                       "check_issue_open", "implement", "publish", "review", "fix", "merge", "close_issue"])
         for node in agents(self.read("gitweave.json")):  # Provider choices apply only to agents.
             self.assertEqual(node["provider"], "codex")
@@ -101,7 +101,7 @@ class InitTests(unittest.TestCase):
         self.assertIn("Closes #N", nodes["publish"]["instruction"])
         self.assertIn("missing scope", nodes["review"]["instruction"])
         self.assertIn("cannot be merged cleanly into the current default branch", nodes["review"]["instruction"])
-        flow = self.read("gitweave.json")["flow"][1]["if"]["then"]
+        flow = self.read("gitweave.json")["flow"][2]["if"]["then"]
         # review ⇄ fix until approved, then merge; retried from review while the merge did not happen.
         self.assertEqual(flow[:2] + flow[3:], ["implement", "publish", "close_issue"])
         self.assertEqual(flow[2]["loop"]["while"], {"path": "/0/data/merged", "equals": False})

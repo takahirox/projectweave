@@ -246,7 +246,8 @@ Each Project workspace holds two packaged templates:
   (`--repo OWNER/REPO --issue N`). ProjectWeave posts no comment itself.
 - [projectweave/templates/gitweave.json](projectweave/templates/gitweave.json),
   the **GitWeave Task graph** (how one selected Issue is carried to a merge):
-  review Issue readiness → ask for missing information and wait for meaningful
+  read Issue labels → diagnose bugs or review normal Issue readiness → ask for
+  missing information and wait for meaningful
   Issue updates until ready → implement → open a PR (`Closes #N`) → review ⇄ fix
   until approved (including conflicts with the current default branch) → merge with a merge commit, going
   back to review and retrying if the merge fails → make sure the Issue is closed
@@ -254,11 +255,30 @@ Each Project workspace holds two packaged templates:
   **It merges without a human review** once the review agent approves; edit it
   if you want a human to merge.
 
-Readiness uses `github_repository` and `run_input.number`. Command nodes read
-the Issue, post deduplicated questions, and poll without invoking an AI model:
+The first command, `projectweave issue-route`, reads the source Issue using
+`github_repository` and `run_input.number` and returns structured `route` and
+`labels` data. It trims, case-folds, deduplicates and sorts labels; the exact
+`bug` label selects the bug route, and missing or unrelated labels select
+`default`. It calls `gh api` without an AI model. The ordered `LABEL_ROUTES`
+mapping in [projectweave/routing.py](projectweave/routing.py) defines precedence;
+to extend it, add the corresponding route to the command schema and graph's
+`if` branches. Routing runs once at the start of each Run; later label-only
+changes do not switch the active route. GitHub read failures stop the Run.
+
+The bug route runs a diagnosis agent in place of the normal readiness agent.
+It inspects the repository and tests, reproduces the failure where practical,
+and reports evidence, likely cause, implementation approach and validation in
+`diagnosis`. It approves implementation only when the bug can be diagnosed;
+otherwise it asks concrete blocking questions and uses the same update wait.
+The final guard forwards an approved diagnosis to implementation, or discards
+it and repeats diagnosis when Issue content changes. Both routes share the
+existing publish/review/fix/merge flow.
+
+Readiness and diagnosis use `github_repository` and `run_input.number`.
+Command nodes read the Issue, post deduplicated questions, and poll without invoking an AI model:
 every minute for the first hour, every five minutes until 24 hours, then hourly
 without a cutoff. Title/body changes and external comment additions, edits or
-deletions trigger another readiness review; the automation's marked comments
+deletions trigger another readiness review or diagnosis; the automation's marked comments
 and metadata-only updates do not. The reviewed snapshot is preserved so replies
 during review are not missed. An open-state check immediately before implementation
 also re-reviews any intervening content changes. Closure before implementation
@@ -280,8 +300,8 @@ schemas is required.
 
 Init never overwrites existing files, so updating ProjectWeave or rerunning
 `init-project` does not repair an existing `projects/weave/gitweave.json`.
-For the readiness scaffold, regenerate both `graph.json` and `gitweave.json`
-from the current packaged templates, materialize the GitWeave graph path in
+For the label routing and readiness scaffold, regenerate both `graph.json`
+and `gitweave.json` from the current packaged templates, materialize the GitWeave graph path in
 `graph.json`, and reapply your provider/model/instruction choices. Preserve
 `project.json` and root resource policies. Init reports older scaffolds as
 incompatible and never rewrites them. Ensure the Project executor has
