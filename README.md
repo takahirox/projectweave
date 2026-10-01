@@ -220,8 +220,9 @@ workflow sets Status to `Done`, or use `projectweave complete` explicitly.
 
 ProjectWeave never sets Ready itself: `coordinate` selects open, Todo, Ready
 Issues under the configured resource policy. No Pending Status is needed.
-Not ready does not stop an active execution; cancellation and pre-merge
-eligibility gates are deferred.
+Not ready does not stop an active execution. The generated Task graph checks
+Issue closure before merging; cancellation and other pre-merge eligibility
+gates are deferred.
 
 After onboarding and verification, run either:
 
@@ -248,9 +249,11 @@ Each Project workspace holds two packaged templates:
   the **GitWeave Task graph** (how one selected Issue is carried to a merge):
   review Issue readiness → ask for missing information and wait for meaningful
   Issue updates until ready → implement → open a PR (`Closes #N`) → review ⇄ fix
-  until approved (including conflicts with the current default branch) → merge with a merge commit, going
-  back to review and retrying if the merge fails → make sure the Issue is closed
-  and comment the outcome on it.
+  until approved (including conflicts with the current default branch) → check
+  the source Issue is still open → merge with a merge commit, going back to review
+  and retrying if the merge fails while the Issue is open → make sure the Issue
+  is closed and comment the outcome on it. If the Issue is closed before merge,
+  skip merging and stop retrying, preserving the closed Issue and published PR.
   **It merges without a human review** once the review agent approves; edit it
   if you want a human to merge.
 
@@ -276,6 +279,15 @@ forwards `pr`, `merged`, and `merge_commit` unchanged from `merge` and reports
 whether the Issue is closed. Every object property in the packaged Codex output
 schemas is required.
 
+Immediately before each merge attempt, the merge agent reads the source Issue
+using `github_repository` and `run_input.number`. Its required boolean `retry`
+is false on success or Issue closure, and true for a failed or blocked merge
+while the Issue is confirmed open. The outer review/merge loop repeats only
+while `retry` is true. An unreadable Issue stops execution without merging.
+The reviewed head SHA and required GitHub checks/reviews still constrain merging.
+Closure returns `merged: false`, `merge_commit: ""`, and `closed: true` through
+`close_issue`, which comments the skipped outcome and never reopens the Issue.
+
 ### Repairing existing workspace graphs
 
 Init never overwrites existing files, so updating ProjectWeave or rerunning
@@ -287,6 +299,17 @@ from the current packaged templates, materialize the GitWeave graph path in
 incompatible and never rewrites them. Ensure the Project executor has
 `timeout: null` and the waiting command has no GitWeave node or graph timeout;
 a finite timeout would terminate the wait.
+
+Newly generated configs include the pre-merge Issue-open guard. Existing configs
+are left unchanged; init reports older schemas/flows as incompatible. To adopt
+the guard in an existing `gitweave.json`, copy the current packaged `merge`
+instruction, add `nodes.merge.schema.properties.retry` and its required entry,
+and change the outer review/merge loop's `while` to
+`{"path": "/0/data/retry", "equals": true}`. Update the `close_issue`
+instruction to preserve the current Issue state on a skipped merge and never
+reopen it. Preserve your provider/model choices and other customizations, then
+validate the graph before dispatching Tasks. The terminal `close_issue` schema
+does not need `retry`.
 
 For older merge result schemas, edit that file (or the equivalent path for
 your Project) before dispatching Tasks, preserving your other settings:

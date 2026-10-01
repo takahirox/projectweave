@@ -195,11 +195,14 @@ class GitWeaveRoutingTests(unittest.TestCase):
         cls.model = importlib.import_module("gitweave.model")
         cls.graph = templates(ROOT)["gitweave.json"]
 
-    def run_route(self, reads, approvals=("ready",), *, merge_results=(True,), review_results=(True,)):
+    def run_route(self, reads, approvals=("ready",), *, merge_results=(True,), review_results=(True,),
+                  merge_issue_states=("open",)):
         runtime = self.runtime.Runtime.__new__(self.runtime.Runtime)
         runtime.graph = self.runtime.validate_graph(copy.deepcopy(self.graph))
         runtime.steps, runtime.stopped = 0, False
-        called, approved, merged, reviewed = [], iter(approvals), iter(merge_results), iter(review_results)
+        called, approved, reviewed = [], iter(approvals), iter(review_results)
+        issue_states = iter(merge_issue_states)
+        self.merge_pr = Mock(side_effect=merge_results)
         async def node(name, inputs, item, origin):
             runtime.tick()
             called.append(name)
@@ -220,10 +223,14 @@ class GitWeaveRoutingTests(unittest.TestCase):
                 if name == "fix":
                     data.update(summary="Fixed")
                 if name == "merge":
-                    success = next(merged)
-                    data.update(merged=success, merge_commit="b" * 40 if success else "")
+                    # Mock the agent's Issue read and merge action; the real runtime routes its result.
+                    state = next(issue_states)
+                    success = self.merge_pr() if state == "open" else False
+                    data.update(merged=success, retry=state == "open" and not success,
+                                merge_commit="b" * 40 if success else "")
                 if name == "close_issue":
-                    data = dict(inputs[0]["data"], closed=True)
+                    data = {key: inputs[0]["data"][key] for key in ("pr", "merged", "merge_commit")}
+                    data["closed"] = True
             if "schema" in spec:
                 self.model.validate(data, spec["schema"])
             return {"node_id": name, "commit": "c" * 40, "message": name, "data": data,
@@ -235,11 +242,42 @@ class GitWeaveRoutingTests(unittest.TestCase):
 
     def test_ready_and_existing_review_fix_merge_retries(self):
         called, result, post = self.run_route([(False, SNAPSHOT, [])] * 2,
-                                             merge_results=(False, True), review_results=(False, True, True))
+                                             merge_results=(False, True), review_results=(False, True, True),
+                                             merge_issue_states=("open", "open"))
         self.assertEqual(called, ["issue_snapshot", "readiness", "check_issue_open", "implement", "publish",
                                  "review", "fix", "publish", "review", "merge", "review", "merge", "close_issue"])
         self.assertTrue(result["merged"])
+        self.assertEqual(self.merge_pr.call_count, 2)
         post.assert_not_called()
+
+    def test_open_issue_merge_succeeds_without_retry(self):
+        called, result, _ = self.run_route([(False, SNAPSHOT, [])] * 2)
+        self.assertEqual(called, ["issue_snapshot", "readiness", "check_issue_open", "implement", "publish",
+                                 "review", "merge", "close_issue"])
+        self.merge_pr.assert_called_once()
+        self.assertTrue(result["merged"])
+        self.assertEqual(result["merge_commit"], "b" * 40)
+
+    def test_closed_issue_before_merge_skips_merge_and_retry(self):
+        called, result, _ = self.run_route([(False, SNAPSHOT, [])] * 2,
+                                          merge_issue_states=("closed",), merge_results=())
+        self.assertEqual(called, ["issue_snapshot", "readiness", "check_issue_open", "implement", "publish",
+                                 "review", "merge", "close_issue"])
+        self.merge_pr.assert_not_called()
+        self.assertFalse(result["merged"])
+        self.assertEqual(result["merge_commit"], "")
+        self.assertTrue(result["closed"])
+        self.assertEqual(result["pr"]["head_sha"], "a" * 40)
+
+    def test_issue_closed_after_failed_merge_stops_next_attempt(self):
+        called, result, _ = self.run_route([(False, SNAPSHOT, [])] * 2, merge_results=(False,),
+                                          review_results=(True, True), merge_issue_states=("open", "closed"))
+        self.assertEqual(called[-5:], ["review", "merge", "review", "merge", "close_issue"])
+        self.merge_pr.assert_called_once()
+        self.assertEqual(called.count("review"), 2)
+        self.assertFalse(result["merged"])
+        self.assertEqual(result["merge_commit"], "")
+        self.assertTrue(result["closed"])
 
     def test_not_ready_unchanged_polls_then_update_and_ready(self):
         changed = dict(SNAPSHOT, body="Acceptance criteria supplied")

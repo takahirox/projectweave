@@ -102,9 +102,9 @@ class InitTests(unittest.TestCase):
         self.assertIn("missing scope", nodes["review"]["instruction"])
         self.assertIn("cannot be merged cleanly into the current default branch", nodes["review"]["instruction"])
         flow = self.read("gitweave.json")["flow"][1]["if"]["then"]
-        # review ⇄ fix until approved, then merge; retried from review while the merge did not happen.
+        # review ⇄ fix until approved, then merge; retry only an open Issue's merge failure.
         self.assertEqual(flow[:2] + flow[3:], ["implement", "publish", "close_issue"])
-        self.assertEqual(flow[2]["loop"]["while"], {"path": "/0/data/merged", "equals": False})
+        self.assertEqual(flow[2]["loop"]["while"], {"path": "/0/data/retry", "equals": True})
         self.assertEqual([step if isinstance(step, str) else "loop" for step in flow[2]["loop"]["flow"]],
                          ["review", "loop", "merge"])
         inner = flow[2]["loop"]["flow"][1]["loop"]  # The unchanged review/fix loop.
@@ -113,10 +113,15 @@ class InitTests(unittest.TestCase):
         self.assertIn("with a merge commit", nodes["merge"]["instruction"])
         self.assertIn("Do not bypass required checks", nodes["merge"]["instruction"])
         self.assertIn("If inputs[0].data.merged is true", nodes["close_issue"]["instruction"])
-        self.assertIn("Comment the outcome on the Issue.", nodes["close_issue"]["instruction"])
+        self.assertIn("Comment the outcome on the Issue", nodes["close_issue"]["instruction"])
+        self.assertIn("including when merging was skipped because the source Issue was closed",
+                      nodes["close_issue"]["instruction"])
         # The terminal output names the PR so ProjectWeave's Issue comment includes it.
         self.assertEqual(nodes["close_issue"]["schema"]["required"], ["pr", "merged", "merge_commit", "closed"])
-        self.assertTrue(any("MERGES it into the default branch" in a for a in report["human_actions"]))
+        self.assertTrue(any("source Issue is open before it MERGES into the default branch" in a
+                            for a in report["human_actions"]))
+        self.assertTrue(any("Closure before merge skips merging and stops retries" in a
+                            for a in report["human_actions"]))
         self.assertTrue(any(".gitweave/repos/OWNER/REPO.git" in a for a in report["human_actions"]))
         self.assertFalse(any("provider and model" in entry for entry in report["missing"]))
         self.assertEqual(report["missing"], [])
@@ -585,6 +590,19 @@ class InitTests(unittest.TestCase):
         self.assertIn("Incompatible gitweave.json", report["failure"]["message"])
         self.assertIn("regenerate the workspace", report["failure"]["message"])
         self.assertEqual(self.read("gitweave.json"), old)
+        self.assertEqual(self.mutations(calls), [])
+
+    def test_pre_guard_workspace_is_reported_without_rewriting(self):
+        worker = templates(self.root)["gitweave.json"]
+        worker["nodes"]["merge"]["schema"]["properties"].pop("retry")
+        worker["nodes"]["merge"]["schema"]["required"].remove("retry")
+        worker["flow"][1]["if"]["then"][2]["loop"]["while"] = {"path": "/0/data/merged", "equals": False}
+        self.write("gitweave.json", worker)
+        before = (self.directory / "gitweave.json").read_bytes()
+        code, report, calls = self.invoke("--project-number", "7")
+        self.assertEqual(code, 2, report)
+        self.assertIn("Incompatible gitweave.json", report["failure"]["message"])
+        self.assertEqual((self.directory / "gitweave.json").read_bytes(), before)
         self.assertEqual(self.mutations(calls), [])
 
     def test_old_placeholder_workspace_still_reports_missing_choice(self):
