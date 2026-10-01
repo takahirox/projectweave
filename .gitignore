@@ -3,3 +3,6 @@ __pycache__/
 build/
 dist/
 .venv/
+node_modules/
+test-results/
+playwright-report/

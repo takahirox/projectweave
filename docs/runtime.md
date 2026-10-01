@@ -292,11 +292,19 @@ external assets or dependencies, and closes when coordination exits, including
 it remains available while already launched Tasks finish.
 
 The top page lists every managed Project, including idle or misconfigured
-Projects, with Running, Long running, and Failed execution counts. Project links
-show Tasks launched by this process; Task links show run identity, status, times,
-failure details, executor information, recent output, and a GitWeave graph when
-configured. Durations and views refresh every second. Running means a Task
-actually launched by this coordinator and not yet finished; a GitHub Project
+Projects, with compact Running, Long running, and Failed execution counts and
+the most relevant Task's elapsed time and observed position. Long-running and
+running Tasks appear ahead of failed and completed executions. Project links
+open a split task/run explorer; Task links select a run while keeping the Project
+and task list in view. Run details include identity, status, times, failure
+details, executor information, and a GitWeave workflow graph when configured.
+Graph nodes can be selected with a click or Enter/Space to inspect their status
+and recent attributed output. Selection remains during refresh; "Follow current
+node" resumes following observed active/latest nodes and brings them into view.
+Narrow layouts stack the
+task list and detail, and graphs scroll within their own region. The dashboard
+uses the browser's light/dark preference. Durations and views refresh every second.
+Running means a Task actually launched by this coordinator and not yet finished; a GitHub Project
 item's In Progress status does not determine this count. Long running means
 Running with elapsed time strictly greater than the threshold. Failed counts
 failed executions, including worker exceptions. Terminal executions remain
@@ -306,8 +314,12 @@ coordinator reports and are not counted as failed Task executions.
 The optional thread-safe registry holds this state directly in memory. Nothing
 is recovered from earlier coordinator processes, and no database or history file
 is written. Each Task retains at most 500 recent log entries of at most 2000
-characters each, including captured executor stdout/stderr. Command executors
-keep their normal single-JSON-result stdout contract and have a useful generic
+characters each, including captured executor stdout/stderr. The execution trace
+shows timestamps, stream and available node attribution, separates lifecycle
+events from output, and can filter either category. It follows new output while
+at the bottom; scrolling up preserves your position across refreshes, and "Jump
+to latest" resumes following. Graph scrolling and keyboard focus also survive
+refreshes. Command executors keep their normal single-JSON-result stdout contract and have a useful generic
 view without requiring a GitWeave graph. Without `--web`, executor collection and
 coordinator behavior use the original paths.
 
@@ -331,6 +343,9 @@ JSON. Supported flat event objects use `type` (or `event`): `run_started` with
 `run_id`; `node_started`, `node_completed`, and `node_failed` with `node_id` and
 optional `instance_id`/`run_id`; and `agent_output`, `command_stdout`,
 `command_stderr`, or `log` with `text` (also accepting `message` or `output`).
+Output events may also supply `node_id` and `instance_id`; these are retained
+alongside the executor invocation identity for selected-node output. Unattributed
+stdout/stderr remains visible in the run trace; its node is never guessed.
 For example:
 
 ```json

@@ -2,6 +2,13 @@
 const view = document.getElementById('view');
 const connection = document.getElementById('connection');
 let state;
+let displayedRun = null;
+let traceFilter = 'all';
+const selectedNodes = new Map();
+const lifecycleTypes = new Set(['node_started', 'node_completed', 'node_failed']);
+const statusNames = {running: 'Running', active: 'Active', completed: 'Completed', failed: 'Failed',
+  not_executed: 'Pending', unknown: 'Unknown'};
+
 function element(tag, text, className) {
   const node = document.createElement(tag);
   if (text !== undefined && text !== null) node.textContent = String(text);
@@ -20,60 +27,125 @@ function link(text, href, external = false) {
   node.href = href;
   return node;
 }
-function duration(seconds) {
-  seconds = Math.floor(seconds);
-  return `${Math.floor(seconds / 3600)}h ${Math.floor(seconds / 60) % 60}m ${seconds % 60}s`;
-}
-function badge(run) {
-  const node = element('span');
-  node.append(element('span', run.status, `badge ${run.status}`));
-  if (run.long_running) node.append(element('span', 'Long running', 'badge'));
+function button(text, action, className) {
+  const node = element('button', text, className);
+  node.type = 'button';
+  node.addEventListener('click', action);
   return node;
 }
-function projects() {
-  view.append(element('h1', 'Projects'));
-  const cards = element('div', null, 'cards');
-  for (const project of state.projects) {
-    const card = element('article', null, 'card');
-    const heading = element('h2');
-    heading.append(link(project.name, `#project/${encodeURIComponent(project.name)}`));
-    card.append(heading);
-    const counts = element('div', null, 'counts');
-    for (const [label, key] of [['Running', 'running'], ['Long running', 'long_running'], ['Failed', 'failed']]) {
-      const count = element('div', label);
-      count.prepend(element('strong', project[key]));
-      counts.append(count);
-    }
-    card.append(counts);
-    cards.append(card);
-  }
-  view.append(cards);
-  if (!state.projects.length) view.append(element('p', 'No managed Projects in this workspace.'));
+function duration(seconds) {
+  seconds = Math.max(0, Math.floor(seconds || 0));
+  return `${Math.floor(seconds / 3600)}h ${Math.floor(seconds / 60) % 60}m ${seconds % 60}s`;
 }
-function projectDetail(name) {
-  const project = state.projects.find(project => project.name === name);
-  if (!project) { view.append(element('h1', 'Project not found')); return; }
-  view.append(link('← All Projects', '#'), element('h1', name));
-  if (project.url) view.append(link('Open GitHub Project', project.url, true));
-  const runs = state.runs.filter(run => run.project === name);
-  const wrap = element('div', null, 'table-wrap');
-  const table = element('table');
-  const header = element('tr');
-  for (const text of ['Task', 'Repository', 'Status', 'Started', 'Elapsed', 'Run ID', 'Executor']) header.append(element('th', text));
-  const head = element('thead'); head.append(header); table.append(head);
-  const body = element('tbody');
-  for (const run of runs.slice().reverse()) {
-    const row = element('tr', null, run.long_running ? 'long' : '');
-    const task = element('td');
-    task.append(link(`#${run.task.number ?? '?'} ${run.task.title ?? ''}`, `#run/${run.id}`));
-    const status = element('td'); status.append(badge(run));
-    row.append(task, element('td', run.task.repository), status, element('td', run.started_at),
-      element('td', duration(run.elapsed_seconds)), element('td', run.run_id || 'Not yet available'),
-      element('td', run.executor_type || 'Preparing'));
-    body.append(row);
+function timestamp(value, short = false) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return short ? date.toLocaleTimeString() : date.toLocaleString();
+}
+function statusBadge(status, text = statusNames[status] || status) {
+  return element('span', text, `badge ${status}`);
+}
+function badge(run) {
+  const node = element('span', null, 'badges');
+  node.append(statusBadge(run.status));
+  if (run.long_running) node.append(statusBadge('long', 'Long running'));
+  return node;
+}
+function counts(project) {
+  const node = element('div', null, 'counts');
+  for (const [label, key, style] of [['Running', 'running', 'running'], ['Long running', 'long_running', 'long'], ['Failed', 'failed', 'failed']]) {
+    node.append(statusBadge(project[key] ? style : 'muted', `${project[key]} ${label}`));
   }
-  table.append(body); wrap.append(table); view.append(wrap);
-  if (!runs.length) view.append(element('p', 'No Tasks launched by this process.'));
+  return node;
+}
+function taskTitle(run) { return `#${run.task.number ?? '?'} ${run.task.title || 'Untitled task'}`; }
+function executionPosition(run) {
+  const execution = run.executions.at(-1);
+  if (!execution) return 'Preparing execution';
+  if (execution.current_nodes.length) return `Active · ${execution.current_nodes.join(', ')}`;
+  if (execution.recent_node) return `Latest · ${execution.recent_node}`;
+  return execution.executor_type === 'gitweave' ? 'Awaiting observed progress' : `${execution.executor_type} executor`;
+}
+function rankedRuns(runs) {
+  // Keep live work first, with long-running work ahead of other running Tasks.
+  const priority = run => run.long_running ? 0 : run.status === 'running' ? 1 : run.status === 'failed' ? 2 : 3;
+  return runs.slice().reverse().sort((a, b) => priority(a) - priority(b));
+}
+function pageHeader(title, description, right) {
+  const header = element('div', null, 'page-header');
+  const identity = element('div');
+  identity.append(element('h1', title));
+  if (description) identity.append(element('p', description, 'muted'));
+  header.append(identity);
+  if (right) header.append(right);
+  return header;
+}
+function projects() {
+  view.append(pageHeader('Projects', 'An overview of work in this coordinator.', element('span', `${state.projects.length} managed`, 'muted')));
+  const list = element('section', null, 'project-list');
+  list.setAttribute('aria-label', 'Project operations overview');
+  const labels = element('div', null, 'project-row project-columns');
+  for (const label of ['Project', 'Execution status', 'Relevant task / run', 'Elapsed']) labels.append(element('span', label));
+  list.append(labels);
+  for (const project of state.projects) {
+    const row = element('article', null, 'project-row');
+    const identity = element('div', null, 'project-identity');
+    identity.append(link(project.name, `#project/${encodeURIComponent(project.name)}`));
+    const members = state.runs.filter(run => run.project === project.name);
+    identity.append(element('small', `${members.length} ${members.length === 1 ? 'run' : 'runs'} this session`, 'muted'));
+    const relevant = rankedRuns(members)[0];
+    const task = element('div', null, 'project-task');
+    if (relevant) {
+      task.append(link(taskTitle(relevant), `#run/${encodeURIComponent(relevant.id)}`),
+        element('small', `${relevant.task.repository || 'Repository unavailable'} · ${executionPosition(relevant)}`, 'muted'));
+    } else task.append(element('span', 'No tasks launched', 'muted'));
+    row.append(identity, counts(project), task, element('span', relevant ? duration(relevant.elapsed_seconds) : '—', 'elapsed'));
+    list.append(row);
+  }
+  if (!state.projects.length) list.append(element('p', 'No managed Projects in this workspace.', 'empty'));
+  view.append(list);
+}
+function projectDetail(name, runId) {
+  const project = state.projects.find(project => project.name === name);
+  if (!project) { view.append(element('h1', 'Project not found'), link('All Projects', '#')); return; }
+  const breadcrumb = element('nav', null, 'breadcrumb');
+  breadcrumb.setAttribute('aria-label', 'Breadcrumb');
+  breadcrumb.append(link('Projects', '#'), element('span', '/'), element('span', name));
+  view.append(breadcrumb);
+  const identity = element('div', null, 'project-links');
+  identity.append(counts(project));
+  if (project.url) identity.append(link('Open GitHub Project ↗', project.url, true));
+  view.append(pageHeader(name, 'Tasks and execution progress', identity));
+  const runs = rankedRuns(state.runs.filter(run => run.project === name));
+  const selected = runs.find(run => run.id === runId) || runs[0];
+  const explorer = element('div', null, 'explorer');
+  const sidebar = element('aside', null, 'run-list');
+  sidebar.setAttribute('aria-label', 'Task runs');
+  sidebar.setAttribute('data-scroll', `runs:${name}`);
+  const heading = element('div', null, 'section-heading');
+  heading.append(element('h2', 'Task runs'), element('span', runs.length, 'muted'));
+  sidebar.append(heading);
+  for (const run of runs) {
+    const item = link('', `#run/${encodeURIComponent(run.id)}`);
+    item.className = `run-item${run.id === selected?.id ? ' selected' : ''}`;
+    item.dataset.focus = `run:${run.id}`;
+    if (run.id === selected?.id) item.setAttribute('aria-current', 'true');
+    item.append(badge(run), element('strong', taskTitle(run)), element('small', run.task.repository || 'Repository unavailable', 'muted'));
+    const meta = element('div', null, 'run-meta');
+    meta.append(element('span', run.executor_type || 'Preparing'), element('span', duration(run.elapsed_seconds), 'elapsed'));
+    const started = element('small', `Started ${timestamp(run.started_at)}`, 'muted');
+    item.append(meta, started, element('small', executionPosition(run), 'position'));
+    sidebar.append(item);
+  }
+  if (!runs.length) sidebar.append(element('p', 'No Tasks launched by this process.', 'empty'));
+  const detail = element('section', null, 'run-detail');
+  detail.setAttribute('aria-label', 'Selected run detail');
+  if (selected) {
+    if (displayedRun !== selected.id) { traceFilter = 'all'; displayedRun = selected.id; }
+    runDetail(selected, detail);
+  } else detail.append(element('div', 'Task execution details will appear here when work starts.', 'empty'));
+  explorer.append(sidebar, detail); view.append(explorer);
 }
 const SVG = 'http://www.w3.org/2000/svg';
 function svgElement(tag, attrs = {}, text) {
@@ -82,7 +154,8 @@ function svgElement(tag, attrs = {}, text) {
   if (text !== undefined) node.textContent = text;
   return node;
 }
-function graphView(graph) {
+let graphSequence = 0;
+function graphView(graph, selected, selectNode, key) {
   // Layer acyclic edges; place nodes in cycles in a final column.
   const rank = new Map(graph.nodes.map(node => [node.id, 0]));
   const incoming = new Map(graph.nodes.map(node => [node.id, 0]));
@@ -105,76 +178,186 @@ function graphView(graph) {
   for (const node of graph.nodes) {
     const column = rank.get(node.id), row = rows.get(column) || 0;
     rows.set(column, row + 1); maxRows = Math.max(maxRows, row + 1);
-    positions.set(node.id, [30 + column * 230, 30 + row * 100]);
+    positions.set(node.id, [24 + column * 214, 28 + row * 90]);
   }
-  const svg = svgElement('svg', {class: 'graph', width: (last + 1) * 230 + 40, height: maxRows * 100 + 40, role: 'img', 'aria-label': 'GitWeave graph progress'});
+  const svg = svgElement('svg', {class: 'graph', width: (last + 1) * 214 + 24, height: maxRows * 90 + 38,
+    role: 'group', 'aria-label': 'GitWeave graph progress'});
   const defs = svgElement('defs');
   const marker = svgElement('marker', {id: `arrow-${graphSequence++}`, markerWidth: 8, markerHeight: 8, refX: 7, refY: 4, orient: 'auto'});
-  marker.append(svgElement('path', {d: 'M0,0 L8,4 L0,8', fill: '#7f92ae'}));
+  marker.append(svgElement('path', {d: 'M0,0 L8,4 L0,8', class: 'arrow'}));
   defs.append(marker); svg.append(defs);
   for (const [a, b] of edges) {
     const [x1, y1] = positions.get(a), [x2, y2] = positions.get(b);
-    const d = x2 > x1 ? `M${x1 + 190},${y1 + 30} C${x1 + 210},${y1 + 30} ${x2 - 20},${y2 + 30} ${x2},${y2 + 30}`
-      : `M${x1 + 95},${y1} C${x1 + 95},${y1 - 25} ${x2 + 95},${y2 - 25} ${x2 + 95},${y2}`;
+    const d = x2 > x1 ? `M${x1 + 174},${y1 + 29} C${x1 + 194},${y1 + 29} ${x2 - 20},${y2 + 29} ${x2},${y2 + 29}`
+      : `M${x1 + 87},${y1} C${x1 + 87},${y1 - 25} ${x2 + 87},${y2 - 25} ${x2 + 87},${y2}`;
     svg.append(svgElement('path', {d, class: 'edge', 'marker-end': `url(#${marker.id})`}));
   }
   for (const node of graph.nodes) {
     const [x, y] = positions.get(node.id);
-    const group = svgElement('g', {class: node.status});
-    group.append(svgElement('title', {}, `${node.id} (${node.kind}): ${node.status}`), svgElement('rect', {x, y, width: 190, height: 60, rx: 7}),
-      svgElement('text', {x: x + 8, y: y + 23}, node.id.length > 24 ? node.id.slice(0, 23) + '…' : node.id),
-      svgElement('text', {x: x + 8, y: y + 45}, node.status.replaceAll('_', ' ')));
+    const label = statusNames[node.status] || node.status;
+    const group = svgElement('g', {class: `graph-node ${node.status}${node.id === selected ? ' selected' : ''}`,
+      role: 'button', tabindex: 0, 'aria-label': `${node.id} (${node.kind || 'node'}): ${label}`,
+      'aria-pressed': node.id === selected, 'data-focus': `node:${key}:${node.id}`});
+    group.addEventListener('click', () => selectNode(node.id));
+    group.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectNode(node.id); }
+    });
+    group.append(svgElement('title', {}, `${node.id} (${node.kind || 'node'}): ${label}`),
+      svgElement('rect', {x, y, width: 174, height: 58, rx: 4}),
+      svgElement('text', {x: x + 12, y: y + 23}, node.id.length > 21 ? node.id.slice(0, 20) + '…' : node.id),
+      svgElement('text', {x: x + 12, y: y + 44, class: 'node-status'}, label));
     svg.append(group);
   }
-  const wrap = element('div', null, 'graph-wrap'); wrap.append(svg); return wrap;
+  const wrap = element('div', null, 'graph-wrap');
+  wrap.setAttribute('data-scroll', `graph:${key}`);
+  wrap.dataset.focus = `graph:${key}`;
+  wrap.dataset.selectedNode = selected;
+  wrap.setAttribute('tabindex', '0');
+  wrap.setAttribute('aria-label', 'Scrollable workflow graph');
+  wrap.append(svg); return wrap;
 }
-let graphSequence = 0;
-function runDetail(id) {
-  const run = state.runs.find(run => run.id === id);
-  if (!run) { view.append(element('h1', 'Run not found')); return; }
-  view.append(link(`← ${run.project}`, `#project/${encodeURIComponent(run.project)}`),
-    element('h1', `#${run.task.number ?? '?'} ${run.task.title ?? ''}`), badge(run));
-  if (run.task.url) view.append(link('Open GitHub Issue', run.task.url, true));
-  const details = element('dl');
-  for (const [label, value] of [['Repository', run.task.repository], ['Executor', run.executor_type || 'Preparing'],
-    ['Started', run.started_at], ['Ended', run.ended_at || 'Still running'], ['Elapsed', duration(run.elapsed_seconds)],
+function logRow(log) {
+  const row = element('div', null, `log-row ${lifecycleTypes.has(log.type) ? 'lifecycle' : 'output'}${log.type.includes('stderr') || log.type === 'node_failed' ? ' error-output' : ''}`);
+  const time = element('time', timestamp(log.at, true));
+  if (log.at) { time.dateTime = log.at; time.title = timestamp(log.at); }
+  const source = element('span', null, 'log-source');
+  source.append(element('span', log.type.replaceAll('_', ' '), 'log-stream'));
+  source.append(element('span', log.node_id || 'run', 'log-node'));
+  source.title = [log.execution_id, log.node_id, log.instance_id].filter(Boolean).join(' · ') || 'Run output; node attribution unavailable';
+  row.append(time, source, element('code', log.text));
+  return row;
+}
+function workflow(run, execution) {
+  const key = `${run.id}:${execution.id}`;
+  const panel = element('section', null, 'workflow');
+  const heading = element('div', null, 'section-heading');
+  heading.append(element('h3', 'GitWeave workflow'), element('span', execution.id, 'mono muted'));
+  panel.append(heading);
+  const context = element('div', null, 'workflow-context');
+  context.append(element('span', `Active · ${execution.current_nodes.join(', ') || (run.status === 'running' ? 'Unknown without live events' : 'None')}`),
+    element('span', `Latest · ${execution.recent_node || 'Not observed'}`), element('span', `Elapsed · ${duration(run.elapsed_seconds)}`));
+  panel.append(context);
+  if (execution.graph?.nodes.length) {
+    const nodes = execution.graph.nodes;
+    const requested = selectedNodes.get(key);
+    const selected = nodes.find(node => node.id === requested) || nodes.find(node => execution.current_nodes.includes(node.id)) ||
+      nodes.find(node => node.id === execution.recent_node) || nodes[0];
+    const layout = element('div', null, 'workflow-layout');
+    const visualization = element('div', null, 'workflow-visualization');
+    visualization.append(graphView(execution.graph, selected.id, id => { selectedNodes.set(key, id); render(); }, key));
+    const legend = element('div', null, 'graph-legend');
+    for (const status of ['completed', 'active', 'not_executed', 'failed', 'unknown']) legend.append(statusBadge(status));
+    visualization.append(legend, element('p', 'Pending means not yet observed; conditional branches may never execute.', 'graph-note muted'));
+    const inspector = element('aside', null, 'node-detail');
+    inspector.setAttribute('aria-label', `Selected node for ${execution.id}`);
+    inspector.append(element('h4', selected.id), statusBadge(selected.status), element('p', selected.kind || 'Node', 'muted'));
+    const follow = button('Follow current node', () => { selectedNodes.delete(key); render(); }, 'text-button');
+    follow.dataset.focus = `follow:${key}`;
+    inspector.append(follow, element('h4', 'Recent node output'));
+    const logs = run.logs.filter(log => log.execution_id === execution.id && log.node_id === selected.id).slice(-6);
+    const output = element('div', null, 'node-logs');
+    output.setAttribute('data-scroll', `node-logs:${key}:${selected.id}`);
+    output.dataset.follow = 'true';
+    for (const log of logs) output.append(logRow(log));
+    if (!logs.length) output.append(element('p', 'No attributed output for this node yet. Unattributed output remains in the execution trace.', 'muted'));
+    inspector.append(output);
+    layout.append(visualization, inspector); panel.append(layout);
+  } else panel.append(element('p', `Graph unavailable: ${execution.graph_error || 'No graph nodes available'}`, 'empty'));
+  panel.append(element('p', `GitWeave Run ID · ${execution.run_id || 'Not yet available'}`, 'execution-id mono muted'));
+  return panel;
+}
+function executionTrace(run) {
+  const panel = element('section', null, 'trace');
+  const heading = element('div', null, 'section-heading');
+  heading.append(element('h3', 'Execution trace'));
+  const controls = element('div', null, 'trace-controls');
+  const filter = element('select');
+  filter.setAttribute('aria-label', 'Filter execution trace');
+  filter.dataset.focus = 'trace-filter';
+  for (const [value, text] of [['all', 'All output'], ['lifecycle', 'Lifecycle events'], ['output', 'Agent / subprocess output']]) {
+    const option = element('option', text); option.value = value; filter.append(option);
+  }
+  filter.value = traceFilter;
+  filter.addEventListener('change', () => { traceFilter = filter.value; render(); });
+  const latest = button('Jump to latest', () => { const logs = document.getElementById('logs'); logs.scrollTop = logs.scrollHeight; }, 'text-button');
+  latest.dataset.focus = 'latest';
+  controls.append(filter, latest); heading.append(controls); panel.append(heading);
+  const logs = element('div', null, 'trace-output'); logs.id = 'logs';
+  logs.setAttribute('data-scroll', `trace:${run.id}:${traceFilter}`);
+  logs.dataset.focus = 'trace';
+  logs.dataset.follow = 'true';
+  logs.tabIndex = 0;
+  logs.setAttribute('role', 'region'); logs.setAttribute('aria-label', 'Recent execution logs');
+  const filtered = run.logs.filter(log => traceFilter === 'all' || lifecycleTypes.has(log.type) === (traceFilter === 'lifecycle'));
+  for (const log of filtered) logs.append(logRow(log));
+  if (!filtered.length) logs.append(element('p', run.logs.length ? 'No entries match this filter.' : 'No output available yet.', 'empty'));
+  panel.append(logs, element('p', 'Recent output is bounded. Scroll up to pause following; jump to latest to resume.', 'trace-note muted'));
+  return panel;
+}
+function runDetail(run, container) {
+  const header = element('div', null, 'run-heading');
+  header.append(element('p', 'SELECTED RUN', 'eyebrow'), element('h2', taskTitle(run)), badge(run));
+  if (run.task.url) header.append(link('Open GitHub Issue ↗', run.task.url, true));
+  container.append(header);
+  const details = element('dl', null, 'run-facts');
+  for (const [label, value] of [['Repository', run.task.repository || 'Unavailable'], ['Executor', run.executor_type || 'Preparing'],
+    ['Started', timestamp(run.started_at)], ['Elapsed', duration(run.elapsed_seconds)],
+    ['Ended', run.ended_at ? timestamp(run.ended_at) : 'Still running'], ['Position', executionPosition(run)],
     ['ProjectWeave Run ID', run.run_id || 'Not yet available']]) {
-    details.append(element('dt', label), element('dd', value));
+    const fact = element('div', null, label === 'ProjectWeave Run ID' ? 'run-identity' : '');
+    fact.append(element('dt', label), element('dd', value)); details.append(fact);
   }
-  view.append(details);
-  if (run.failure) view.append(element('h2', 'Failure'), element('pre', JSON.stringify(run.failure, null, 2)));
-  for (const execution of run.executions) {
-    if (execution.executor_type !== 'gitweave') continue;
-    view.append(element('h2', `GitWeave · ${execution.id}`), element('p', `Run ID: ${execution.run_id || 'Not yet available'}`),
-      element('p', `Active: ${execution.current_nodes.join(', ') || (run.status === 'running' ? 'Unknown without live events' : 'None')}; most recent: ${execution.recent_node || 'Unknown'}`));
-    if (execution.graph) view.append(graphView(execution.graph), element('p', 'Blue: active · Green: completed · Red: failed · Gray: not yet observed. Conditional branches may never execute.', 'muted'));
-    else view.append(element('p', `Graph unavailable: ${execution.graph_error || 'No graph data'}`));
+  container.append(details);
+  for (const execution of run.executions) if (execution.executor_type === 'gitweave') container.append(workflow(run, execution));
+  if (run.failure) {
+    const failure = element('section', null, 'failure-detail');
+    failure.append(element('h3', 'Failure'), element('pre', JSON.stringify(run.failure, null, 2))); container.append(failure);
   }
-  view.append(element('h2', 'Recent execution logs'));
-  const logs = element('pre', run.logs.length ? run.logs.map(log => `${log.at} [${log.type}] ${log.text}`).join('\n') : 'No output available yet.');
-  logs.id = 'logs'; view.append(logs);
+  container.append(executionTrace(run));
 }
 function render() {
-  const previousLogs = document.getElementById('logs');
-  const bottom = !previousLogs || previousLogs.scrollTop + previousLogs.clientHeight >= previousLogs.scrollHeight - 10;
-  const scroll = previousLogs?.scrollTop || 0;
+  // Polling must preserve graph/list scroll, trace follow state, and keyboard focus.
+  const scroll = new Map(Array.from(view.querySelectorAll('[data-scroll]'), node => [node.dataset.scroll,
+    {top: node.scrollTop, left: node.scrollLeft, selectedNode: node.dataset.selectedNode,
+      bottom: node.scrollTop + node.clientHeight >= node.scrollHeight - 10}]));
+  const focusKey = document.activeElement?.dataset.focus;
   view.replaceChildren();
   const [kind, ...parts] = location.hash.slice(1).split('/');
   let id;
   try { id = decodeURIComponent(parts.join('/')); } catch { id = ''; }
   if (kind === 'project') projectDetail(id);
-  else if (kind === 'run') runDetail(id);
-  else projects();
-  const logs = document.getElementById('logs');
-  if (logs) logs.scrollTop = bottom ? logs.scrollHeight : scroll;
+  else if (kind === 'run') {
+    const run = state.runs.find(run => run.id === id);
+    if (run) projectDetail(run.project, id);
+    else view.append(element('h1', 'Run not found'), link('All Projects', '#'));
+  } else projects();
+  if (focusKey) Array.from(view.querySelectorAll('[data-focus]')).find(node => node.dataset.focus === focusKey)?.focus({preventScroll: true});
+  for (const node of view.querySelectorAll('[data-scroll]')) {
+    const previous = scroll.get(node.dataset.scroll);
+    node.scrollTop = node.dataset.follow && (!previous || previous.bottom) ? node.scrollHeight : previous?.top || 0;
+    node.scrollLeft = previous?.left || 0;
+    if (node.dataset.selectedNode && node.dataset.selectedNode !== previous?.selectedNode) {
+      const bounds = node.querySelector('.graph-node.selected').getBBox();
+      if (bounds.x < node.scrollLeft || bounds.x + bounds.width > node.scrollLeft + node.clientWidth) {
+        node.scrollLeft = Math.max(0, bounds.x - (node.clientWidth - bounds.width) / 2);
+      }
+      if (bounds.y < node.scrollTop || bounds.y + bounds.height > node.scrollTop + node.clientHeight) {
+        node.scrollTop = Math.max(0, bounds.y - (node.clientHeight - bounds.height) / 2);
+      }
+    }
+  }
 }
 async function refresh() {
   try {
     const response = await fetch('/api/state', {cache: 'no-store'});
     if (!response.ok) throw new Error('Dashboard unavailable');
-    state = await response.json(); connection.textContent = ''; render();
-  } catch { connection.textContent = 'Coordinator unavailable. Reconnecting…'; }
+    state = await response.json();
+    connection.textContent = 'Live · 1s'; connection.className = 'connection live'; render();
+  } catch { connection.textContent = 'Coordinator unavailable. Reconnecting…'; connection.className = 'connection disconnected'; }
   setTimeout(refresh, 1000);
 }
 window.addEventListener('hashchange', () => { if (state) render(); });
+document.querySelector('.skip-link').addEventListener('click', event => {
+  event.preventDefault(); view.focus();
+});
 refresh();

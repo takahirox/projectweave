@@ -3,16 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ProjectWeave execution dashboard</title>
+<title>ProjectWeave · Execution explorer</title>
 <link rel="stylesheet" href="/dashboard.css">
 <script src="/dashboard.js" defer></script>
 </head>
 <body>
-<header><a href="#">ProjectWeave</a><span>Local execution dashboard</span></header>
+<a class="skip-link" href="#view">Skip to execution explorer</a>
+<header class="app-header">
+<a class="brand" href="#"><span class="brand-mark" aria-hidden="true">PW</span>ProjectWeave</a>
+<span class="app-label">Execution explorer</span>
+<span id="connection" class="connection" role="status">Connecting…</span>
+</header>
 <main>
-<p class="muted">Current coordinator process only · updates every second · history disappears on restart</p>
-<p id="connection" role="status"></p>
-<div id="view"></div>
+<div id="view" tabindex="-1"></div>
+<footer>Current coordinator process · refreshes every second · history clears on restart</footer>
 </main>
 </body>
 </html>
