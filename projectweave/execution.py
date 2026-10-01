@@ -133,9 +133,13 @@ class ExecutionRegistry:
                         output = json.dumps(output, ensure_ascii=False)
                     if not output:
                         output = str(event.get("node_id", ""))
+                    attribution = {key: event[key] for key in ("node_id", "instance_id")
+                                   if isinstance(event.get(key), str)}
+                    if execution:
+                        attribution["execution_id"] = execution["id"]
                     for line in output.splitlines() or [""]:
                         run["logs"].append({"type": kind, "text": line[:self.log_chars],
-                                            "at": datetime.now(timezone.utc).isoformat()})
+                                            "at": datetime.now(timezone.utc).isoformat(), **attribution})
 
     def finish(self, identity, record):
         with self.lock:

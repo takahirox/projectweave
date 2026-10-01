@@ -67,6 +67,25 @@ class RegistryTests(unittest.TestCase):
         snapshot["runs"][0]["logs"][0]["text"] = "mutated"
         self.assertEqual(self.registry.snapshot()["runs"][0]["logs"][0]["text"], '2' * 10)
 
+    def test_logs_preserve_explicit_node_and_execution_attribution(self):
+        self.execution()
+        self.registry.event(self.identity, {"type": "agent_output", "node_id": "first",
+                                           "instance_id": "first-2", "text": "line one\nline two"})
+        self.registry.event(self.identity, {"type": "stderr", "text": "raw output"})
+        logs = self.registry.snapshot()["runs"][0]["logs"]
+        for log in logs[:2]:
+            self.assertEqual(log["node_id"], "first")
+            self.assertEqual(log["instance_id"], "first-2")
+            self.assertEqual(log["execution_id"], "execute-1")
+        self.assertNotIn("node_id", logs[-1])
+        self.assertEqual(logs[-1]["execution_id"], "execute-1")
+        self.registry.event(self.identity, {"type": "executor_started", "execution_id": "execute-2",
+                                           "config": {"type": "command"}})
+        self.registry.event(self.identity, {"type": "stdout", "node_id": {"invalid": True}, "text": "next"})
+        log = self.registry.snapshot()["runs"][0]["logs"][-1]
+        self.assertEqual(log["execution_id"], "execute-2")
+        self.assertNotIn("node_id", log)
+
     def test_graph_events_parallel_instances_and_unknown_progress(self):
         self.assertEqual([node["status"] for node in self.execution()["graph"]["nodes"]], ["not_executed"] * 2)
         for instance in ("first-1", "first-2"):

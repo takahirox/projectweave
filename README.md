@@ -188,6 +188,19 @@ python3 -m projectweave validate --graph examples/review-fix.json
 python3 -m unittest discover -s tests -v
 ```
 
+For dashboard browser tests, use Node.js 20 or newer (development only; the
+dashboard has no JavaScript runtime dependencies):
+
+```sh
+npm ci
+npx playwright install chromium
+npm test
+```
+
+These tests serve the actual localhost dashboard with fixture execution state
+and cover desktop/narrow layouts, node and run selection, trace filtering,
+refresh/scroll/focus behavior, reconnects, and safe rendering of external content.
+
 A ProjectWeave Project is a GitHub Project whose Tasks are repository Issues
 from one or more repositories. One root workspace manages any number of Projects
 under `projects/<name>/`:
