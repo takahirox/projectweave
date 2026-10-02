@@ -47,16 +47,27 @@ Also verify the ordinary quality of the change:
 - validation is sufficient for the change
 - documentation is updated when the change affects documented behavior
 
+## Check Validation Timing
+
+Mandatory pre-merge acceptance criteria must be achievable and verifiable before merge. Checks possible only after merge must not be prerequisites for pre-merge PR approval. Verify that all implementation requirements and applicable pre-merge tests are satisfied; separating verification stages does not waive them.
+
+For example, if merge triggers deployment, review the code and configuration, local build results, and applicable automated test results before approving the PR. Successful publication and verification of the newly published site belong after merge.
+
+Confirm that required post-merge verification is recorded separately in the Issue and PR validation report, and reported as pending until performed. Check that validation claims match the evidence: passing pre-merge checks does not establish successful publication. Follow the [development flow](development-flow.md#6-verify-after-merge) for reporting actual post-merge results.
+
 ## Review Outcome
 
 A Pull Request is ready to merge when:
 
 - it fully addresses the Issue it claims to resolve
 - it does not introduce unjustified scope or complexity
-- the implementation is correct and appropriately validated
+- the implementation is correct and the mandatory pre-merge acceptance criteria and applicable tests are satisfied
+- required post-merge verification is recorded separately and accurately reported as pending until performed
+
+Pending verification that can only run after merge does not block approval. It remains required after merge.
 
 If code or tests can resolve a blocker, request changes and review again after
-revision. Distinguish those findings from necessary human decisions or
+revision. Distinguish those findings from necessary pre-merge human decisions or
 confirmation that an agent cannot supply. Ask concrete questions specifying the
 expected evidence, and wait for an Issue update. A new comment triggers review;
 it does not by itself satisfy the requested confirmation. Insufficient or
