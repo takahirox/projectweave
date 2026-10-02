@@ -282,7 +282,8 @@ Each Project workspace holds two packaged templates:
   read Issue labels → diagnose bugs or review normal Issue readiness → ask for
   missing information and wait for meaningful
   Issue updates until ready → implement → open a PR (`Closes #N`) → review ⇄ fix
-  until approved (including conflicts with the current default branch) → check
+  agent-fixable defects (including conflicts with the current default branch),
+  or request required human confirmation and wait for Issue updates → check
   the source Issue is still open → merge with a merge commit, going back to review
   and retrying if the merge fails while the Issue is open → make sure the Issue
   is closed and comment the outcome on it. If the Issue is closed before merge,
@@ -308,6 +309,27 @@ otherwise it asks concrete blocking questions and uses the same update wait.
 The final guard forwards an approved diagnosis to implementation, or discards
 it and repeats diagnosis when Issue content changes. Both routes share the
 existing publish/review/fix/merge flow.
+
+PR review returns `status: "approved"`, `"needs_fixes"`, or
+`"needs_confirmation"`, along with `pr`, `approved`, `findings`, `questions`,
+`snapshot`, and `retry_review`. `findings` contains only agent-fixable defects;
+`questions` specifies necessary human input and the expected evidence or
+confirmation. Approval requires both arrays to be empty. When both kinds of
+blocker remain, defects are fixed and published first, then review reassesses
+the human check against the updated PR head. Review reads the current PR head
+and returns the exact SHA reviewed; merge still checks that SHA.
+
+`projectweave issue-review snapshot` captures the Issue content before review.
+The `comment` and `wait` operations bridge the review result to Issue polling
+while preserving the PR number, URL and reviewed head. Requests are deduplicated
+for the snapshot, PR head and questions. Changes during review skip the stale
+request and immediately re-review; replies during posting are detected by the
+wait because it retains the reviewed baseline. Both readiness and review
+automation markers are excluded from snapshots. An external content update
+triggers reassessment, not automatic approval: insufficient or unrelated replies
+return to waiting without fix/publication. Closure at snapshot/request/wait ends
+review; `review_closed` supplies a skipped merge result to the existing
+`close_issue` outcome reporter, which preserves closure and comments the outcome.
 
 Readiness and diagnosis use `github_repository` and `run_input.number`.
 Command nodes read the Issue, post deduplicated questions, and poll without invoking an AI model:
@@ -351,6 +373,44 @@ and `gitweave.json` from the current packaged templates, materialize the GitWeav
 incompatible and never rewrites them. Ensure the Project executor has
 `timeout: null` and the waiting command has no GitWeave node or graph timeout;
 a finite timeout would terminate the wait.
+
+To adopt the review confirmation path in a graph that already has the readiness
+scaffold, merge these parts from the packaged `gitweave.json` into your existing
+file; do not replace the whole file:
+
+1. Add the four Command nodes `review_snapshot`, `request_confirmation`,
+   `wait_for_confirmation`, and `review_closed`, including their schemas.
+2. Copy the `review` schema and incorporate its classification, exact-snapshot,
+   current-head and insufficient-reply instructions. Incorporate `fix`'s guidance
+   to address only agent-fixable findings and leave human questions for review.
+   Keep each existing agent's `provider`, `model`, `effort`, `sandbox`, and
+   `permission_mode`, and preserve project-specific instruction additions.
+3. Replace only the outer review/merge loop's `flow` with the packaged flow
+   under `flow[2].if.then[2].loop.flow` (or its equivalent in your graph).
+   It snapshots before review, routes defects through fix/publish, routes
+   confirmation through request/wait, and merges only approval. Its inner loop
+   uses `retry_review` (true for pending fixes/confirmation or updates; false for
+   approval or closure); the outer loop keeps the existing merge `retry` guard.
+   Keep implementation, readiness, merge safeguards and terminal outcome handling.
+4. Ensure the Project executor has `timeout: null`, with no finite GitWeave
+   timeout on the waiting command or graph. Validate with `gitweave validate
+   --graph projects/NAME/gitweave.json` before dispatching Tasks.
+
+Init detects older graph contracts as incompatible and leaves them untouched.
+No provider/model/effort change is needed. Review waiting has the same resident
+resource and shutdown behavior as readiness waiting: it retains the reservation,
+`--once` and coordinator shutdown wait for completion, and recovery after restart
+is out of scope. Polls add no graph steps, while new requests, reviews, fixes and
+merge attempts still share the 30-step budget. This adds no Runtime pause,
+resource-releasing suspension or capacity retries.
+
+Regression tests use local Issue API fixtures and simulated reviewer decisions;
+they verify control flow and contracts, not the accuracy of AI classification.
+To additionally run the tests against a local GitWeave checkout:
+
+```sh
+GITWEAVE_SOURCE=/path/to/gitweave python3 -m unittest discover -s tests -v
+```
 
 Newly generated configs include the pre-merge Issue-open guard. Existing configs
 are left unchanged; init reports older schemas/flows as incompatible. To adopt

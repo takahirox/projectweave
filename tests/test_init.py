@@ -91,7 +91,8 @@ class InitTests(unittest.TestCase):
         self.assertNotIn("requires", graph["nodes"]["execute"])
         nodes = self.read("gitweave.json")["nodes"]
         self.assertEqual(list(nodes), ["issue_route", "issue_snapshot", "readiness", "diagnose", "ask_information", "wait_for_issue_update",
-                                      "check_issue_open", "implement", "publish", "review", "fix", "merge", "close_issue"])
+                                      "check_issue_open", "implement", "publish", "review", "fix", "merge", "close_issue",
+                                      "review_snapshot", "request_confirmation", "wait_for_confirmation", "review_closed"])
         for node in agents(self.read("gitweave.json")):  # Provider choices apply only to agents.
             self.assertEqual(node["provider"], "codex")
             self.assertNotIn("model", node)
@@ -105,11 +106,14 @@ class InitTests(unittest.TestCase):
         # review ⇄ fix until approved, then merge; retry only an open Issue's merge failure.
         self.assertEqual(flow[:2] + flow[3:], ["implement", "publish", "close_issue"])
         self.assertEqual(flow[2]["loop"]["while"], {"path": "/0/data/retry", "equals": True})
-        self.assertEqual([step if isinstance(step, str) else "loop" for step in flow[2]["loop"]["flow"]],
-                         ["review", "loop", "merge"])
-        inner = flow[2]["loop"]["flow"][1]["loop"]  # The unchanged review/fix loop.
-        self.assertEqual(inner["while"], {"path": "/0/data/approved", "equals": False})
-        self.assertEqual(inner["flow"][0]["if"]["else"], ["fix", "publish", "review"])
+        self.assertEqual([step if isinstance(step, str) else next(iter(step)) for step in flow[2]["loop"]["flow"]],
+                         ["review_snapshot", "if", "loop", "if"])
+        inner = flow[2]["loop"]["flow"][2]["loop"]
+        self.assertEqual(inner["while"], {"path": "/0/data/retry_review", "equals": True})
+        decision = inner["flow"][0]["if"]
+        self.assertEqual(decision["condition"], {"path": "/0/data/status", "equals": "needs_fixes"})
+        self.assertEqual(decision["then"][:3], ["fix", "publish", "review_snapshot"])
+        self.assertEqual(decision["else"][0]["if"]["then"][:1], ["request_confirmation"])
         self.assertIn("with a merge commit", nodes["merge"]["instruction"])
         self.assertIn("Do not bypass required checks", nodes["merge"]["instruction"])
         self.assertIn("If inputs[0].data.merged is true", nodes["close_issue"]["instruction"])

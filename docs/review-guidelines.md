@@ -55,4 +55,15 @@ A Pull Request is ready to merge when:
 - it does not introduce unjustified scope or complexity
 - the implementation is correct and appropriately validated
 
-If any of these conditions are not met, request changes and review again after revision.
+If code or tests can resolve a blocker, request changes and review again after
+revision. Distinguish those findings from necessary human decisions or
+confirmation that an agent cannot supply. Ask concrete questions specifying the
+expected evidence, and wait for an Issue update. A new comment triggers review;
+it does not by itself satisfy the requested confirmation. Insufficient or
+unrelated replies leave the human check outstanding. Do not invent extra human
+checks or substitute documentation edits for missing human results.
+
+If both a defect and a human check remain, fix and publish the defect first,
+then reassess the human check against the updated PR head. Keep the exact Issue
+snapshot reviewed across the request/wait handoff so concurrent replies are not
+missed. Stop merging when the source Issue closes.

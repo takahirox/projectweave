@@ -11,6 +11,7 @@ from .dashboard import Dashboard
 from .execution import ExecutionRegistry
 from .graph import validate
 from .readiness import execute as issue_readiness
+from .review import execute as issue_review
 from .routing import execute as issue_route
 from .setup import add_init_arguments, init_project, init_root
 from .workspace import claim, complete, failure_record, project_dir, read_task, run_task
@@ -45,6 +46,8 @@ def main(argv=None):
     check.add_argument("--graph", required=True, type=Path)
     readiness = commands.add_parser("issue-readiness", help="GitWeave command helper: read Issue context from stdin")
     readiness.add_argument("operation", choices=("snapshot", "comment", "wait", "guard"))
+    review = commands.add_parser("issue-review", help="GitWeave command helper: preserve PR context while waiting for confirmation")
+    review.add_argument("operation", choices=("snapshot", "comment", "wait", "closed"))
     commands.add_parser("issue-route", help="GitWeave command helper: route Issue labels from stdin context")
     for name, text in (("claim", "Select one runnable Task and set it In Progress"),
                        ("run-task", "Run the Project graph for an already-claimed Task"),
@@ -73,6 +76,9 @@ def main(argv=None):
             return 0
         if args.command == "issue-readiness":
             emit(issue_readiness(args.operation, decode(sys.stdin.read())))
+            return 0
+        if args.command == "issue-review":
+            emit(issue_review(args.operation, decode(sys.stdin.read())))
             return 0
         if args.command == "validate":
             validate(decode(args.graph.read_text()))
