@@ -18,6 +18,12 @@ By default, completion criteria should be executable and verifiable by an AI age
 
 When human work is required, state why it is necessary and what result is expected. Distinguish optional additional validation from mandatory completion criteria.
 
+Mandatory pre-merge acceptance criteria must be achievable and verifiable before merge. Record required checks possible only after merge separately as post-merge verification; they must not be prerequisites for pre-merge PR approval. This distinction preserves all implementation requirements and applicable pre-merge tests.
+
+For example, when merge triggers a deployment, validate the code and configuration, local builds, and applicable automated tests before merge. Verify successful publication and the newly published site after merge. Report required post-merge verification as pending until performed.
+
+Use the [Issue template](../.github/ISSUE_TEMPLATE/issue.md) to record the two stages separately.
+
 ## 2. Create a Pull Request for the Issue
 
 Implementation should be proposed through a Pull Request associated with the Issue.
@@ -28,6 +34,8 @@ The Pull Request should explain:
 - what outcome the change produces
 - how the change was validated
 - which Issue it addresses
+
+Report completed pre-merge validation and pending required post-merge verification separately. Include the checks and results actually obtained; do not present pending verification as passed or the deployed outcome as verified.
 
 A Pull Request should only claim to close an Issue when it fully addresses that Issue.
 
@@ -48,11 +56,13 @@ Review must check both directions:
 
 This is especially important for AI-generated changes. AI agents may produce broader or more elaborate designs than the task requires. Prefer the smallest change that fully satisfies the Issue.
 
+Apply the [review guidelines](review-guidelines.md#check-validation-timing): require the implementation and pre-merge acceptance criteria to be satisfied, and confirm that required post-merge verification is recorded separately. Pending checks that can only run after merge do not block pre-merge approval.
+
 ## 4. Revise Until Review Passes
 
 If review finds missing requirements, unnecessary scope, correctness problems, or insufficient validation, update the Pull Request and review it again.
 
-When a required decision or confirmation can only come from a human, request
+When a required pre-merge decision or confirmation can only come from a human, request
 the specific result on the Issue and wait for an update. Re-review the response;
 an unrelated or incomplete reply leaves the request outstanding. If a code
 defect also remains, fix and publish it first, then assess the human check
@@ -64,6 +74,10 @@ The Pull Request should be merged only when the reviewed change is an appropriat
 ## 5. Merge
 
 After review passes, merge the Pull Request.
+
+## 6. Verify After Merge
+
+Perform any required post-merge verification recorded in the Issue, such as checking the merge-triggered deployment and the newly published site. Keep each check pending until performed, then report its actual result and evidence. Report failed checks and any required follow-up accurately; merge alone does not establish that verification passed.
 
 The normal flow is therefore:
 
@@ -79,4 +93,6 @@ Review
 Revision if needed
   ↓
 Merge
+  ↓
+Post-merge verification (when required)
 ```
