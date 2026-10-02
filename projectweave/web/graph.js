@@ -154,9 +154,10 @@ const WorkflowGraph = (() => {
           const middle = (y1 + y2) / 2;
           d = `M${x1},${y1} C${x1},${middle} ${x2},${middle} ${x2},${y2}`;
         } else {
-          // Route feedback, self loops and long skip edges outside node columns.
+          // Leave below the source row before reaching the outside lane, so
+          // feedback, self loops and long skip edges do not cross sibling nodes.
           const lane = right - 12 - i * 3;
-          d = `M${start.x + WIDTH},${start.y + HEIGHT / 2} C${lane},${start.y + HEIGHT / 2} ${lane},${start.y + HEIGHT + 24} ${lane},${start.y + HEIGHT + 24}` +
+          d = `M${x1},${y1} C${x1},${y1 + 24} ${lane},${y1 + 24} ${lane},${y1 + 24}` +
             ` L${lane},${end.y - 24} C${lane},${end.y - 24} ${x2},${end.y - 24} ${x2},${y2}`;
         }
         paths[i].setAttribute('d', d);

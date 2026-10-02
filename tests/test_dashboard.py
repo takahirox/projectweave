@@ -45,6 +45,7 @@ class RegistryTests(unittest.TestCase):
         self.now = 11
         snapshot = self.registry.snapshot()
         self.assertEqual([p["running"] for p in snapshot["projects"]], [1, 0])
+        self.assertEqual([p["completed"] for p in snapshot["projects"]], [0, 0])
         self.assertEqual(snapshot["projects"][0]["long_running"], 1)
         self.assertTrue(snapshot["runs"][0]["long_running"])
         self.registry.finish(self.identity, {"status": "completed", "run_id": "pw"})
@@ -53,11 +54,34 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(snapshot["runs"][0]["elapsed_seconds"], 11)
         self.assertEqual(snapshot["projects"][0]["running"], 0)
         self.assertEqual(snapshot["projects"][0]["long_running"], 0)
+        self.assertEqual(snapshot["projects"][0]["completed"], 1)
+        self.assertEqual(snapshot["projects"][0]["failed"], 0)
         failed = self.registry.start("p", TASK, self.directory)
         self.registry.finish(failed, {"status": "failed", "failure": {"message": "boom"}})
-        self.assertEqual(self.registry.snapshot()["projects"][0]["failed"], 1)
-        self.assertIsNotNone(self.registry.snapshot()["runs"][1]["ended_at"])
-        self.assertEqual(ExecutionRegistry().snapshot()["runs"], [])
+        snapshot = self.registry.snapshot()
+        self.assertEqual(snapshot["projects"][0]["failed"], 1)
+        self.assertEqual(snapshot["projects"][0]["completed"], 1)
+        self.assertEqual(snapshot["projects"][1]["completed"], 0)
+        self.assertIsNotNone(snapshot["runs"][1]["ended_at"])
+        restarted = ExecutionRegistry()
+        for project in ("p", "idle"):
+            restarted.add_project(project)
+        snapshot = restarted.snapshot()
+        self.assertEqual(snapshot["runs"], [])
+        for project in snapshot["projects"]:
+            for count in ("running", "long_running", "failed", "completed"):
+                self.assertEqual(project[count], 0)
+
+    def test_completed_counts_runs_once_and_only_in_their_project(self):
+        for _ in range(2):
+            identity = self.registry.start("p", TASK, self.directory)
+            self.registry.finish(identity, {"status": "completed"})
+            self.registry.finish(identity, {"status": "completed"})
+        identity = self.registry.start("idle", TASK, self.directory)
+        self.registry.finish(identity, {"status": "completed"})
+        snapshot = self.registry.snapshot()
+        self.assertEqual([p["completed"] for p in snapshot["projects"]], [2, 1])
+        self.assertEqual([p["running"] for p in snapshot["projects"]], [1, 0])
 
     def test_bounded_logs_and_detached_snapshots(self):
         for index in range(5):
@@ -130,6 +154,25 @@ class RegistryTests(unittest.TestCase):
 
 
 class WebTests(unittest.TestCase):
+    def test_completed_counts_in_all_project_api_payloads(self):
+        registry = ExecutionRegistry()
+        registry.add_project("p")
+        registry.add_project("idle")
+        with Dashboard(registry, port=0) as dashboard:
+            for status in ("running", "completed", "failed"):
+                identity = registry.start("p", TASK, ".")
+                if status != "running":
+                    registry.finish(identity, {"status": status})
+            for path in ("api/state", "api/projects", "api/projects/p", "api/projects/idle"):
+                with self.subTest(path=path), urlopen(dashboard.url + path, timeout=2) as response:
+                    data = json.load(response)
+                    projects = data if isinstance(data, list) else data.get("projects", [data.get("project")])
+                    for project in projects:
+                        expected = 1 if project["name"] == "p" else 0
+                        for count in ("running", "failed", "completed"):
+                            self.assertEqual(project[count], expected)
+                        self.assertEqual(project["long_running"], 0)
+
     def test_assets_project_run_api_and_shutdown(self):
         registry = ExecutionRegistry()
         registry.add_project("p")

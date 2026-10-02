@@ -31,8 +31,8 @@ function fixture() {
     failure: {message: 'Command exited with status 7'}, executions: [], logs: []};
   const complete = {...structuredClone(failed), id: 'run-completed', status: 'completed', failure: null};
   return {
-    projects: [{name: 'Operations', url: 'https://github.com/orgs/team/projects/1', running: 1, long_running: 1, failed: 1},
-      {name: 'Idle', url: null, running: 0, long_running: 0, failed: 0}],
+    projects: [{name: 'Operations', url: 'https://github.com/orgs/team/projects/1', running: 1, long_running: 1, failed: 1, completed: 1},
+      {name: 'Idle', url: null, running: 0, long_running: 0, failed: 0, completed: 0}],
     runs: [running, failed, complete], long_running_seconds: 3600,
   };
 }
@@ -65,6 +65,45 @@ test('Canvas lays out branches, joins and feedback edges with readable state lab
   }
   await expect(graphNode(page, 'implement')).toHaveAccessibleName('implement (agent): Active');
   await page.screenshot({path: testInfo.outputPath('interactive-branches.png'), fullPage: true});
+  await noOverflow(page);
+});
+
+test('Long branch, feedback and self-loop edges avoid unrelated node rectangles', async ({page}, testInfo) => {
+  const snapshot = fixture(), execution = snapshot.runs[0].executions[0];
+  execution.graph = {
+    nodes: ['entry', 'a', 'b', 'c', 'join'].map(id => ({id, kind: 'command', status: 'not_executed'})),
+    edges: [['entry', 'a'], ['entry', 'b'], ['a', 'join'], ['b', 'c'], ['c', 'join']],
+  };
+  execution.current_nodes = ['entry']; execution.recent_node = 'entry';
+  await setup(page, snapshot, '#run/run-live');
+  const collisions = () => page.locator('.graph-world').evaluate(world => {
+    const rectangles = [...world.querySelectorAll('.graph-node')].map(node => {
+      const box = node.querySelector('rect').getBBox(), matrix = node.transform.baseVal.getItem(0).matrix;
+      return {id: node.dataset.nodeId, x: matrix.e + box.x, y: matrix.f + box.y, width: box.width, height: box.height};
+    });
+    const hits = [];
+    for (const path of world.querySelectorAll('.edge')) {
+      const length = path.getTotalLength(), samples = Math.ceil(length);
+      const unrelated = rectangles.filter(rect => rect.id !== path.dataset.source && rect.id !== path.dataset.target);
+      for (const rect of unrelated) {
+        let count = 0;
+        for (let i = 0; i <= samples; i++) {
+          const point = path.getPointAtLength(length * i / samples);
+          if (point.x > rect.x && point.x < rect.x + rect.width &&
+            point.y > rect.y && point.y < rect.y + rect.height) count++;
+        }
+        if (count) hits.push({source: path.dataset.source, target: path.dataset.target, node: rect.id, count});
+      }
+    }
+    return hits;
+  });
+  await expect(page.locator('.edge')).toHaveCount(5);
+  expect(await collisions()).toEqual([]);
+  await page.screenshot({path: testInfo.outputPath('unequal-branches.png'), fullPage: true});
+  // The same exit corridor must keep feedback and self loops clear of siblings.
+  execution.graph.edges.push(['a', 'entry'], ['a', 'a']);
+  await expect(page.locator('.edge')).toHaveCount(7);
+  expect(await collisions()).toEqual([]);
   await noOverflow(page);
 });
 
@@ -143,15 +182,43 @@ test('Projects overview surfaces active work and compact operational counts', as
   await expect(operations).toContainText('1 Running');
   await expect(operations).toContainText('1 Long running');
   await expect(operations).toContainText('1 Failed');
+  await expect(operations.locator('.badge.completed')).toHaveText('1 Completed');
+  await expect(operations.locator('.badge.completed')).toBeVisible();
   await expect(operations).toContainText('#81 Redesign the workflow explorer');
   await expect(operations).toContainText('Active · implement');
   await expect(operations).toContainText('1h 10m 0s');
   await expect(page.locator('.project-row').filter({has: page.getByRole('link', {name: 'Idle', exact: true})})).toContainText('No tasks launched');
+  await expect(page.locator('.project-row').filter({has: page.getByRole('link', {name: 'Idle', exact: true})})).toContainText('0 Completed');
   await noOverflow(page);
   await page.screenshot({path: testInfo.outputPath('projects.png'), fullPage: true});
   await page.getByRole('link', {name: 'Operations', exact: true}).click();
   await expect(page.getByRole('heading', {name: '#81 Redesign the workflow explorer'})).toBeVisible();
   await expect(page.getByRole('link', {name: 'Open GitHub Project ↗'})).toHaveAttribute('href', 'https://github.com/orgs/team/projects/1');
+  await expect(page.locator('.project-links .counts')).toContainText('1 Completed');
+});
+
+test('Projects overview updates counts when a running Task completes', async ({page}) => {
+  const snapshot = fixture();
+  await setup(page, snapshot);
+  const operations = page.locator('.project-row').filter({has: page.getByRole('link', {name: 'Operations', exact: true})});
+  await expect(operations).toContainText('1 Running');
+  snapshot.runs[0].status = 'completed';
+  snapshot.runs[0].long_running = false;
+  snapshot.runs[0].ended_at = snapshot.runs[0].started_at;
+  snapshot.projects[0].running = 0;
+  snapshot.projects[0].long_running = 0;
+  snapshot.projects[0].completed = 2;
+  await expect(operations).toContainText('2 Completed');
+  await expect(operations).toContainText('0 Running');
+  await expect(operations).toContainText('0 Long running');
+  await expect(operations).toContainText('1 Failed');
+});
+
+test('Projects overview defaults missing completed counts to zero', async ({page}) => {
+  const snapshot = fixture();
+  for (const project of snapshot.projects) delete project.completed;
+  await setup(page, snapshot);
+  await expect(page.locator('.counts').getByText('0 Completed', {exact: true})).toHaveCount(2);
 });
 
 test('Selecting a run keeps the Project and task list available, including generic failures', async ({page}) => {
