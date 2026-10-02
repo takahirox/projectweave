@@ -15,6 +15,7 @@ class Dashboard:
                 path = urlsplit(self.path).path
                 assets = {"/": ("dashboard.html", "text/html; charset=utf-8"),
                           "/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
+                          "/graph.js": ("graph.js", "text/javascript; charset=utf-8"),
                           "/dashboard.css": ("dashboard.css", "text/css; charset=utf-8")}
                 if path in assets:
                     filename, content_type = assets[path]

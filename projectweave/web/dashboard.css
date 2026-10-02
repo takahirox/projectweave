@@ -85,11 +85,16 @@ footer { margin-top: 18px; padding: 8px 0; font-size: 11px; color: var(--muted);
 .workflow-context { display: flex; flex-wrap: wrap; gap: 8px 20px; padding: 10px 16px; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
 .workflow-layout { display: grid; grid-template-columns: minmax(0, 1fr) 220px; }
 .workflow-visualization { min-width: 0; }
-.graph-wrap { overflow: auto; max-height: 360px; background: var(--trace); }
-.graph { display: block; min-width: 100%; }
+.graph-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 12px; background: var(--subtle); }
+.graph-controls button { border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); padding: 4px 8px; font-size: 11px; }
+.graph-controls output { color: var(--muted); font-size: 11px; margin-left: auto; }
+.graph-wrap { overflow: hidden; height: 360px; position: relative; background-color: var(--trace); background-image: radial-gradient(var(--border) 1px, transparent 1px); background-size: 18px 18px; cursor: grab; touch-action: none; user-select: none; }
+.graph-wrap.dragging, .graph-wrap.dragging .graph-node { cursor: grabbing; }
+.graph-hint { padding: 6px 12px; font-size: 10px; }
+.graph { display: block; }
 .graph .edge { stroke: var(--muted); fill: none; stroke-width: 1.2; opacity: .55; }
 .graph .arrow { fill: var(--muted); }
-.graph-node { cursor: pointer; }
+.graph-node { cursor: grab; }
 .graph-node rect { fill: var(--surface); stroke: var(--border); stroke-width: 1.5; }
 .graph-node.completed rect { stroke: var(--green); }
 .graph-node.active rect { stroke: var(--accent); stroke-width: 2; }
