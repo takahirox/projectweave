@@ -348,9 +348,9 @@ external assets or dependencies, and closes when coordination exits, including
 it remains available while already launched Tasks finish.
 
 The top page lists every managed Project, including idle or misconfigured
-Projects, with compact Running, Long running, and Failed execution counts and
-the most relevant Task's elapsed time and observed position. Long-running and
-running Tasks appear ahead of failed and completed executions. Project links
+Projects, with compact Running, Long running, Failed, and Completed execution
+counts and the most relevant Task's elapsed time and observed position.
+Long-running and running Tasks appear ahead of failed and completed executions. Project links
 open a split task/run explorer; Task links select a run while keeping the Project
 and task list in view. Run details include identity, status, times, failure
 details, executor information, and a GitWeave workflow graph when configured.
@@ -363,9 +363,12 @@ uses the browser's light/dark preference. Durations and views refresh every seco
 Running means a Task actually launched by this coordinator and not yet finished; a GitHub Project
 item's In Progress status does not determine this count. Long running means
 Running with elapsed time strictly greater than the threshold. Failed counts
-failed executions, including worker exceptions. Terminal executions remain
-visible for this process's lifetime. Setup/claim problems remain in the normal
-coordinator reports and are not counted as failed Task executions.
+failed executions, including worker exceptions. Completed counts runs known to
+the current registry whose final status is `completed`; these runs no longer
+count as Running or Long running. All counts reset when ProjectWeave restarts.
+Terminal executions remain visible for this process's lifetime. Setup/claim
+problems remain in the normal coordinator reports and are not counted as failed
+Task executions.
 
 The optional thread-safe registry holds this state directly in memory. Nothing
 is recovered from earlier coordinator processes, and no database or history file

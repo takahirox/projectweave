@@ -172,5 +172,6 @@ class ExecutionRegistry:
                 members = [run for run in runs if run["project"] == project["name"]]
                 projects.append(dict(project, running=sum(run["status"] == "running" for run in members),
                                      long_running=sum(run["long_running"] for run in members),
-                                     failed=sum(run["status"] == "failed" for run in members)))
+                                     failed=sum(run["status"] == "failed" for run in members),
+                                     completed=sum(run["status"] == "completed" for run in members)))
             return {"projects": projects, "runs": runs, "long_running_seconds": self.threshold}
