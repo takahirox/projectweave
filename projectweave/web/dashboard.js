@@ -54,8 +54,10 @@ function badge(run) {
 }
 function counts(project) {
   const node = element('div', null, 'counts');
-  for (const [label, key, style] of [['Running', 'running', 'running'], ['Long running', 'long_running', 'long'], ['Failed', 'failed', 'failed']]) {
-    node.append(statusBadge(project[key] ? style : 'muted', `${project[key]} ${label}`));
+  for (const [label, key, style] of [['Running', 'running', 'running'], ['Long running', 'long_running', 'long'],
+    ['Failed', 'failed', 'failed'], ['Completed', 'completed', 'completed']]) {
+    const count = project[key] ?? 0;
+    node.append(statusBadge(count ? style : 'muted', `${count} ${label}`));
   }
   return node;
 }
