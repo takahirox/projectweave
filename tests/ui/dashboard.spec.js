@@ -18,7 +18,7 @@ function fixture() {
     id: 'run-live', project: 'Operations', task, status: 'running', long_running: true,
     started_at: started, ended_at: null, elapsed_seconds: 4200, run_id: 'pw-live',
     executor_type: 'gitweave', failure: null,
-    executions: [{id: 'execute-1', executor_type: 'gitweave', run_id: 'gw-live', current_nodes: ['implement'], recent_node: 'implement', graph}],
+    executions: [{id: 'execute-1', executor_type: 'gitweave', graph_path: 'gitweave.frontend.json', run_id: 'gw-live', current_nodes: ['implement'], recent_node: 'implement', graph}],
     logs: [
       {at: started, type: 'node_started', node_id: 'implement', instance_id: 'implement-1', execution_id: 'execute-1', text: 'implement'},
       {at: started, type: 'agent_output', node_id: 'implement', execution_id: 'execute-1', text: 'Updating dashboard styles'},
@@ -82,6 +82,7 @@ test('Selecting a run keeps the Project and task list available, including gener
 test('Graph nodes are selectable by keyboard, with scoped output and persistent focus on refresh', async ({page}, testInfo) => {
   const snapshot = fixture();
   await setup(page, snapshot, '#run/run-live');
+  await expect(page.locator('.workflow')).toContainText('Graph · gitweave.frontend.json');
   await expect(inspector(page)).toContainText('implement');
   await expect(inspector(page)).toContainText('Updating dashboard styles');
   await expect(inspector(page)).not.toContainText('Unattributed executor output');

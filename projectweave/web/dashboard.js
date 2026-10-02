@@ -236,6 +236,7 @@ function workflow(run, execution) {
   const context = element('div', null, 'workflow-context');
   context.append(element('span', `Active · ${execution.current_nodes.join(', ') || (run.status === 'running' ? 'Unknown without live events' : 'None')}`),
     element('span', `Latest · ${execution.recent_node || 'Not observed'}`), element('span', `Elapsed · ${duration(run.elapsed_seconds)}`));
+  if (execution.graph_path) context.append(element('span', `Graph · ${execution.graph_path}`, 'mono'));
   panel.append(context);
   if (execution.graph?.nodes.length) {
     const nodes = execution.graph.nodes;

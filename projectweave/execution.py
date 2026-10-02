@@ -84,7 +84,8 @@ class ExecutionRegistry:
             elif kind == "executor_started":
                 config = event["config"]
                 execution = {"id": event["execution_id"], "executor_type": config["type"], "run_id": None,
-                             "current_nodes": [], "recent_node": None, "graph": None, "graph_error": None}
+                             "current_nodes": [], "recent_node": None, "graph": None, "graph_error": None,
+                             "config": deepcopy(config), "graph_path": config.get("graph")}
                 if config["type"] == "gitweave":
                     try:
                         path = Path(config["graph"])

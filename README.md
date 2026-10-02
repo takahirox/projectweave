@@ -249,6 +249,42 @@ Pause/Resume are outside this change's scope. Resource admission
 and explicit provider/model selection are unchanged: ProjectWeave never resets
 usage limits, buys allowance, or switches providers/models to bypass a limit.
 
+To choose different GitWeave workflows by Issue label, edit a Project's
+`projects/<name>/project.json` and add ordered `graph_routes`:
+
+```json
+{
+  "owner": "my-team",
+  "number": 7,
+  "owner_type": "organization",
+  "graph_routes": [
+    {"label": "security", "graph": "gitweave.security.json"},
+    {"label": "backend", "graph": "gitweave.backend.json"},
+    {"label": "frontend", "graph": "gitweave.frontend.json"},
+    {"label": "docs", "graph": "gitweave.docs.json"}
+  ]
+}
+```
+
+The first configured label present in the Task's existing `labels` wins
+(case-insensitive, like eligibility filters). For labels `frontend, security`,
+this example selects `gitweave.security.json`. No match uses the executor's
+existing default graph, normally `gitweave.json`. Routes affect GitWeave
+executors only; each Project owns its policy and each selected graph owns its
+provider/model/node configuration. These labels have no built-in meaning and
+selection makes no AI call.
+
+Each route must contain exactly nonblank `label` and `graph` strings; labels
+must be unique ignoring case. Graph paths are relative to that Project's
+workspace and cannot escape it, including through symlinks. Place the graph
+files there before running: `init-project` reuse, `claim`, `run`, `coordinate`
+and `run-task` validate every configured route with `gitweave validate`; runtime
+setup checks also validate all GitWeave executor defaults before claiming.
+Missing or invalid graphs fail setup without changing Task Status. The selected
+config is recorded in the Run receipt's `executions`, the `executor_started`
+event, and dashboard workflow details. Projects without routes keep their
+existing behavior.
+
 After onboarding and verification, run either:
 
 ```sh
