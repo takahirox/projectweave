@@ -8,6 +8,7 @@ from .contracts import decode, equal, keys, require, text
 from .executors import process
 
 MARKER = "<!-- projectweave:issue-readiness:"
+REVIEW_MARKER = "<!-- projectweave:issue-review:"
 
 
 class Issue:
@@ -46,7 +47,7 @@ class Issue:
                 require(isinstance(comment, dict) and type(comment.get("id")) is int
                         and isinstance(comment.get("body"), str), "Malformed GitHub comment", "github")
                 body = comment["body"]
-                if body.startswith(MARKER):
+                if body.startswith((MARKER, REVIEW_MARKER)):
                     automation.append(body)
                 else:
                     # Do not exclude the authenticated account: humans can use it too.
@@ -70,7 +71,13 @@ def reviewed(context):
     keys(data, {"status", "questions", "snapshot", "diagnosis"}, {"status", "questions", "snapshot"})
     if "diagnosis" in data:
         require(text(data["diagnosis"]), "Invalid technical diagnosis", "input")
-    snapshot = data["snapshot"]
+    validate_snapshot(data["snapshot"])
+    require(isinstance(data["questions"], list) and all(text(q) for q in data["questions"]),
+            "Invalid readiness questions", "input")
+    return data
+
+
+def validate_snapshot(snapshot):
     keys(snapshot, {"title", "body", "comments"}, {"title", "body", "comments"})
     require(isinstance(snapshot["title"], str) and isinstance(snapshot["body"], str)
             and isinstance(snapshot["comments"], list), "Invalid reviewed Issue snapshot", "input")
@@ -78,9 +85,6 @@ def reviewed(context):
         keys(comment, {"id", "body"}, {"id", "body"})
         require(type(comment["id"]) is int and isinstance(comment["body"], str),
                 "Invalid reviewed comment", "input")
-    require(isinstance(data["questions"], list) and all(text(q) for q in data["questions"]),
-            "Invalid readiness questions", "input")
-    return data
 
 
 def poll_seconds(elapsed):

@@ -31,7 +31,8 @@ if name == "gitweave":
     graph = json.loads(Path(args[2]).read_text())
     assert graph["version"] == 1 and graph["retries"] == 0 and graph["max_steps"] == 30
     assert list(graph["nodes"]) == ["issue_route", "issue_snapshot", "readiness", "diagnose", "ask_information", "wait_for_issue_update",
-                                   "check_issue_open", "implement", "publish", "review", "fix", "merge", "close_issue"]
+                                   "check_issue_open", "implement", "publish", "review", "fix", "merge", "close_issue",
+                                   "review_snapshot", "request_confirmation", "wait_for_confirmation", "review_closed"]
     assert all(graph["nodes"][name]["kind"] == "command"
                for name in ("issue_route", "issue_snapshot", "ask_information", "wait_for_issue_update", "check_issue_open"))
     assert graph["nodes"]["readiness"]["kind"] == "agent"

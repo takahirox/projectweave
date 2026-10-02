@@ -52,6 +52,13 @@ This is especially important for AI-generated changes. AI agents may produce bro
 
 If review finds missing requirements, unnecessary scope, correctness problems, or insufficient validation, update the Pull Request and review it again.
 
+When a required decision or confirmation can only come from a human, request
+the specific result on the Issue and wait for an update. Re-review the response;
+an unrelated or incomplete reply leaves the request outstanding. If a code
+defect also remains, fix and publish it first, then assess the human check
+against the updated PR head. Repeated documentation edits cannot supply a
+missing human result. Closure of the source Issue stops the merge path.
+
 The Pull Request should be merged only when the reviewed change is an appropriate and complete response to the Issue.
 
 ## 5. Merge

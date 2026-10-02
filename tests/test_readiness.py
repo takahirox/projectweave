@@ -2,6 +2,7 @@ import asyncio
 import copy
 import importlib
 import io
+import inspect
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ from projectweave.cli import main
 from projectweave.contracts import Failure
 from projectweave.graph import executor
 from projectweave.readiness import Issue, MARKER, execute, outcome, poll_seconds
+from projectweave.review import execute as review_command, outcome as review_outcome
 from projectweave.routing import execute as route_issue
 from projectweave.setup import compatible, templates
 
@@ -226,17 +228,30 @@ class GitWeaveRoutingTests(unittest.TestCase):
         runtime = self.runtime.Runtime.__new__(self.runtime.Runtime)
         runtime.graph = self.runtime.validate_graph(copy.deepcopy(self.graph))
         runtime.steps, runtime.stopped = 0, False
+        runtime.visits, runtime.invocations = 0, {}
+        last_snapshot = SNAPSHOT
         called, approved, reviewed = [], iter(approvals), iter(review_results)
         issue_states = iter(merge_issue_states)
         self.merge_pr = Mock(side_effect=merge_results)
-        async def node(name, inputs, item, origin):
-            runtime.tick()
+        async def node(name, inputs, item, origin, invocation=None):
+            nonlocal last_snapshot
+            if len(inspect.signature(runtime.tick).parameters):
+                runtime.tick(invocation or str(len(called)))
+            else:
+                runtime.tick()
             called.append(name)
             spec = runtime.graph["nodes"][name]
             if name == "issue_route":
                 data = route_issue(CONTEXT)["data"]
+            elif spec["kind"] == "command" and spec["argv"][1] == "issue-review":
+                if spec["argv"][-1] == "snapshot":
+                    # These readiness fixtures keep post-publication Issue content unchanged.
+                    data = review_outcome("review", inputs[0]["data"]["pr"], last_snapshot)["data"]
+                else:
+                    data = review_command(spec["argv"][-1], dict(CONTEXT, inputs=inputs))["data"]
             elif spec["kind"] == "command":
                 data = execute(spec["argv"][-1], dict(CONTEXT, inputs=inputs), clock=lambda: 0, sleep=Mock())["data"]
+                last_snapshot = data["snapshot"]
             elif name in ("readiness", "diagnose"):
                 status = next(approved)
                 data = outcome(status, inputs[0]["data"]["snapshot"],
@@ -251,7 +266,11 @@ class GitWeaveRoutingTests(unittest.TestCase):
                 pr = {"number": 1, "url": "https://github.com/owner/repo/pull/1", "head_sha": "a" * 40}
                 data = {"pr": pr}
                 if name == "review":
-                    data.update(approved=next(reviewed), findings=[])
+                    approved_review = next(reviewed)
+                    data = review_outcome("approved" if approved_review else "needs_fixes", pr,
+                                          inputs[0]["data"]["snapshot"])["data"]
+                    data.update(approved=approved_review, retry_review=not approved_review,
+                                findings=[] if approved_review else ["Fix defect"])
                 if name == "fix":
                     data.update(summary="Fixed")
                 if name == "merge":
@@ -278,7 +297,7 @@ class GitWeaveRoutingTests(unittest.TestCase):
                                              merge_results=(False, True), review_results=(False, True, True),
                                              merge_issue_states=("open", "open"))
         self.assertEqual(called, ["issue_route", "issue_snapshot", "readiness", "check_issue_open", "implement", "publish",
-                                 "review", "fix", "publish", "review", "merge", "review", "merge", "close_issue"])
+                                 "review_snapshot", "review", "fix", "publish", "review_snapshot", "review", "merge", "review_snapshot", "review", "merge", "close_issue"])
         self.assertTrue(result["merged"])
         self.assertEqual(self.merge_pr.call_count, 2)
         post.assert_not_called()
@@ -288,7 +307,7 @@ class GitWeaveRoutingTests(unittest.TestCase):
             with self.subTest(labels=labels):
                 called, result, _ = self.run_route([(False, SNAPSHOT, [])] * 2, labels=labels)
                 self.assertEqual(called, ["issue_route", "issue_snapshot", assessment, "check_issue_open",
-                                         "implement", "publish", "review", "merge", "close_issue"])
+                                         "implement", "publish", "review_snapshot", "review", "merge", "close_issue"])
                 self.merge_pr.assert_called_once()
                 self.assertTrue(result["merged"])
                 self.assertEqual(result["merge_commit"], "b" * 40)
@@ -299,7 +318,7 @@ class GitWeaveRoutingTests(unittest.TestCase):
                 called, result, _ = self.run_route([(False, SNAPSHOT, [])] * 2, labels=labels,
                                                   merge_issue_states=("closed",), merge_results=())
                 self.assertEqual(called, ["issue_route", "issue_snapshot", assessment, "check_issue_open",
-                                         "implement", "publish", "review", "merge", "close_issue"])
+                                         "implement", "publish", "review_snapshot", "review", "merge", "close_issue"])
                 self.merge_pr.assert_not_called()
                 self.assertFalse(result["merged"])
                 self.assertEqual(result["merge_commit"], "")
@@ -315,7 +334,7 @@ class GitWeaveRoutingTests(unittest.TestCase):
                                                   merge_issue_states=("open", "closed"))
                 self.assertEqual(called[:5], ["issue_route", "issue_snapshot", assessment,
                                              "check_issue_open", "implement"])
-                self.assertEqual(called[-5:], ["review", "merge", "review", "merge", "close_issue"])
+                self.assertEqual(called[-7:], ["review_snapshot", "review", "merge", "review_snapshot", "review", "merge", "close_issue"])
                 self.merge_pr.assert_called_once()
                 self.assertEqual(called.count("review"), 2)
                 self.assertFalse(result["merged"])
@@ -371,7 +390,7 @@ class GitWeaveRoutingTests(unittest.TestCase):
         self.assertEqual(called[:5], ["issue_route", "issue_snapshot", "diagnose", "check_issue_open", "implement"])
         self.assertNotIn("readiness", called)
         self.assertIn("missing bounds check", inputs[0]["diagnosis"])
-        self.assertEqual(called[5:], ["publish", "review", "fix", "publish", "review", "merge", "review", "merge", "close_issue"])
+        self.assertEqual(called[5:], ["publish", "review_snapshot", "review", "fix", "publish", "review_snapshot", "review", "merge", "review_snapshot", "review", "merge", "close_issue"])
         self.assertTrue(result["merged"])
         post.assert_not_called()
 
