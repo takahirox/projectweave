@@ -147,75 +147,6 @@ function projectDetail(name, runId) {
   } else detail.append(element('div', 'Task execution details will appear here when work starts.', 'empty'));
   explorer.append(sidebar, detail); view.append(explorer);
 }
-const SVG = 'http://www.w3.org/2000/svg';
-function svgElement(tag, attrs = {}, text) {
-  const node = document.createElementNS(SVG, tag);
-  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
-  if (text !== undefined) node.textContent = text;
-  return node;
-}
-let graphSequence = 0;
-function graphView(graph, selected, selectNode, key) {
-  // Layer acyclic edges; place nodes in cycles in a final column.
-  const rank = new Map(graph.nodes.map(node => [node.id, 0]));
-  const incoming = new Map(graph.nodes.map(node => [node.id, 0]));
-  const edges = graph.edges.filter(([a, b]) => incoming.has(a) && incoming.has(b));
-  for (const [, b] of edges) incoming.set(b, incoming.get(b) + 1);
-  const ready = graph.nodes.filter(node => incoming.get(node.id) === 0).map(node => node.id);
-  const visited = new Set();
-  while (ready.length) {
-    const id = ready.shift(); visited.add(id);
-    for (const [a, b] of edges.filter(([a]) => a === id)) {
-      rank.set(b, Math.max(rank.get(b), rank.get(a) + 1));
-      incoming.set(b, incoming.get(b) - 1);
-      if (!incoming.get(b)) ready.push(b);
-    }
-  }
-  let last = Math.max(0, ...rank.values());
-  for (const node of graph.nodes) if (!visited.has(node.id)) rank.set(node.id, ++last);
-  const rows = new Map(), positions = new Map();
-  let maxRows = 1;
-  for (const node of graph.nodes) {
-    const column = rank.get(node.id), row = rows.get(column) || 0;
-    rows.set(column, row + 1); maxRows = Math.max(maxRows, row + 1);
-    positions.set(node.id, [24 + column * 214, 28 + row * 90]);
-  }
-  const svg = svgElement('svg', {class: 'graph', width: (last + 1) * 214 + 24, height: maxRows * 90 + 38,
-    role: 'group', 'aria-label': 'GitWeave graph progress'});
-  const defs = svgElement('defs');
-  const marker = svgElement('marker', {id: `arrow-${graphSequence++}`, markerWidth: 8, markerHeight: 8, refX: 7, refY: 4, orient: 'auto'});
-  marker.append(svgElement('path', {d: 'M0,0 L8,4 L0,8', class: 'arrow'}));
-  defs.append(marker); svg.append(defs);
-  for (const [a, b] of edges) {
-    const [x1, y1] = positions.get(a), [x2, y2] = positions.get(b);
-    const d = x2 > x1 ? `M${x1 + 174},${y1 + 29} C${x1 + 194},${y1 + 29} ${x2 - 20},${y2 + 29} ${x2},${y2 + 29}`
-      : `M${x1 + 87},${y1} C${x1 + 87},${y1 - 25} ${x2 + 87},${y2 - 25} ${x2 + 87},${y2}`;
-    svg.append(svgElement('path', {d, class: 'edge', 'marker-end': `url(#${marker.id})`}));
-  }
-  for (const node of graph.nodes) {
-    const [x, y] = positions.get(node.id);
-    const label = statusNames[node.status] || node.status;
-    const group = svgElement('g', {class: `graph-node ${node.status}${node.id === selected ? ' selected' : ''}`,
-      role: 'button', tabindex: 0, 'aria-label': `${node.id} (${node.kind || 'node'}): ${label}`,
-      'aria-pressed': node.id === selected, 'data-focus': `node:${key}:${node.id}`});
-    group.addEventListener('click', () => selectNode(node.id));
-    group.addEventListener('keydown', event => {
-      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectNode(node.id); }
-    });
-    group.append(svgElement('title', {}, `${node.id} (${node.kind || 'node'}): ${label}`),
-      svgElement('rect', {x, y, width: 174, height: 58, rx: 4}),
-      svgElement('text', {x: x + 12, y: y + 23}, node.id.length > 21 ? node.id.slice(0, 20) + '…' : node.id),
-      svgElement('text', {x: x + 12, y: y + 44, class: 'node-status'}, label));
-    svg.append(group);
-  }
-  const wrap = element('div', null, 'graph-wrap');
-  wrap.setAttribute('data-scroll', `graph:${key}`);
-  wrap.dataset.focus = `graph:${key}`;
-  wrap.dataset.selectedNode = selected;
-  wrap.setAttribute('tabindex', '0');
-  wrap.setAttribute('aria-label', 'Scrollable workflow graph');
-  wrap.append(svg); return wrap;
-}
 function logRow(log) {
   const row = element('div', null, `log-row ${lifecycleTypes.has(log.type) ? 'lifecycle' : 'output'}${log.type.includes('stderr') || log.type === 'node_failed' ? ' error-output' : ''}`);
   const time = element('time', timestamp(log.at, true));
@@ -245,7 +176,7 @@ function workflow(run, execution) {
       nodes.find(node => node.id === execution.recent_node) || nodes[0];
     const layout = element('div', null, 'workflow-layout');
     const visualization = element('div', null, 'workflow-visualization');
-    visualization.append(graphView(execution.graph, selected.id, id => { selectedNodes.set(key, id); render(); }, key));
+    visualization.append(WorkflowGraph.create(execution.graph, selected.id, id => { selectedNodes.set(key, id); render(); }, key, statusNames));
     const legend = element('div', null, 'graph-legend');
     for (const status of ['completed', 'active', 'not_executed', 'failed', 'unknown']) legend.append(statusBadge(status));
     visualization.append(legend, element('p', 'Pending means not yet observed; conditional branches may never execute.', 'graph-note muted'));
@@ -317,9 +248,11 @@ function runDetail(run, container) {
   container.append(executionTrace(run));
 }
 function render() {
-  // Polling must preserve graph/list scroll, trace follow state, and keyboard focus.
+  // Keep pointer capture intact while dragging; the next poll applies live state.
+  if (WorkflowGraph.interacting) return;
+  // Polling must preserve list/log scroll, trace follow state, and keyboard focus.
   const scroll = new Map(Array.from(view.querySelectorAll('[data-scroll]'), node => [node.dataset.scroll,
-    {top: node.scrollTop, left: node.scrollLeft, selectedNode: node.dataset.selectedNode,
+    {top: node.scrollTop, left: node.scrollLeft,
       bottom: node.scrollTop + node.clientHeight >= node.scrollHeight - 10}]));
   const focusKey = document.activeElement?.dataset.focus;
   view.replaceChildren();
@@ -337,16 +270,8 @@ function render() {
     const previous = scroll.get(node.dataset.scroll);
     node.scrollTop = node.dataset.follow && (!previous || previous.bottom) ? node.scrollHeight : previous?.top || 0;
     node.scrollLeft = previous?.left || 0;
-    if (node.dataset.selectedNode && node.dataset.selectedNode !== previous?.selectedNode) {
-      const bounds = node.querySelector('.graph-node.selected').getBBox();
-      if (bounds.x < node.scrollLeft || bounds.x + bounds.width > node.scrollLeft + node.clientWidth) {
-        node.scrollLeft = Math.max(0, bounds.x - (node.clientWidth - bounds.width) / 2);
-      }
-      if (bounds.y < node.scrollTop || bounds.y + bounds.height > node.scrollTop + node.clientHeight) {
-        node.scrollTop = Math.max(0, bounds.y - (node.clientHeight - bounds.height) / 2);
-      }
-    }
   }
+  for (const canvas of view.querySelectorAll('.graph-wrap')) canvas.initializeGraph();
 }
 async function refresh() {
   try {

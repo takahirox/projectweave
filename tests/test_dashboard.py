@@ -136,7 +136,7 @@ class WebTests(unittest.TestCase):
         identity = registry.start("p", TASK, ".")
         with Dashboard(registry, port=0) as dashboard:
             self.assertEqual(dashboard.server.server_address[0], "127.0.0.1")
-            for path, content_type in (("", "text/html"), ("dashboard.js", "text/javascript"), ("dashboard.css", "text/css")):
+            for path, content_type in (("", "text/html"), ("dashboard.js", "text/javascript"), ("graph.js", "text/javascript"), ("dashboard.css", "text/css")):
                 with urlopen(dashboard.url + path, timeout=2) as response:
                     self.assertIn(content_type, response.headers["Content-Type"])
                     self.assertEqual(response.headers["Cache-Control"], "no-store")

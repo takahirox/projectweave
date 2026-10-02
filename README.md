@@ -198,8 +198,19 @@ npm test
 ```
 
 These tests serve the actual localhost dashboard with fixture execution state
-and cover desktop/narrow layouts, node and run selection, trace filtering,
-refresh/scroll/focus behavior, reconnects, and safe rendering of external content.
+and cover desktop/narrow layouts, node and run selection, canvas dragging,
+pan/zoom, live refresh/focus behavior, trace filtering, reconnects, and safe
+rendering of external content. `npm run test:layout` runs directed layout tests
+without a browser.
+
+The GitWeave workflow canvas automatically arranges execution from top to
+bottom, with branches side by side and loop edges returning around the nodes.
+Drag a node to reposition it, drag the background to pan, or scroll to zoom.
+The canvas controls also provide zoom, fit, and automatic layout reset. With
+the canvas focused, arrow keys pan, `+`/`-` zoom, and `0` fits the graph. Select
+nodes by click or Enter/Space to inspect their execution state and output.
+Positions and the viewport survive live refreshes within the dashboard session;
+they are visualization state only and never change the GitWeave definition.
 
 A ProjectWeave Project is a GitHub Project whose Tasks are repository Issues
 from one or more repositories. One root workspace manages any number of Projects
