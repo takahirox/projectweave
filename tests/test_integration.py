@@ -115,6 +115,46 @@ class CLITests(unittest.TestCase):
         self.assertEqual((code, outcome["status"]), (0, "no_work"))
         self.assertFalse(any(c["command"] == "gitweave" for c in calls))
 
+    def configure_graph_routes(self):
+        path = self.project_dir / "project.json"
+        project = json.loads(path.read_text())
+        project["graph_routes"] = [{"label": "task", "graph": "routed graph.json"},
+                                   {"label": "other", "graph": "other.json"}]
+        path.write_text(json.dumps(project))
+        for name in ("routed graph.json", "other.json"):
+            (self.project_dir / name).write_text(self.task_graph.read_text())
+
+    def test_label_routes_validate_before_claim_and_launch_selected_graph(self):
+        self.configure_graph_routes()
+        code, outcome, calls = self.cli("run", "p")
+        self.assertEqual(code, 0, outcome)
+        launch = next(c for c in calls if c["command"] == "gitweave" and c["argv"][0] == "run")
+        self.assertEqual(launch["argv"][2], "routed graph.json")
+        self.assertEqual(outcome["record"]["executions"][0]["config"]["graph"], "routed graph.json")
+        claim_index = next(i for i, c in enumerate(calls) if c["request"] and "mutation" in c["request"]["query"])
+        before_claim = {Path(c["argv"][2]).name for c in calls[:claim_index]
+                        if c["command"] == "gitweave" and c["argv"][0] == "validate"}
+        self.assertEqual(before_claim, {"routed graph.json", "other.json", "gitweave.json"})
+        self.assertFalse(any(c["command"] in ("codex", "claude") for c in calls))
+
+    def test_broken_unmatched_route_never_claims_or_launches_from_any_entry_point(self):
+        self.configure_graph_routes()
+        for contents in (None, "{}"):
+            path = self.project_dir / "other.json"
+            if contents is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_text(contents)
+            for args in (("run", "p"), ("claim", "p"), ("coordinate", "--once")):
+                with self.subTest(contents=contents, args=args):
+                    code, outcome, calls = self.cli(*args)
+                    self.assertNotEqual(code, 0, outcome)
+                    failure = outcome["runs"][0]["setup_failure"] if args[0] == "coordinate" else outcome["failure"]
+                    self.assertEqual(failure["kind"], "setup")
+                    self.assertIn("other.json", failure["message"])
+                    self.assertEqual(self.mutation_options(calls), [])
+                    self.assertFalse(any(c["command"] == "gitweave" and c["argv"][0] == "run" for c in calls))
+
     def test_claim_run_task_and_complete_are_separate(self):
         code, task, calls = self.cli("claim", "p")
         self.assertEqual(code, 0)

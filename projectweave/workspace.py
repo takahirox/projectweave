@@ -15,6 +15,7 @@ from .contracts import Failure, decode, keys, number, require, text
 from .executors import invoke
 from .github import GitHub, validate_project
 from .graph import validate
+from .graph_routes import check_routes
 from .runtime import Runtime
 
 ROOT_CONFIG = "projectweave.json"
@@ -104,8 +105,11 @@ def project_lock(directory):
 def check_project(directory):
     """Validate a Project workspace before claiming, so a broken setup never strands a Task In Progress."""
     directory = Path(directory)
-    load_project(directory)
-    return validate(decode((directory / "graph.json").read_text()))
+    project = load_project(directory)
+    graph = validate(decode((directory / "graph.json").read_text()))
+    check_routes(project, directory, [node["executor"]["graph"] for node in graph["nodes"].values()
+                                     if node.get("executor", {}).get("type") == "gitweave"])
+    return graph
 
 
 def claim(directory, backend=None):
@@ -113,7 +117,10 @@ def claim(directory, backend=None):
 
     Only Todo Tasks are runnable, whatever eligible_statuses says, so a claimed (In Progress) or Done Task
     is never selected again."""
-    backend = backend or GitHub(load_project(directory))
+    project = load_project(directory) if backend is None or (Path(directory) / "project.json").is_file() else None
+    if project and project.get("graph_routes"):
+        check_project(directory)
+    backend = backend or GitHub(project)
     with project_lock(directory):
         task = backend.select([item for item in backend.load() if item.get("status") == TODO])
         if task is not None:

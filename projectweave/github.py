@@ -3,6 +3,7 @@ import json
 import re
 from .contracts import Failure, keys, require, text, decode, result, check_result
 from .executors import process
+from .graph_routes import validate_routes
 
 PAGE = "pageInfo { hasNextPage endCursor }"
 
@@ -11,7 +12,8 @@ def validate_project(config):
     require(not isinstance(config, dict) or "label" not in config,
             'Legacy "label" setting: migrate manually to "required_labels": ["LABEL"]')
     keys(config, {"owner", "number", "owner_type", "priority_field", "status_field",
-                  "priority_order", "eligible_statuses", "repository", "required_labels", "excluded_labels"},
+                  "priority_order", "eligible_statuses", "repository", "required_labels", "excluded_labels",
+                  "graph_routes"},
          {"owner", "number", "owner_type"})
     require(text(config["owner"]) and re.fullmatch(r"[A-Za-z0-9_-]+", config["owner"]), "Invalid project owner")
     require(type(config["number"]) is int and config["number"] > 0, "Invalid project number")
@@ -29,6 +31,8 @@ def validate_project(config):
     require(not ({v.casefold() for v in config.get("required_labels", [])}
                  & {v.casefold() for v in config.get("excluded_labels", [])}),
             "A label cannot be both required and excluded")
+    if "graph_routes" in config:
+        validate_routes(config["graph_routes"])
     return config
 
 

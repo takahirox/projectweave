@@ -12,6 +12,7 @@ from .contracts import Failure, decode, equal, require, text
 from .executors import process
 from .github import GitHub, validate_project
 from .graph import validate
+from .graph_routes import check_routes
 from .usage import OBSERVERS
 from .workspace import NAME, PROJECTS, ROOT_CONFIG, percent, validate_root
 
@@ -331,7 +332,7 @@ def initialize(args, workspace, root):
         if saved is not None:
             # Reuse human-edited scope rules without rewriting the workspace.
             unscoped = {key: value for key, value in saved.items()
-                        if key not in ("repository", "required_labels", "excluded_labels")}
+                        if key not in ("repository", "required_labels", "excluded_labels", "graph_routes")}
             require(equal(unscoped, project), "Incompatible project.json; default setup uses Priority order P0/P1/P2 and eligible_statuses [\"Todo\"]; review manually or regenerate")
             project = dict(saved)
             report["existing"].append(str(workspace / "project.json"))
@@ -374,6 +375,7 @@ def initialize(args, workspace, root):
             check = Path(tmp) / "gitweave.json"
             check.write_text(json.dumps(values["gitweave.json"]))
             process(["gitweave", "validate", "--graph", str(check)], None, 30)
+        check_routes(project, workspace)
         operation = "Install gh on PATH and check `gh auth status --hostname github.com`; grant access manually if needed"
         process(["gh", "auth", "status", "--hostname", "github.com"], None, 30)
         operation = f"Check Project owner {owner}; supported owner types are user and organization"

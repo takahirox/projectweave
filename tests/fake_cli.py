@@ -87,6 +87,14 @@ if name == "git":
         print("fatal: git operation failed", file=sys.stderr)
         sys.exit(128)
     sys.exit(0)
+if name == "gitweave" and args[:2] == ["validate", "--graph"]:
+    assert len(args) == 3, args
+    graph = json.loads(Path(args[2]).read_text())
+    if not graph.get("nodes") or mode == "invalid_graph":
+        print("graph rejected", file=sys.stderr)
+        sys.exit(1)
+    print("Graph passes static validation")
+    sys.exit(0)
 if name in ("gitweave", "worker") and mode == "executor_failure":
     print("usage limit reached", file=sys.stderr)
     sys.exit(1)

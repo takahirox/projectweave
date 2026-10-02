@@ -67,6 +67,23 @@ class InitTests(unittest.TestCase):
     def root_config(self):
         return json.loads((self.top / "projectweave.json").read_text())
 
+    def test_rerun_preserves_and_validates_human_edited_graph_routes(self):
+        code, report, _ = self.invoke("--project-number", "7")
+        self.assertEqual(code, 0, report)
+        project = self.read("project.json")
+        project["graph_routes"] = [{"label": "anything", "graph": "custom.json"}]
+        self.write("project.json", project)
+        self.write("custom.json", self.read("gitweave.json"))
+        code, report, calls = self.invoke("--project-number", "7")
+        self.assertEqual(code, 0, report)
+        self.assertEqual(self.read("project.json"), project)
+        self.assertTrue(any(c["name"] == "gitweave" and Path(c["args"][2]).name == "custom.json" for c in calls))
+        (self.directory / "custom.json").unlink()
+        code, report, calls = self.invoke("--project-number", "7")
+        self.assertEqual(code, 2)
+        self.assertIn("custom.json", report["failure"]["message"])
+        self.assertFalse(any(c["name"] == "gh" for c in calls))
+
     def test_first_run_existing_project_and_run_task_executes_only_the_graph(self):
         code, report, calls = self.invoke("--project-number", "7")
         self.assertEqual(code, 0, report)

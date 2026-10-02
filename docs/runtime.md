@@ -54,6 +54,28 @@ writeback. The receipt retains failure details, completed results, and resources
 a valid executor Result is included in failure details if accounting fails.
 Failure routing is not supported; subsequent graph operations are not executed.
 
+## GitWeave graph routes
+
+`project.json` may contain an ordered `graph_routes` array of objects with
+exactly `label` and `graph` nonblank strings. Labels are unique and compared
+case-insensitively. For every GitWeave invocation, the first configured label
+in the Task's existing `labels` chooses its graph; unmatched Tasks retain that
+node's configured default. Command executors are unaffected. Routing policies
+are independent per Project and have no built-in label/provider/model meanings.
+
+Route paths are Project-workspace-relative and may not escape the directory,
+including through symlinks. For Projects with routes, setup validates all route
+graphs and GitWeave executor defaults using the public `gitweave validate` CLI
+before claiming work. The selected graph is checked again before launch.
+Static failures do not claim Tasks or launch agents. `init-project` preserves
+and validates human-edited routes when reusing a workspace.
+
+Run receipts include `executions` with each invocation's `execution_id` and
+selected `config`. Observers receive the same configuration in
+`executor_started`; dashboard execution state retains `config`, `graph_path`
+and the selected graph's progress view. No routes (or an empty array) keeps
+existing executor selection and setup behavior.
+
 ## Resources
 
 ### Shared AI resource admission (coordinator)

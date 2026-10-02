@@ -8,6 +8,7 @@ from .resources import Resources
 from .github import GitHub
 from .checkout import valid_repository
 from .executors import invoke
+from .graph_routes import select_executor
 
 
 class Runtime:
@@ -28,6 +29,7 @@ class Runtime:
         self.steps = 0
         self.active = None
         self.events = []
+        self.executions = []
         self.observer = observer
 
     def notify(self, event):
@@ -57,18 +59,20 @@ class Runtime:
             else:
                 require(self.checkout is not None, "Execution needs a Project workspace", "checkout")
             output = None
-            self.notify({"type": "executor_started", "execution_id": f"{self.active}-{self.steps}",
-                         "config": node["executor"]})
+            config = select_executor(node["executor"], self.context["project"], task, self.workspace)
+            execution = {"execution_id": f"{self.active}-{self.steps}", "config": deepcopy(config)}
+            self.executions.append(execution)
+            self.notify({"type": "executor_started", **deepcopy(execution)})
             try:
                 if gitweave:
-                    output = check_result(self.executor(node["executor"], deepcopy(request), self.workspace))
+                    output = check_result(self.executor(config, deepcopy(request), self.workspace))
                 else:
                     # One isolated worktree per invocation; it is removed when the executor exits.
                     node_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(self.active)).strip(".") or "node"
                     name = f"{self.context['run_id']}-{node_id}-{self.steps}"
                     with self.checkout(task.get("repository"), name, self.cleanup_failures.append) as path:
                         request["checkout"] = path
-                        output = check_result(self.executor(node["executor"], deepcopy(request)))
+                        output = check_result(self.executor(config, deepcopy(request)))
                 self.resources.settle(allocation, output["usage"])
             except Failure as exc:
                 if output is not None:
@@ -133,5 +137,5 @@ class Runtime:
             failure = {**exc.record(), "node": self.active}
         return {"run_id": self.context["run_id"], "status": "failed" if failure else "completed",
                 "failure": failure, "steps": self.steps, "results": self.context["results"],
-                "events": self.events, "last": self.context["last"], "resources": self.resources.state,
+                "events": self.events, "executions": self.executions, "last": self.context["last"], "resources": self.resources.state,
                 "cleanup_failures": self.cleanup_failures}
