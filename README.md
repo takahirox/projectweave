@@ -359,21 +359,27 @@ existing publish/review/fix/merge flow.
 
 PR review returns `status: "approved"`, `"needs_fixes"`, or
 `"needs_confirmation"`, along with `pr`, `approved`, `findings`, `questions`,
-`snapshot`, and `retry_review`. `findings` contains only agent-fixable defects;
+and `retry_review`. `findings` contains only agent-fixable defects;
 `questions` specifies necessary human input and the expected evidence or
 confirmation. Approval requires both arrays to be empty. When both kinds of
 blocker remain, defects are fixed and published first, then review reassesses
 the human check against the updated PR head. Review reads the current PR head
 and returns the exact SHA reviewed; merge still checks that SHA.
 
-`projectweave issue-review snapshot` captures the Issue content before review.
-The `comment` and `wait` operations bridge the review result to Issue polling
-while preserving the PR number, URL and reviewed head. Requests are deduplicated
-for the snapshot, PR head and questions. Changes during review skip the stale
+`projectweave issue-review snapshot` captures Issue content and its GitHub revision
+before review. Readiness, Diagnose and Review agents return only their assessment
+results; they never copy the snapshot or the authoritative revision baseline.
+Existing GitWeave parallel control flow carries the Command result around each
+agent in a branch containing a no-op conditional. The agent result is `inputs[0]`
+and the original Command result is `inputs[1]` at request/guard time. The `comment`
+and `wait` operations bridge the review result to Issue polling while preserving
+the PR number, URL and reviewed head. Requests are deduplicated for the relevant
+revision metadata, PR head and questions. Changes during review skip the stale
 request and immediately re-review; replies during posting are detected by the
 wait because it retains the reviewed baseline. Both readiness and review
-automation markers are excluded from snapshots. An external content update
-triggers reassessment, not automatic approval: insufficient or unrelated replies
+automation markers are excluded from assessed content and relevant revisions.
+An external content update triggers reassessment, not automatic approval:
+insufficient or unrelated replies
 return to waiting without fix/publication. Closure at snapshot/request/wait ends
 review; `review_closed` supplies a skipped merge result to the existing
 `close_issue` outcome reporter, which preserves closure and comments the outcome.
@@ -383,11 +389,21 @@ Command nodes read the Issue, post deduplicated questions, and poll without invo
 every minute for the first hour, every five minutes until 24 hours, then hourly
 without a cutoff. Title/body changes and external comment additions, edits or
 deletions trigger another readiness review or diagnosis; the automation's marked comments
-and metadata-only updates do not. The reviewed snapshot is preserved so replies
-during review are not missed. An open-state check immediately before implementation
+and unrelated metadata-only updates do not. The helpers query GraphQL `lastEditedAt`
+for Issue/comment body edits, the latest `RenamedTitleEvent` ID for title changes,
+and the external comment IDs for additions/deletions. They never use Issue
+`updatedAt` or compare/hash complete bodies to detect updates. Unchanged polls
+fetch metadata only; new/edited comments need a body read to classify automation.
+Full content is fetched initially and after a relevant revision change. The
+original assessed revision is preserved across question publication so concurrent
+replies are not missed. An open-state check immediately before implementation
 also re-reviews any intervening content changes. Closure before implementation
-ends the graph with schema-validated `status: "closed"`, `questions`, and
-`snapshot` data, with no PR. The resident waiting command holds the Task's
+ends the graph with schema-validated `status: "closed"`, `questions`,
+`snapshot`, and `revision` data, with no PR. The baseline is carried in
+GitWeave node results, with no shared files or process-global state: concurrent
+Runs/Issues are isolated, and serialized checkpoint inputs can be retried without
+recapturing a newer baseline. A retried question publication checks its metadata
+marker on GitHub before posting again. The resident waiting command holds the Task's
 resource reservation; coordinator shutdown and `--once` wait for it. Restart
 recovery is out of scope. The generated Project executor uses `timeout: null`
 to allow this wait; omitted executor timeouts still default to 3600 seconds.
@@ -427,21 +443,32 @@ file; do not replace the whole file:
 
 1. Add the four Command nodes `review_snapshot`, `request_confirmation`,
    `wait_for_confirmation`, and `review_closed`, including their schemas.
-2. Copy the `review` schema and incorporate its classification, exact-snapshot,
+2. Copy the `review` schema and incorporate its classification, assessment-only,
    current-head and insufficient-reply instructions. Incorporate `fix`'s guidance
    to address only agent-fixable findings and leave human questions for review.
    Keep each existing agent's `provider`, `model`, `effort`, `sandbox`, and
    `permission_mode`, and preserve project-specific instruction additions.
 3. Replace only the outer review/merge loop's `flow` with the packaged flow
    under `flow[2].if.then[2].loop.flow` (or its equivalent in your graph).
-   It snapshots before review, routes defects through fix/publish, routes
-   confirmation through request/wait, and merges only approval. Its inner loop
+   It captures content and revision metadata before review, routes defects through
+   fix/publish, routes confirmation through request/wait, and merges only approval. Its inner loop
    uses `retry_review` (true for pending fixes/confirmation or updates; false for
    approval or closure); the outer loop keeps the existing merge `retry` guard.
    Keep implementation, readiness, merge safeguards and terminal outcome handling.
 4. Ensure the Project executor has `timeout: null`, with no finite GitWeave
    timeout on the waiting command or graph. Validate with `gitweave validate
    --graph projects/NAME/gitweave.json` before dispatching Tasks.
+
+For the metadata revision contract, update **all** readiness/diagnosis and review
+Command schemas and the three assessment agent schemas from the packaged graph.
+Remove the agents' snapshot-copy instructions and adopt the packaged parallel
+assessment branches throughout the flow, including review after fixes and replies.
+The no-op conditional branch preserves the Command baseline as the second input;
+request and readiness guard commands require that input and reject the old single
+agent-snapshot contract. Wait commands receive the first Command result, retaining
+the original baseline. Use the matching helper version and validate the saved
+graph before dispatch. Saved Project graphs and previously failed Tasks can be
+updated/recovered separately after merging this code change.
 
 Init detects older graph contracts as incompatible and leaves them untouched.
 No provider/model/effort change is needed. Review waiting has the same resident
