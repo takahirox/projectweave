@@ -27,6 +27,36 @@ class TaskGraphTests(unittest.TestCase):
             if node.get("provider") == "codex" and "schema" in node:
                 check(node["schema"], name)
 
+    def test_assessment_schemas_and_every_handoff_keep_command_baselines(self):
+        agents = {"readiness", "diagnose", "review"}
+        for name in agents:
+            self.assertFalse({"snapshot", "revision"} & self.nodes[name]["schema"]["properties"].keys())
+            self.assertNotIn("snapshot exactly unchanged", self.nodes[name]["instruction"])
+        for name in ("issue_snapshot", "ask_information", "wait_for_issue_update", "check_issue_open",
+                     "review_snapshot", "request_confirmation", "wait_for_confirmation"):
+            self.assertIn("revision", self.nodes[name]["schema"]["required"])
+        seen = []
+        def check(flow):
+            for step in flow:
+                if isinstance(step, str):
+                    self.assertNotIn(step, agents, "Assessment must preserve Command input in another branch")
+                    continue
+                if "parallel" in step:
+                    branches = step["parallel"]
+                    self.assertEqual(len(branches), 2)
+                    self.assertIn(branches[0][0], agents)
+                    seen.append(branches[0][0])
+                    identity = branches[1][0]["if"]
+                    self.assertEqual(identity["then"], [])
+                    self.assertEqual(identity["else"], [])
+                elif "if" in step:
+                    check(step["if"]["then"])
+                    check(step["if"]["else"])
+                else:
+                    check(step["loop"]["flow"])
+        check(self.graph["flow"])
+        self.assertCountEqual(seen, ["readiness", "diagnose", "review", "review", "review"])
+
     def assert_result_matches(self, schema, result):
         # Only the object/string/integer/boolean types used by these result fixtures.
         if schema["type"] == "object":

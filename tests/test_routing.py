@@ -71,6 +71,6 @@ class LabelRoutingTests(unittest.TestCase):
         self.assertEqual(branch["condition"], {"path": "/0/data/route", "equals": "bug"})
         for path, reviewer in (("then", "diagnose"), ("else", "readiness")):
             review = branch[path][0]["loop"]["flow"][1]["if"]["then"]
-            self.assertEqual(review[0], reviewer)
+            self.assertEqual(review[0]["parallel"][0], [reviewer])
             self.assertEqual(review[1]["if"]["then"][0], "ask_information")
         self.assertEqual(graph["flow"][2]["if"]["condition"], {"path": "/0/data/status", "equals": "ready"})

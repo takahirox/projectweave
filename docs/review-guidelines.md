@@ -75,6 +75,8 @@ unrelated replies leave the human check outstanding. Do not invent extra human
 checks or substitute documentation edits for missing human results.
 
 If both a defect and a human check remain, fix and publish the defect first,
-then reassess the human check against the updated PR head. Keep the exact Issue
-snapshot reviewed across the request/wait handoff so concurrent replies are not
-missed. Stop merging when the source Issue closes.
+then reassess the human check against the updated PR head. Keep the
+Command-captured GitHub revision baseline across the request/wait handoff so
+concurrent replies are not missed; agents return assessment results without
+copying Issue content or authoritative revision metadata. Stop merging when the
+source Issue closes.

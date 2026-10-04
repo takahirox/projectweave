@@ -251,32 +251,44 @@ the Run rather than silently choosing a route. An `if` on `/0/data/route`
 selects one pre-implementation loop for the Run; label-only changes during
 the Run do not re-route it.
 
-Each loop captures the Issue's title/body and external comments. The default
-route runs the readiness agent; the bug route runs `diagnose`, which inspects
+Each loop captures the Issue's title/body, external comments and GitHub revision
+metadata. The default route runs the readiness agent; the bug route runs
+`diagnose`, which inspects
 the repository and relevant tests, reproduces the failure where practical,
 and returns evidence, likely cause, fix approach and validation in a
 `diagnosis` string. An undiagnosed bug returns `needs_information` with
 blocking questions instead of approving implementation. A deterministic command
-posts missing questions once per reviewed snapshot and waits for relevant content
+posts missing questions once per assessed revision and waits for relevant content
 changes or closure. Polls consume no model calls or additional graph steps:
 60 seconds for the first hour, 300 seconds until 24 hours, then 3600 seconds
 indefinitely. Automation markers identify its own comments; the authenticated
-account's unmarked replies still count. Commands carry the reviewed baseline
-through the handoff, so replies during review/commenting are not missed. A
-deterministic guard rechecks closure and content immediately before implementation.
+account's unmarked replies still count. GraphQL Issue/comment `lastEditedAt`,
+the latest title rename event ID, and external comment IDs identify relevant
+changes; Issue `updatedAt` and full-body comparison/hashing are never detectors.
+Unchanged polls read metadata only, apart from newly added/edited comment bodies
+needed to classify automation. Initial assessment and relevant updates fetch full
+content. Existing GitWeave parallel control flow carries each original Command
+result in a branch containing a no-op conditional, independently of the agent
+assessment. Request/guard commands receive the agent result at `inputs[0]` and the
+Command-captured baseline at `inputs[1]`. Agents return neither snapshots nor
+authoritative revision metadata. Commands preserve that baseline through posting
+and waiting, so concurrent replies are not missed. No shared files or global
+baselines are used; separate Runs and Issues remain isolated, and serialized
+checkpoint inputs preserve the same baseline on command retry. A deterministic
+guard rechecks closure and revision immediately before implementation.
 For an unchanged, open Issue it forwards the approved technical diagnosis to
 implementation. Content changes discard that diagnosis and repeat the selected
 review phase. Both routes converge on the same implement/publish/review/fix/merge
-flow. Closure exits with schema-validated `{status: "closed", questions: [], snapshot}`
+flow. Closure exits with schema-validated `{status: "closed", questions: [], snapshot, revision}`
 data and no PR. This is a completed graph receipt, with no implementation.
 The resident wait retains the Task's coordinator reservation, and shutdown or
 `--once` waits for it; resume after process/host restart is out of scope.
 Repeated meaningful updates share `max_steps: 30` with the remaining workflow;
 exhaustion produces GitWeave's normal step-limit failure and stops further work.
 
-After publication, `review_snapshot` captures Issue content and forwards `pr`.
-Review forwards this exact snapshot and returns the current head it actually
-reviewed. Its schema adds `status`, `questions`, `snapshot` and `retry_review`
+After publication, `review_snapshot` captures Issue content and revision metadata
+and forwards `pr`. Review returns its assessment and the current head it actually
+reviewed. Its schema adds `status`, `questions` and `retry_review`
 to the existing `pr`, `approved` and `findings` fields. `status` is `approved`
 only when no blockers remain, `needs_fixes` for agent-fixable findings (including
 when human checks also remain), or `needs_confirmation` for human-only blockers.
@@ -287,15 +299,16 @@ remaining human checks. The merge/open-Issue/head/check safeguards are unchanged
 `request_confirmation` and `wait_for_confirmation` use
 `projectweave issue-review comment|wait`, preserving `pr.number`, `pr.url`, and
 `pr.head_sha`. The request identifies that head and asks concrete questions with
-expected evidence. Deduplication includes the snapshot, PR identity and questions.
+expected evidence. Deduplication includes the relevant revision metadata, PR
+identity and questions.
 An intervening content change returns `updated` without posting stale questions;
 posting retains the original baseline to catch a concurrent reply. Both
 `<!-- projectweave:issue-readiness:` and `<!-- projectweave:issue-review:` comments
-are excluded from both phases' snapshots. Metadata-only changes do not wake a
-wait. Polling uses the same cadence and resident lifetime as readiness, with no
+are excluded from both phases' relevant revisions. Unrelated metadata changes
+do not wake a wait. Polling uses the same cadence and resident lifetime as readiness, with no
 AI invocation or additional graph step per poll. An update returns the changed
-snapshot and PR identity to review; it never sets approval. An insufficient or
-unrelated response causes another request/wait, without fix/publication unless
+snapshot, revision and PR identity to review; it never sets approval. An
+insufficient or unrelated response causes another request/wait, without fix/publication unless
 review identifies a new agent-fixable defect.
 
 Command statuses are `review` (initial snapshot), `needs_confirmation` (posted

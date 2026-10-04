@@ -23,31 +23,19 @@ SNAPSHOT = {"title": "Feature", "body": "Human device confirmation required", "c
 QUESTION = "Please confirm playback on the device at the reviewed head, with the observed result."
 
 
-def context(snapshot=SNAPSHOT, pr=PR):
-    return dict(CONTEXT, inputs=[outcome("needs_confirmation", copy.deepcopy(pr),
-                                        copy.deepcopy(snapshot), [QUESTION])])
+from issue_fixtures import IssueFixture as GitHubFixture
 
 
-class IssueFixture:
-    """Local GitHub API double: both automation and human replies pass through Issue.read."""
+class IssueFixture(GitHubFixture):
     def __init__(self):
-        self.snapshot = copy.deepcopy(SNAPSHOT)
-        self.closed = False
-        self.comments = []
-        self.after_post = None
+        super().__init__(SNAPSHOT, number=84)
 
-    def reply(self, body):
-        self.comments.append({"id": len(self.comments) + 1, "body": body})
 
-    def process(self, argv, stdin, timeout):
-        if stdin is not None:
-            self.reply(json.loads(stdin)["body"])
-            if self.after_post:
-                self.after_post()
-            return "{}"
-        if "/comments?" in argv[4]:
-            return json.dumps([self.comments])
-        return json.dumps(dict(self.snapshot, state="closed" if self.closed else "open"))
+def context(snapshot=SNAPSHOT, pr=PR):
+    baseline = outcome("review", copy.deepcopy(pr), copy.deepcopy(snapshot), IssueFixture().revision())
+    data = {"pr": copy.deepcopy(pr), "status": "needs_confirmation", "approved": False,
+            "findings": [], "questions": [QUESTION], "retry_review": True}
+    return dict(CONTEXT, inputs=[{"data": data}, baseline])
 
 
 class ReviewCommandTests(unittest.TestCase):
@@ -85,6 +73,24 @@ class ReviewCommandTests(unittest.TestCase):
         self.assertEqual(len(self.fixture.comments), 2)
         self.assertEqual(first["data"]["snapshot"], SNAPSHOT)
 
+    def test_serialized_retry_new_questions_and_run_isolation(self):
+        run_a = context()
+        execute("comment", run_a)
+        execute("comment", json.loads(json.dumps(run_a)))
+        self.assertEqual(len(self.fixture.comments), 1)
+        run_b = context()
+        run_b["inputs"][0]["data"]["questions"] = ["A different necessary check"]
+        execute("comment", run_b)
+        self.assertEqual(len(self.fixture.comments), 2)
+        self.fixture.edit_body("Changed confirmation requirements")
+        run_b["inputs"][1] = execute("snapshot", context())
+        self.assertEqual(execute("comment", run_b)["data"]["status"], "needs_confirmation")
+        self.assertEqual(execute("comment", run_a)["data"]["status"], "updated")
+        self.assertEqual(len(self.fixture.comments), 3)
+        for target in (dict(CONTEXT, github_repository="owner/other"), dict(CONTEXT, run_input={"kind": "issue", "number": 85})):
+            with self.assertRaises(Failure):
+                execute("comment", dict(target, inputs=run_a["inputs"]))
+
     def test_reply_during_review_or_post_handoff_is_not_lost(self):
         for during_post in (False, True):
             with self.subTest(during_post=during_post):
@@ -109,7 +115,10 @@ class ReviewCommandTests(unittest.TestCase):
         for operation in ("snapshot", "comment", "wait"):
             with self.subTest(operation=operation):
                 self.fixture.closed = True
-                result = execute(operation, context(), sleep=Mock())
+                value = context()
+                if operation == "wait":
+                    value = dict(CONTEXT, inputs=[outcome("needs_confirmation", PR, SNAPSHOT, self.fixture.revision(), [QUESTION])])
+                result = execute(operation, value, sleep=Mock())
                 self.assertEqual(result["data"]["status"], "closed")
                 self.assertEqual(result["data"]["pr"], PR)
                 self.assertFalse(result["data"]["retry_review"])
@@ -128,7 +137,7 @@ class ReviewCommandTests(unittest.TestCase):
         self.assertFalse(self.fixture.comments)
         with patch.object(Issue, "read", side_effect=Failure("github", "Denied")) as read:
             with self.assertRaises(Failure):
-                execute("wait", context())
+                execute("wait", dict(CONTEXT, inputs=[outcome("needs_confirmation", PR, SNAPSHOT, self.fixture.revision(), [QUESTION])]))
             read.assert_called_once()
 
     def test_cli_and_existing_custom_provider_settings(self):
@@ -186,10 +195,12 @@ class ReviewRoutingTests(unittest.TestCase):
             elif name == "review":
                 snapshot = inputs[0]["data"]["snapshot"]
                 reviews.append(copy.deepcopy(inputs[0]["data"]))
+                self.assertNotIn("snapshot", spec["schema"]["properties"])
+                self.assertNotIn("revision", spec["schema"]["properties"])
                 confirmed = any(c["body"] == "Confirmed: playback succeeded" for c in snapshot["comments"])
                 status = "needs_fixes" if defect and len(reviews) == 1 else "approved" if confirmed else "needs_confirmation"
-                data = outcome(status, copy.deepcopy(current_pr), snapshot,
-                               [] if status == "approved" else [QUESTION])["data"]
+                data = {"pr": copy.deepcopy(current_pr), "status": status,
+                        "questions": [] if status == "approved" else [QUESTION]}
                 data["approved"] = status == "approved"
                 data["retry_review"] = status != "approved"
                 data["findings"] = ["Fix playback bug"] if status == "needs_fixes" else []
