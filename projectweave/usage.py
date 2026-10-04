@@ -4,12 +4,15 @@ Each observer returns the remaining percentage (0-100) per usage window or raise
 Failure; callers treat any failure as unknown usage. Observers never invoke a model
 or change state.
 """
+from copy import deepcopy
+from datetime import datetime, timezone
 import json
 import os
 import re
 import selectors
 import signal
 import subprocess
+import threading
 import time
 from .contracts import Failure, decode, number, require
 from .executors import process
@@ -99,6 +102,7 @@ def read_response(stream, identity, deadline):
 
 
 OBSERVERS = {"claude": claude, "codex": codex}
+REFRESH_SECONDS = 300
 
 
 def observe(providers):
@@ -111,3 +115,66 @@ def observe(providers):
         except (Failure, OSError) as exc:
             observations[provider] = {"error": str(exc)}
     return observations
+
+
+class UsageCache:
+    """Shared dashboard observations; only the coordinator collects, HTTP readers take snapshots."""
+
+    def __init__(self, interval=REFRESH_SECONDS, clock=time.monotonic,
+                 wall_clock=lambda: datetime.now(timezone.utc)):
+        require(interval > 0, "Usage refresh interval must be positive")
+        self.interval, self.clock, self.wall_clock = interval, clock, wall_clock
+        self.lock = threading.RLock()
+        self.providers = ()
+        self.values, self.attempts, self.successes = {}, {}, {}
+
+    def configure(self, providers):
+        with self.lock:
+            self.providers = tuple(dict.fromkeys(providers))
+
+    def record(self, observations):
+        with self.lock:
+            now = self.clock()
+            for provider in self.providers:
+                if provider not in observations:
+                    continue
+                seen = observations[provider]
+                value = self.values.setdefault(provider, {"windows": None, "updated_at": None, "error": None})
+                self.attempts[provider] = now
+                if "error" in seen:
+                    value["error"] = str(seen["error"])
+                else:
+                    value.update(windows=deepcopy(seen["windows"]), updated_at=self.wall_clock().isoformat(), error=None)
+                    self.successes[provider] = now
+
+    def collect(self, providers, observer):
+        """Publish policy observations too, preserving fresh failures for admission decisions."""
+        try:
+            observations = observer(providers)
+        except Exception as exc:
+            observations = {provider: {"error": str(exc)} for provider in providers}
+        self.record(observations)
+        return observations
+
+    def refresh(self, observer=observe, force=False, observed=()):
+        with self.lock:
+            now = self.clock()
+            providers = {provider for provider in self.providers if provider not in observed and
+                         (force or now - self.attempts.get(provider, float("-inf")) >= self.interval)}
+        if providers:
+            self.collect(providers, observer)
+
+    def next_refresh(self):
+        with self.lock:
+            return min((self.attempts.get(provider, float("-inf")) + self.interval
+                        for provider in self.providers), default=float("inf"))
+
+    def snapshot(self):
+        with self.lock:
+            entries = []
+            for provider in self.providers:
+                value = deepcopy(self.values.get(provider, {"windows": None, "updated_at": None, "error": None}))
+                stale = value["error"] is not None or self.clock() - self.successes.get(provider, float("-inf")) >= self.interval
+                status = "unavailable" if value["windows"] is None else "stale" if stale else "current"
+                entries.append(dict(value, provider=provider, status=status))
+            return entries

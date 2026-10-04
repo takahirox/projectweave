@@ -51,6 +51,15 @@ footer { margin-top: 18px; padding: 8px 0; font-size: 11px; color: var(--muted);
 .badge.not_executed, .badge.unknown { color: var(--muted); }
 .badge.not_executed::before { background: transparent; border: 1px solid currentColor; }
 .project-list { border: 1px solid var(--border); background: var(--surface); }
+.subscription-usage { margin-bottom: 20px; border: 1px solid var(--border); background: var(--surface); }
+.usage-providers { display: flex; flex-wrap: wrap; gap: 16px 32px; padding: 14px 16px; }
+.usage-provider { flex: 1 1 200px; min-width: 0; max-width: 400px; }
+.usage-windows { margin: 8px 0; }
+.usage-windows > div { display: flex; justify-content: space-between; gap: 20px; }
+.usage-windows dt { color: var(--muted); }
+.usage-windows dd { margin: 0; font-variant-numeric: tabular-nums; }
+.usage-provider time, .usage-provider > p { display: block; margin-top: 6px; font-size: 11px; }
+.usage-error { overflow-wrap: anywhere; }
 .project-row { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(270px, 1.1fr) minmax(200px, 2fr) 100px; align-items: center; gap: 18px; padding: 16px 18px; border-bottom: 1px solid var(--border); }
 .project-row:last-child { border-bottom: 0; }
 .project-columns { background: var(--subtle); color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .7px; padding-top: 9px; padding-bottom: 9px; }

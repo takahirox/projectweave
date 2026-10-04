@@ -100,6 +100,159 @@ class CoordinatorTests(unittest.TestCase):
         pending = self.queues[Path(directory).name]
         return pending.pop(0) if pending else None
 
+    def dashboard(self, providers):
+        (self.root / "projectweave.json").write_text(json.dumps({
+            "projects": self.rules, "dashboard": {"usage_providers": providers}}))
+        return ExecutionRegistry()
+
+    def test_dashboard_configuration_validation(self):
+        for dashboard in ({}, {"usage_providers": []}, {"usage_providers": ["codex"]},
+                          {"usage_providers": ["claude"]}, {"usage_providers": ["codex", "claude"]}):
+            validate_root({"projects": {}, "dashboard": dashboard})
+        for dashboard in (None, [], {"usage_providers": "codex"}, {"usage_providers": None},
+                          {"usage_providers": ["gemini"]}, {"usage_providers": [[]]},
+                          {"usage_providers": [True]}, {"usage_providers": ["Codex"]}, {"extra": []}):
+            with self.subTest(dashboard=dashboard), self.assertRaises(Failure):
+                validate_root({"projects": {}, "dashboard": dashboard})
+
+    def test_dashboard_checks_only_selected_providers_at_startup_and_completion(self):
+        self.project("a", ["a1"])
+        registry = self.dashboard(["claude"])
+        calls = []
+
+        def observe(providers):
+            calls.append(set(providers))
+            return {"claude": {"windows": {"session": 72, "week": 48, "fable": 85}}}
+
+        def run(directory, claimed):
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(registry.snapshot()["subscription_usage"][0]["windows"]["fable"], 85)
+            return {"status": "completed"}
+
+        result = coordinate(self.root, once=True, observe=observe, registry=registry, claim_task=self.claim, run=run)
+        self.assertEqual(calls, [{"claude"}, {"claude"}])
+        self.assertEqual(result["runs"][0]["record"]["status"], "completed")
+
+    def test_dashboard_is_opt_in_and_requires_web_registry(self):
+        self.project("a", [])
+        for providers in (None, [], ["claude"]):
+            registry = self.dashboard(providers) if providers is not None else ExecutionRegistry()
+            coordinate(self.root, once=True, registry=registry if providers != ["claude"] else None,
+                       observe=lambda p: self.fail("no dashboard check"), claim_task=self.claim)
+            self.assertEqual(registry.snapshot()["subscription_usage"], [])
+
+    def test_policy_observations_are_reused_and_completion_errors_are_stale(self):
+        self.project("a", ["a1"], {"codex": CODEX})
+        registry = self.dashboard(["codex", "claude"])
+        calls = []
+
+        def observe(providers):
+            calls.append(set(providers))
+            if len(calls) <= 2:
+                return {p: {"windows": {"primary": 90}} for p in providers}
+            raise RuntimeError("read failed")
+
+        first = []
+
+        def run(directory, claimed):
+            first.extend(registry.snapshot()["subscription_usage"])
+            raise RuntimeError("task crashed")
+
+        result = coordinate(self.root, once=True, observe=observe, registry=registry, claim_task=self.claim, run=run)
+        self.assertEqual(calls, [{"codex"}, {"claude"}, {"codex", "claude"}])
+        for before, after in zip(first, registry.snapshot()["subscription_usage"]):
+            self.assertEqual(after["windows"], before["windows"])
+            self.assertEqual(after["updated_at"], before["updated_at"])
+            self.assertEqual(after["status"], "stale")
+        self.assertEqual(result["reserved"], {"codex": 0})
+
+    def test_shutdown_dashboard_refresh_does_not_read_unselected_policy_providers(self):
+        self.project("a", ["a1"], {"codex": CODEX})
+        registry = self.dashboard(["claude"])
+        calls = []
+
+        def observe(providers):
+            calls.append(set(providers))
+            return {p: {"windows": {"primary": 90}} for p in providers}
+
+        coordinate(self.root, once=True, observe=observe, registry=registry, claim_task=self.claim,
+                   run=lambda d, t: {"status": "completed"})
+        self.assertEqual(calls, [{"codex"}, {"claude"}, {"claude"}])
+
+    def test_stale_dashboard_values_are_not_used_to_admit_tasks(self):
+        self.project("a", ["a1"], {"codex": CODEX})
+        registry = self.dashboard(["codex"])
+        registry.usage.configure(["codex"])
+        registry.usage.record({"codex": {"windows": {"primary": 90}}})
+        result = coordinate(self.root, once=True, registry=registry, claim_task=self.claim,
+                            observe=lambda p: {"codex": {"error": "timed out"}},
+                            run=lambda d, t: self.fail("failed observation must block admission"))
+        self.assertEqual(result["runs"], [])
+        self.assertEqual(ids(self.queues["a"]), ["a1"])
+        self.assertEqual(result["observations"]["codex"], {"error": "timed out"})
+        entry = registry.snapshot()["subscription_usage"][0]
+        self.assertEqual(entry["windows"], {"primary": 90})
+        self.assertEqual(entry["status"], "stale")
+
+    def test_dashboard_periodic_refresh_does_not_wait_for_admission_poll(self):
+        self.project("a", [])
+        registry = self.dashboard(["codex"])
+        registry.usage.interval = 0.03
+        stop, calls = threading.Event(), []
+
+        def observe(providers):
+            calls.append(set(providers))
+            if len(calls) == 3:
+                stop.set()
+            return {"codex": {"windows": {"primary": 63}}}
+
+        timer = threading.Timer(3, stop.set)
+        timer.start()
+        try:
+            coordinate(self.root, poll_seconds=60, stop=stop, observe=observe, registry=registry, claim_task=self.claim)
+        finally:
+            timer.cancel()
+        self.assertEqual(calls, [{"codex"}] * 3)
+
+    def test_completion_refresh_is_reused_by_next_admission_pass(self):
+        self.project("a", ["a1", "a2"], {"codex": CODEX})
+        registry = self.dashboard(["codex"])
+        stop, calls, outcomes = threading.Event(), [], []
+
+        def observe(providers):
+            calls.append(set(providers))
+            return {"codex": {"windows": {"primary": 35}}}  # One reservation fits.
+
+        def report(outcome):
+            outcomes.append(outcome)
+            if len(outcomes) == 2:
+                stop.set()
+
+        coordinate(self.root, poll_seconds=60, stop=stop, observe=observe, registry=registry,
+                   claim_task=self.claim, run=lambda d, t: {"status": "completed"}, report=report)
+        self.assertEqual(calls, [{"codex"}] * 3)  # Startup and each completion, no duplicate admission read.
+
+    def test_periodic_refresh_continues_while_once_waits_for_tasks(self):
+        self.project("a", ["a1"])
+        registry = self.dashboard(["codex"])
+        registry.usage.interval = 0.03
+        release, calls = threading.Event(), []
+
+        def observe(providers):
+            calls.append(set(providers))
+            if len(calls) == 2:
+                release.set()
+            return {"codex": {"windows": {"primary": 63}}}
+
+        def run(directory, claimed):
+            if not release.wait(3):
+                raise RuntimeError("periodic refresh did not run")
+            return {"status": "completed"}
+
+        result = coordinate(self.root, once=True, observe=observe, registry=registry, claim_task=self.claim, run=run)
+        self.assertEqual(result["runs"][0]["record"]["status"], "completed")
+        self.assertEqual(calls, [{"codex"}] * 3)
+
     def test_once_launches_every_admitted_task_concurrently_and_waits(self):
         self.project("a", ["a1", "a2"])
         self.project("b", ["b1", "b2", "b3"], {"codex": CODEX})

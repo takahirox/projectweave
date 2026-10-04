@@ -48,6 +48,65 @@ async function noOverflow(page) {
   expect(width.page, `Page width ${width.page} exceeds viewport ${width.viewport}`).toBeLessThanOrEqual(width.viewport);
 }
 
+test('Subscription usage is hidden by default and for an empty provider list', async ({page}) => {
+  const snapshot = fixture();
+  await setup(page, snapshot);
+  await expect(page.getByRole('region', {name: 'Subscription usage'})).toHaveCount(0);
+  snapshot.subscription_usage = [];
+  await page.reload();
+  await expect(page.locator('#connection')).toHaveText('Live · 1s');
+  await expect(page.getByRole('region', {name: 'Subscription usage'})).toHaveCount(0);
+});
+
+test('Subscription usage shows selected providers, all windows and successful update times', async ({page}, testInfo) => {
+  const snapshot = fixture(), updated = new Date(Date.now() - 120000).toISOString();
+  snapshot.subscription_usage = [
+    {provider: 'claude', windows: {session: 72, week: 48, fable: 85}, updated_at: updated, error: null, status: 'current'},
+    {provider: 'codex', windows: {primary: 63}, updated_at: updated, error: null, status: 'current'},
+  ];
+  await setup(page, snapshot);
+  const section = page.getByRole('region', {name: 'Subscription usage'});
+  const claude = section.getByRole('article', {name: 'Claude'}), codex = section.getByRole('article', {name: 'Codex'});
+  await expect(claude).toContainText('Session72%');
+  await expect(claude).toContainText('Week48%');
+  await expect(claude).toContainText('Fable85%');
+  await expect(codex).toContainText('Primary63%');
+  await expect(section.locator('time')).toHaveCount(2);
+  await expect(codex.locator('time')).toHaveAttribute('datetime', updated);
+  await expect(codex.locator('time')).toHaveText('Updated 2 min ago');
+  await noOverflow(page);
+  await page.screenshot({path: testInfo.outputPath('subscription-usage.png'), fullPage: true});
+  snapshot.subscription_usage = [snapshot.subscription_usage[1]];
+  await expect(claude).toHaveCount(0);
+  await expect(codex).toBeVisible();
+});
+
+test('Failed usage refresh retains values and timestamps, and unavailable usage can recover', async ({page}) => {
+  const snapshot = fixture(), updated = new Date(Date.now() - 120000).toISOString();
+  snapshot.subscription_usage = [
+    {provider: 'claude', windows: {session: 72, week: 48}, updated_at: updated,
+      error: '<script>usage failed</script>', status: 'stale'},
+    {provider: 'codex', windows: null, updated_at: null, error: 'Not logged in', status: 'unavailable'},
+  ];
+  await setup(page, snapshot);
+  const section = page.getByRole('region', {name: 'Subscription usage'});
+  const claude = section.getByRole('article', {name: 'Claude'}), codex = section.getByRole('article', {name: 'Codex'});
+  await expect(claude).toContainText('Stale');
+  await expect(claude).toContainText('Session72%');
+  await expect(claude.locator('time')).toHaveAttribute('datetime', updated);
+  await expect(claude).toContainText('<script>usage failed</script>');
+  await expect(section.locator('script')).toHaveCount(0);
+  await expect(codex).toContainText('Unavailable');
+  await expect(codex).toContainText('No successful update yet');
+  await expect(codex).toContainText('Not logged in');
+  await expect(codex.locator('time')).toHaveCount(0);
+  snapshot.subscription_usage[1] = {provider: 'codex', windows: {primary: 0}, updated_at: updated, error: null, status: 'current'};
+  await expect(codex).toContainText('Primary0%');
+  await expect(codex).not.toContainText('Unavailable');
+  await expect(codex).not.toContainText('Not logged in');
+  await noOverflow(page);
+});
+
 test('Canvas lays out branches, joins and feedback edges with readable state labels', async ({page}, testInfo) => {
   const snapshot = fixture(), execution = snapshot.runs[0].executions[0];
   execution.graph.edges = [['readiness', 'implement'], ['readiness', 'validate'],
