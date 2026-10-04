@@ -17,6 +17,7 @@ from .github import GitHub, validate_project
 from .graph import validate
 from .graph_routes import check_routes
 from .runtime import Runtime
+from .usage import OBSERVERS
 
 ROOT_CONFIG = "projectweave.json"
 PROJECTS = "projects"
@@ -31,11 +32,19 @@ def percent(value):
 
 def validate_root(config):
     """{"projects": {name: {"weight": N, "resources": {provider: {min_remaining_percent,
-    estimated_usage_percent_per_task}}}}, "poll_seconds": N}; providers are constrained only when listed (opt-in)."""
-    keys(config, {"projects", "poll_seconds"}, {"projects"})
+    estimated_usage_percent_per_task}}}}, "poll_seconds": N, "dashboard": {"usage_providers": [...]}};
+    resource constraints and dashboard usage are independently opt-in."""
+    keys(config, {"projects", "poll_seconds", "dashboard"}, {"projects"})
     require(isinstance(config["projects"], dict), "projects must be an object")
     require(type(config.get("poll_seconds", POLL_SECONDS)) is int and config.get("poll_seconds", POLL_SECONDS) > 0,
             "poll_seconds must be a positive integer")
+    dashboard = config.get("dashboard", {})
+    keys(dashboard, {"usage_providers"})
+    providers = dashboard.get("usage_providers", [])
+    require(isinstance(providers, list), "dashboard.usage_providers must be a list")
+    for provider in providers:
+        require(isinstance(provider, str) and provider in OBSERVERS,
+                f"Unsupported dashboard usage provider: {provider!r}; supported: {', '.join(sorted(OBSERVERS))}")
     for name, entry in config["projects"].items():
         require(NAME.fullmatch(name) is not None, f"Invalid Project name: {name!r}")
         keys(entry, {"resources", "weight"})

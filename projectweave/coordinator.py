@@ -97,7 +97,21 @@ def coordinate(root, once=False, poll_seconds=None, stop=None, observe=usage.obs
     if poll <= 0:
         raise Failure("input", "poll_seconds must be positive")
     stop = stop or threading.Event()
-    admission = Admission(policy(config), observe)
+    cache = registry.usage if registry else None
+    if cache:
+        cache.configure(config.get("dashboard", {}).get("usage_providers", []))
+    # Leave the opt-out path unchanged, including its admission observation cadence.
+    enabled = cache is not None and bool(cache.providers)
+    admission = Admission(policy(config), (lambda providers: cache.collect(providers, observe)) if enabled else observe)
+    admission_ready = False
+
+    def refresh_usage(force=False):
+        nonlocal admission_ready
+        observations = admission.refresh(names)
+        admission_ready = True
+        if enabled:
+            cache.refresh(observe, force=force, observed=observations)
+
     order = RoundRobin(weights(config, names))
     finished = queue.Queue()
     running = {}
@@ -135,6 +149,11 @@ def coordinate(root, once=False, poll_seconds=None, stop=None, observe=usage.obs
         runs.append(outcome)
         if report:
             report(outcome)
+        if enabled:
+            if once or stop.is_set():
+                cache.refresh(observe, force=True)
+            else:
+                refresh_usage(force=True)
 
     last_problem = {}
 
@@ -148,7 +167,10 @@ def coordinate(root, once=False, poll_seconds=None, stop=None, observe=usage.obs
                 report(entry)
 
     def admit_and_launch():
-        admission.refresh(names)
+        nonlocal admission_ready
+        if not admission_ready:
+            refresh_usage()
+        admission_ready = False
         candidates = {}
         for name in names:
             try:
@@ -191,13 +213,20 @@ def coordinate(root, once=False, poll_seconds=None, stop=None, observe=usage.obs
             deadline = time.monotonic() + poll
             while not stop.is_set():
                 try:
-                    settle(*finished.get(timeout=max(0.0, min(1.0, deadline - time.monotonic()))))
+                    wake = min(deadline, cache.next_refresh()) if enabled else deadline
+                    settle(*finished.get(timeout=max(0.0, min(1.0, wake - time.monotonic()))))
                     break
                 except queue.Empty:
                     if time.monotonic() >= deadline:
                         break
+                    if enabled and cache.next_refresh() <= time.monotonic():
+                        cache.refresh(observe)
     finally:
         # Whatever happens (stop, --once, or an unexpected error), wait for the Tasks already launched.
         while running:
-            settle(*finished.get())
+            try:
+                timeout = max(0.0, min(1.0, cache.next_refresh() - time.monotonic())) if enabled else None
+                settle(*finished.get(timeout=timeout))
+            except queue.Empty:
+                cache.refresh(observe)
     return {"observations": admission.observations, "reserved": admission.reserved, "runs": runs}

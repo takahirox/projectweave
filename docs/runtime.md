@@ -436,3 +436,9 @@ code into GitWeave.
 The same registry is available through read-only JSON endpoints: `/api/state`,
 `/api/projects`, `/api/projects/NAME`, and `/api/runs/ID` (the last uses the
 process-local execution ID supplied by the API). All responses disable caching.
+`/api/state` also includes `subscription_usage`, an empty list by default. When
+[dashboard usage providers are configured](usage.md#shared-ai-resources), each
+entry has `provider`, `windows` (remaining percentages, or null), `updated_at`
+(last successful UTC timestamp, or null), `error` (latest read failure, or null),
+and `status` (`current`, `stale`, or `unavailable`). These entries come from the
+shared usage cache; HTTP requests never run provider checks.

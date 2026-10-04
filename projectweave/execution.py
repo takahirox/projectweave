@@ -7,6 +7,7 @@ from pathlib import Path
 import threading
 import time
 import uuid
+from .usage import UsageCache
 
 
 def graph_view(graph):
@@ -46,6 +47,7 @@ class ExecutionRegistry:
         self.lock = threading.RLock()
         self.projects = {}
         self.runs = {}
+        self.usage = UsageCache()
 
     def add_project(self, name, project=None):
         project = project or {}
@@ -174,4 +176,5 @@ class ExecutionRegistry:
                                      long_running=sum(run["long_running"] for run in members),
                                      failed=sum(run["status"] == "failed" for run in members),
                                      completed=sum(run["status"] == "completed" for run in members)))
-            return {"projects": projects, "runs": runs, "long_running_seconds": self.threshold}
+            return {"projects": projects, "runs": runs, "long_running_seconds": self.threshold,
+                    "subscription_usage": self.usage.snapshot()}

@@ -149,6 +149,31 @@ while graceful shutdown waits for launched Tasks, then closes with the
 coordinator. See [dashboard details](runtime.md#local-execution-dashboard) for
 progress/event support and API endpoints.
 
+Subscription usage on the top page is opt-in in the root `projectweave.json`:
+
+```json
+{
+  "projects": {},
+  "dashboard": {"usage_providers": ["codex", "claude"]}
+}
+```
+
+Choose `codex`, `claude`, or both. Omit `dashboard.usage_providers` or use an
+empty list to hide the section and perform no dashboard usage checks. These
+checks run only with `coordinate --web`; resource admission rules remain
+independent. Provider names are validated against the built-in usage observers.
+Repeated names are observed and displayed once.
+
+The coordinator uses the existing read-only usage observers at startup, after
+each Task finishes (including failed Tasks and Tasks awaited during shutdown),
+and every five minutes. Admission observations update the same process-local
+cache and replace any dashboard request for that provider at that refresh.
+Browser polling reads the cache only. The section shows each available window's
+remaining percentage and its provider's last successful update time. A failed
+read shows the error and marks retained values stale; a provider with no
+successful observation is unavailable. Failures do not stop coordination, and
+stale cached values are never substituted for current admission observations.
+
 ## Default Project workflow
 
 A Project workspace holds two packaged templates:
