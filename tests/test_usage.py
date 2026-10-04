@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 import tempfile
@@ -67,3 +68,77 @@ class UsageTests(unittest.TestCase):
         self.assertIsInstance(observed["claude"]["windows"]["week"], int)
         self.assertIn("No usage observer", usage.observe(["gemini"])["gemini"]["error"])
         self.assertEqual(usage.observe([]), {})
+
+
+class UsageCacheTests(unittest.TestCase):
+    def setUp(self):
+        self.now = 0
+        self.start = datetime(2026, 10, 4, tzinfo=timezone.utc)
+        self.cache = usage.UsageCache(clock=lambda: self.now,
+                                     wall_clock=lambda: self.start + timedelta(seconds=self.now))
+
+    def test_opt_in_interval_and_shared_policy_observation(self):
+        calls = []
+
+        def observe(providers):
+            calls.append(set(providers))
+            return {provider: {"windows": {"primary": 63}} for provider in providers}
+
+        self.cache.refresh(observe)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.cache.snapshot(), [])
+        self.cache.configure(["codex", "codex"])
+        self.cache.refresh(observe)
+        self.assertEqual(calls, [{"codex"}])
+        self.now = 299
+        self.cache.refresh(observe)
+        self.assertEqual(len(calls), 1)
+        self.now = 300
+        self.cache.refresh(observe)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.cache.next_refresh(), 600)
+        self.now = 600
+        self.cache.collect({"codex", "claude"}, observe)
+        self.cache.refresh(observe, force=True, observed={"codex", "claude"})
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([entry["provider"] for entry in self.cache.snapshot()], ["codex"])
+
+    def test_failure_preserves_windows_and_success_time_until_recovery(self):
+        self.cache.configure(["claude", "codex"])
+        self.cache.record({"claude": {"windows": {"session": 72, "week": 48, "fable": 85}},
+                           "codex": {"error": "not logged in"}})
+        first, unavailable = self.cache.snapshot()
+        self.assertEqual(first["status"], "current")
+        self.assertEqual(unavailable["status"], "unavailable")
+        self.assertIsNone(unavailable["updated_at"])
+        self.assertIsNone(unavailable["windows"])
+        self.now = 30
+        self.cache.record({"claude": {"error": "timed out"}})
+        stale = self.cache.snapshot()[0]
+        self.assertEqual(stale["windows"], first["windows"])
+        self.assertEqual(stale["updated_at"], first["updated_at"])
+        self.assertEqual((stale["status"], stale["error"]), ("stale", "timed out"))
+        stale["windows"]["week"] = 0
+        self.assertEqual(self.cache.snapshot()[0]["windows"]["week"], 48)
+        self.now = 40
+        self.cache.record({"claude": {"windows": {"session": 71, "week": 47}}})
+        recovered = self.cache.snapshot()[0]
+        self.assertEqual(recovered["status"], "current")
+        self.assertIsNone(recovered["error"])
+        self.assertNotEqual(recovered["updated_at"], first["updated_at"])
+        self.assertNotIn("fable", recovered["windows"])
+        self.now = 340
+        self.assertEqual(self.cache.snapshot()[0]["status"], "stale")
+
+    def test_unexpected_read_failure_is_cached_and_throttled(self):
+        self.cache.configure(["codex"])
+        calls = []
+
+        def broken(providers):
+            calls.append(providers)
+            raise RuntimeError("unavailable")
+
+        self.cache.refresh(broken)
+        self.cache.refresh(broken)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.cache.snapshot()[0]["error"], "unavailable")

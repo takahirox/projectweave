@@ -154,6 +154,23 @@ class RegistryTests(unittest.TestCase):
 
 
 class WebTests(unittest.TestCase):
+    def test_usage_api_reads_cache_only_and_preserves_failed_refresh(self):
+        registry = ExecutionRegistry()
+        registry.usage.configure(["codex"])
+        registry.usage.record({"codex": {"windows": {"primary": 63}}})
+        first = registry.usage.snapshot()[0]
+        registry.usage.record({"codex": {"error": "timed out"}})
+        with patch("projectweave.usage.observe") as observer, \
+                patch.object(registry.usage, "refresh") as refresh, Dashboard(registry, port=0) as dashboard:
+            for _ in range(3):
+                with urlopen(dashboard.url + "api/state", timeout=2) as response:
+                    entry = json.load(response)["subscription_usage"][0]
+                    self.assertEqual(entry["windows"], {"primary": 63})
+                    self.assertEqual(entry["updated_at"], first["updated_at"])
+                    self.assertEqual((entry["status"], entry["error"]), ("stale", "timed out"))
+            observer.assert_not_called()
+            refresh.assert_not_called()
+
     def test_completed_counts_in_all_project_api_payloads(self):
         registry = ExecutionRegistry()
         registry.add_project("p")

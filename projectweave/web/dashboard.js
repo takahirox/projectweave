@@ -83,8 +83,43 @@ function pageHeader(title, description, right) {
   if (right) header.append(right);
   return header;
 }
+function subscriptionUsage() {
+  if (!state.subscription_usage?.length) return;
+  const section = element('section', null, 'subscription-usage');
+  section.setAttribute('aria-label', 'Subscription usage');
+  const heading = element('div', null, 'section-heading');
+  heading.append(element('h2', 'Subscription usage'), element('span', 'Remaining plan usage', 'muted'));
+  section.append(heading);
+  const providers = element('div', null, 'usage-providers');
+  const labels = {session: 'Session', week: 'Week', fable: 'Fable', primary: 'Primary'};
+  for (const entry of state.subscription_usage) {
+    const provider = element('article', null, 'usage-provider');
+    provider.setAttribute('aria-label', entry.provider === 'codex' ? 'Codex' : 'Claude');
+    provider.append(element('h3', entry.provider === 'codex' ? 'Codex' : 'Claude'));
+    const windows = element('dl', null, 'usage-windows');
+    for (const [name, remaining] of Object.entries(entry.windows || {})) {
+      const row = element('div');
+      row.append(element('dt', labels[name] || name), element('dd', `${remaining}%`));
+      windows.append(row);
+    }
+    provider.append(windows);
+    if (entry.status !== 'current') provider.append(statusBadge('unknown', entry.status === 'stale' ? 'Stale' : 'Unavailable'));
+    if (entry.error) provider.append(element('p', entry.error, 'usage-error muted'));
+    if (entry.updated_at) {
+      const age = Math.max(0, Math.floor((Date.now() - new Date(entry.updated_at).getTime()) / 60000));
+      const updated = element('time', age < 1 ? 'Updated just now' : `Updated ${age} min ago`, 'muted');
+      updated.dateTime = entry.updated_at;
+      updated.title = timestamp(entry.updated_at);
+      provider.append(updated);
+    } else provider.append(element('p', 'No successful update yet', 'muted'));
+    providers.append(provider);
+  }
+  section.append(providers);
+  view.append(section);
+}
 function projects() {
   view.append(pageHeader('Projects', 'An overview of work in this coordinator.', element('span', `${state.projects.length} managed`, 'muted')));
+  subscriptionUsage();
   const list = element('section', null, 'project-list');
   list.setAttribute('aria-label', 'Project operations overview');
   const labels = element('div', null, 'project-row project-columns');
