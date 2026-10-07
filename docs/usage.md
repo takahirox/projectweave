@@ -42,6 +42,7 @@ supported. Run every command below from the root workspace.
 | `projectweave init-project NAME …` | Create (or verify) `projects/NAME/` for one GitHub Project (see below). |
 | `projectweave claim NAME` | Under the Project's lock, select one runnable Task, set it `In Progress`, and print it (or `null`). |
 | `projectweave run-task NAME --task FILE\|-` | Run the Project's `graph.json` for an already-claimed Task (JSON from a file or stdin) and print the Run receipt. |
+| `projectweave run-graph NAME --graph PATH [--input TEXT]` | Run a selected Project graph without claiming a Task and print the Run receipt. PATH is relative to `projects/NAME/`. |
 | `projectweave complete NAME --task FILE\|-` | Explicitly set the claimed Task's Project item to `Done`. |
 | `projectweave run NAME` | One Task, synchronously: resource admission → `claim` → `run-task` → wait. |
 | `projectweave coordinate [--once] [--poll-seconds N] [--web]` | The multi-Project loop and optional local dashboard (below). |
@@ -569,7 +570,7 @@ pushes provenance refs/notes to the Task's repository during a live Run. If the
 workspace is itself a Git repository, ignore `.gitweave/`, `repos/`,
 `worktrees/` and `*.lock`.
 
-**Command executors are repository-aware and get one isolated worktree per
+**Command executors with a Task are repository-aware and get one isolated worktree per
 invocation.** This is an invariant: concurrent Tasks never share a mutable working
 tree (GitWeave already guarantees the same with its own per-Task worktrees). The
 Run keeps a shared checkout of the claimed Task's repository (`task.repository`)
@@ -608,8 +609,9 @@ import GitWeave; `provenance_remote` optionally maps to GitWeave's
 ## Node reference
 
 All nodes have `kind` and optional `inputs`, an object mapping names to JSON
-pointers into the Run context `{project, task, resources, results, last, run_id}`,
-where `task` is the claimed Task given to `run-task`. No templating or shell
+pointers into the Run context `{project, task, resources, results, last, run_id, input}`,
+where `task` is the claimed Task given to `run-task`, or null for `run-graph`.
+`input` is operator text from `run-graph --input`, or null. No templating or shell
 evaluation occurs. A graph runs only what it lists; the canonical graph is just
 `execute` with `inputs.task = "/task"`.
 
@@ -618,7 +620,7 @@ evaluation occurs. A graph runs only what it lists; the canonical graph is just
 | `action: load` | none | `items`: nonarchived open Issues and their metadata (custom graphs; `claim` does selection by default) |
 | `action: select` | `inputs.items` | `task`: highest ranked eligible Issue or null |
 | `action: resources` | optional `config.requires` allocation | `resources` snapshot and `available` admission boolean |
-| `action: execute` | `executor`, `inputs.task`; optional nonempty `requires`, `inputs.context` | executor's Result data |
+| `action: execute` | `executor`; `inputs.task` required for GitWeave, optional for commands; optional nonempty `requires`, `inputs.context` | executor's Result data |
 | `kind: agent` | same as execute plus `instruction`; omit action | executor's Result data |
 | `action: status` | `inputs.task`, `config.status` (an existing Status option) | the Status name set; no comment |
 | `action: complete` | `inputs.task`; no config | sets the Task's Status to `Done`; no comment |
@@ -639,7 +641,8 @@ is not supported, so downstream actions do not run after a Runtime Failure.
 without charging it. Actual execution checks again and charges before launching.
 An unavailable allocation returns `data.status: "resource_exhausted"`; it is not a
 launch failure. `run-task` supplies no metered envelope, so these metered checks
-apply only when a graph is run through the `Runtime` API with one; shared AI
+apply only when a graph is run through the `Runtime` API with one; `run-graph`
+also supplies no metered envelope. Shared AI
 usage is admitted by the coordinator instead (see Shared AI resources). No task
 returns null from select; graphs that select should branch before executing.
 Missing pointer targets are Runtime Failures.
@@ -778,6 +781,61 @@ reflects reported consumption and constrains subsequent admission; it cannot
 prove native consumption or enforce an in-flight spending limit. It performs no
 allowance discovery or reset. Graph/resource configuration is trusted and must
 declare the resources an executor may consume in `requires`.
+
+## Running a Project graph without a Task
+
+Save an explicit Project graph under `projects/app/`, then start it from the root
+workspace:
+
+```sh
+projectweave run-graph app --graph analysis.json --input "Inspect the Project"
+```
+
+The command validates `project.json` and the selected graph, and prints the same
+Run receipt as `run-task`. Exit 0 means completion, 1 a Runtime Failure, and 2
+invalid input/setup. It does not need `graph.json`, a Task, or root coordinator
+configuration. Starting the Run neither claims an Issue nor changes Project
+Status. Only explicit graph actions or commands can perform external operations.
+This command does not use the coordinator's shared provider admission policy.
+
+Graph paths are relative to the Project workspace, including subdirectories;
+absolute paths and paths escaping it (also through symlinks) are rejected.
+The usual sequential flow, `if`, `loop`, structured results and `max_steps` apply.
+The CLI starts the graph once; loops belong in the graph.
+
+A minimal graph can run a command without `inputs.task`:
+
+```json
+{
+  "version": 1,
+  "nodes": {
+    "analyze": {
+      "kind": "agent",
+      "instruction": "Analyze the Project and return findings",
+      "executor": {"type": "command", "argv": ["./analyze-project"]},
+      "inputs": {"context": "/project"}
+    }
+  },
+  "flow": ["analyze"]
+}
+```
+
+Supply an executable `projects/app/analyze-project` wrapper that follows the
+command Result contract above. For a runnable example requiring only Python,
+copy [examples/project-context.json](../examples/project-context.json) to
+`projects/app/analysis.json`: it returns the Project configuration and operator
+input without contacting GitHub or an AI provider.
+
+Taskless command nodes run in the Project workspace and receive `task: null`,
+`project` (validated `project.json`) and `input` (text or null), plus the normal
+`context`, `resources`, `allocation`, `instruction` and `run_id` fields. They
+receive no `checkout`, and files they create in the workspace persist. `/project`,
+`/resources`, `/results`, `/last`, `/run_id` and `/input` are available to graph
+input pointers; `/task` is null. Agents and execute actions share this behavior.
+Nodes that explicitly supply `inputs.task` still require a Task object and use
+the existing isolated repository worktree. GitWeave Issue mode still requires
+a valid Issue-backed Task. Status, complete and writeback actions still require
+a valid Task from this Project; no Task is fabricated for them.
 
 ## Failures and operational limits
 

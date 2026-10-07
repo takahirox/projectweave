@@ -44,6 +44,11 @@ The important property is that the workflow is explicit and configurable.
 
 The runtime executes JSON graphs with `agent` and `action` nodes, sequential flow, structured result handoff, `if` routing, and explicit post-condition `loop` control bounded by `max_steps`. Each `run-task` executes one graph for one claimed Task; `projectweave coordinate` runs claimed Tasks concurrently across and within Projects, each Task still one bounded graph Run.
 
+To run a Project workflow independently of Tasks, use
+`projectweave run-graph app --graph analysis.json`. The graph path is relative to
+`projects/app/`; starting it claims no Issue and changes no Task Status.
+See the [Taskless graph example](docs/usage.md#running-a-project-graph-without-a-task).
+
 ## AI resources as constraints
 
 ProjectWeave treats AI resources as first-class inputs and constraints.

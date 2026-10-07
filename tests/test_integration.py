@@ -115,6 +115,104 @@ class CLITests(unittest.TestCase):
         self.assertEqual((code, outcome["status"]), (0, "no_work"))
         self.assertFalse(any(c["command"] == "gitweave" for c in calls))
 
+    def test_run_graph_executes_selected_graph_without_task_or_external_setup(self):
+        for kind in ("agent", "action"):
+            with self.subTest(kind=kind):
+                node = {"kind": kind, "executor": {"type": "command", "argv": ["worker"]},
+                        "inputs": {"context": ""}}
+                node.update({"instruction": "Analyze the Project"} if kind == "agent" else {"action": "execute"})
+                selected = self.project_dir / "graphs" / "analysis.json"
+                selected.parent.mkdir(exist_ok=True)
+                selected.write_text(json.dumps({"version": 1, "nodes": {"analyze": node}, "flow": ["analyze"]}))
+                # Neither the canonical Task graph nor root resource/coordinator config is used.
+                (self.project_dir / "graph.json").write_text("invalid Task graph")
+                self.config = {"invalid": True}
+                code, record, calls = self.cli("run-graph", "p", "--graph", "graphs/analysis.json",
+                                               "--input", "Find problems $(literal) `literal`")
+                self.assertEqual((code, record["status"]), (0, "completed"), record)
+                self.assertEqual([call["command"] for call in calls], ["worker"])
+                self.assertEqual(Path(calls[0]["cwd"]).resolve(), self.project_dir.resolve())
+                request = calls[0]["request"]
+                project = json.loads((self.project_dir / "project.json").read_text())
+                self.assertEqual(request["project"], project)
+                self.assertIsNone(request["task"])
+                self.assertNotIn("checkout", request)
+                self.assertEqual(request["input"], "Find problems $(literal) `literal`")
+                context = request["context"]
+                self.assertEqual(context["project"], project)
+                self.assertEqual(context["run_id"], record["run_id"])
+                self.assertEqual(context["resources"], {})
+                self.assertEqual(context["results"], {})
+                self.assertIsNone(context["last"])
+                self.assertIsNone(context["task"])
+                self.assertEqual(context["input"], request["input"])
+                self.assertEqual(record["last"]["data"], {"approved": True})
+                self.assertFalse((self.project_dir / ".projectweave.lock").exists())
+                self.assertFalse((self.project_dir / "repos").exists())
+                self.assertFalse((self.project_dir / "worktrees").exists())
+
+    def test_run_graph_documented_example_executes_without_operator_input(self):
+        (self.project_dir / "analysis.json").write_text((ROOT / "examples/project-context.json").read_text())
+        code, record, calls = self.cli("run-graph", "p", "--graph", "analysis.json")
+        self.assertEqual((code, record["status"]), (0, "completed"), record)
+        self.assertEqual(record["last"]["data"]["project"], json.loads((self.project_dir / "project.json").read_text()))
+        self.assertIsNone(record["last"]["data"]["input"])
+        self.assertEqual(calls, [])
+
+    def test_run_graph_validation_precedes_execution(self):
+        valid = {"version": 1, "nodes": {"work": {"kind": "action", "action": "execute",
+                 "executor": {"type": "command", "argv": ["worker"]}}}, "flow": ["work"]}
+        path = self.project_dir / "analysis.json"
+        project_path = self.project_dir / "project.json"
+        project = project_path.read_text()
+        for invalid in ("not JSON", json.dumps({**valid, "flow": ["work", "missing"]}),
+                        json.dumps({**valid, "nodes": {**valid["nodes"], "unreachable": {"kind": "unknown"}}})):
+            with self.subTest(invalid=invalid):
+                path.write_text(invalid)
+                code, record, calls = self.cli("run-graph", "p", "--graph", "analysis.json")
+                self.assertEqual((code, record["status"]), (2, "failed"))
+                self.assertEqual(calls, [])
+        path.write_text(json.dumps(valid))
+        project_path.write_text(json.dumps({"owner": "example"}))
+        code, record, calls = self.cli("run-graph", "p", "--graph", "analysis.json")
+        self.assertEqual((code, record["status"]), (2, "failed"))
+        self.assertEqual(calls, [])
+        project_path.write_text(project)
+
+    def test_run_graph_rejects_unsafe_or_missing_paths(self):
+        outside = self.directory / "outside.json"
+        outside.write_text(json.dumps({"version": 1, "nodes": {"work": {"kind": "action", "action": "execute",
+                           "executor": {"type": "command", "argv": ["worker"]}}}, "flow": ["work"]}))
+        (self.project_dir / "escape.json").symlink_to(outside)
+        for path in (str(outside), "../p2/graph.json", "escape.json", "missing.json", "", "C:/outside.json", "..\\outside.json"):
+            with self.subTest(path=path):
+                code, record, calls = self.cli("run-graph", "p", "--graph", path)
+                self.assertEqual((code, record["status"]), (2, "failed"))
+                self.assertEqual(calls, [])
+        for project in ("missing", "../p"):
+            code, record, calls = self.cli("run-graph", project, "--graph", "graph.json")
+            self.assertEqual((code, record["status"]), (2, "failed"))
+            self.assertEqual(calls, [])
+
+    def test_run_graph_requires_project_and_graph_arguments(self):
+        for args in (("run-graph",), ("run-graph", "p"), ("run-graph", "--graph", "graph.json"),
+                     ("run-graph", "p", "--graph", "graph.json", "--task", "-")):
+            with self.subTest(args=args):
+                completed = subprocess.run([sys.executable, "-m", "projectweave", *args], cwd=self.root,
+                                           env=dict(self.env, PYTHONPATH=str(ROOT)), capture_output=True, text=True, timeout=30)
+                self.assertEqual(completed.returncode, 2)
+                self.assertIn("usage:", completed.stderr)
+                self.assertFalse(self.log.exists())
+
+    def test_run_graph_executor_failure_returns_runtime_failure_without_retry(self):
+        (self.project_dir / "analysis.json").write_text(json.dumps({"version": 1, "nodes": {
+            "work": {"kind": "action", "action": "execute", "executor": {"type": "command", "argv": ["worker"]}}},
+            "flow": ["work", "work"]}))
+        code, record, calls = self.cli("run-graph", "p", "--graph", "analysis.json", mode="executor_failure")
+        self.assertEqual((code, record["status"], record["failure"]["kind"]), (1, "failed", "transport"))
+        self.assertEqual([call["command"] for call in calls], ["worker"])
+        self.assertEqual(record["results"], {})
+
     def configure_graph_routes(self):
         path = self.project_dir / "project.json"
         project = json.loads(path.read_text())
