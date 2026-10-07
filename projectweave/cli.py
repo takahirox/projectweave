@@ -14,7 +14,7 @@ from .readiness import execute as issue_readiness
 from .review import execute as issue_review
 from .routing import execute as issue_route
 from .setup import add_init_arguments, init_project, init_root
-from .workspace import claim, complete, failure_record, project_dir, read_task, run_task
+from .workspace import claim, complete, failure_record, project_dir, read_task, run_graph, run_task
 
 
 def positive(value):
@@ -57,6 +57,10 @@ def main(argv=None):
         command.add_argument("project", help="Project directory name under projects/")
         if name in ("run-task", "complete"):
             command.add_argument("--task", required=True, help="Claimed Task JSON file, or - for stdin")
+    graph_run = commands.add_parser("run-graph", help="Run an explicit Project graph without claiming a Task")
+    graph_run.add_argument("project", help="Project directory name under projects/")
+    graph_run.add_argument("--graph", required=True, help="Graph path relative to the Project workspace")
+    graph_run.add_argument("--input", help="Operator input text, available at /input")
     loop = commands.add_parser("coordinate", help="Observe, admit and launch Tasks across all Projects")
     loop.add_argument("--once", action="store_true", help="One pass: launch what is admitted and wait for it")
     loop.add_argument("--poll-seconds", type=positive, help="Re-observe interval (default from projectweave.json, else 300)")
@@ -89,6 +93,10 @@ def main(argv=None):
             return 0
         if args.command == "run-task":
             record = run_task(project_dir(root, args.project), read_task(args.task))
+            emit(record)
+            return 1 if record["failure"] else 0
+        if args.command == "run-graph":
+            record = run_graph(project_dir(root, args.project), args.graph, operator_input=args.input)
             emit(record)
             return 1 if record["failure"] else 0
         if args.command == "complete":

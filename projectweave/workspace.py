@@ -7,7 +7,7 @@ gitweave.json). The directory name is the Project key used by the root config.
 from contextlib import contextmanager
 import fcntl
 from functools import partial
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import sys
 from .checkout import worktree
@@ -148,6 +148,23 @@ def run_task(directory, task, backend=None, executor=invoke, observer=None):
         executor = partial(invoke, on_event=observer)
     return Runtime(graph, project, backend=backend, executor=executor, checkout=partial(worktree, directory),
                    workspace=str(directory), task=task, observer=observer).run()
+
+
+def run_graph(directory, graph_path, operator_input=None, backend=None, executor=invoke, observer=None):
+    """Run an explicit Project-workspace-relative graph with no Task or implicit lifecycle operations."""
+    directory = Path(directory).resolve()
+    graph_path = str(graph_path)
+    require(text(graph_path) and "\0" not in graph_path and not Path(graph_path).is_absolute()
+            and not PureWindowsPath(graph_path).drive and "\\" not in graph_path,
+            "Graph path must be Project-workspace-relative", "input")
+    path = (directory / graph_path).resolve()
+    require(path.is_relative_to(directory), "Graph path escapes the Project workspace", "input")
+    project = load_project(directory)
+    graph = validate(decode(path.read_text()))
+    if observer and executor is invoke:
+        executor = partial(invoke, on_event=observer)
+    return Runtime(graph, project, backend=backend, executor=executor, checkout=partial(worktree, directory),
+                   workspace=str(directory), observer=observer, operator_input=operator_input).run()
 
 
 def complete(directory, task, backend=None):

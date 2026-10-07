@@ -13,7 +13,7 @@ from .graph_routes import select_executor
 
 class Runtime:
     def __init__(self, graph, project, envelope=None, backend=None, executor=invoke, checkout=None, workspace=None,
-                 task=None, observer=None):
+                 task=None, observer=None, operator_input=None):
         self.graph = validate(graph)
         self.resources = Resources(envelope or {})
         self.backend = backend or GitHub(project)
@@ -21,11 +21,12 @@ class Runtime:
         # (repository, name, cleanup_failed) -> context manager yielding an isolated Task worktree (checkout.worktree).
         self.checkout = checkout
         self.cleanup_failures = []
-        # GitWeave runs in Issue mode from the Project workspace and fetches the repository itself.
+        # GitWeave Issue mode and Taskless commands run from the Project workspace.
         self.workspace = workspace
         # run-task supplies the already-claimed Task at /task; the graph never claims or selects it itself.
         self.context = {"run_id": uuid.uuid4().hex, "project": project, "task": task,
-                        "resources": self.resources.state, "results": {}, "last": None}
+                        "resources": self.resources.state, "results": {}, "last": None,
+                        "input": operator_input}
         self.steps = 0
         self.active = None
         self.events = []
@@ -39,32 +40,36 @@ class Runtime:
     def node(self, node, inputs):
         action = node.get("action")
         if node["kind"] == "agent" or action == "execute":
-            require(isinstance(inputs["task"], dict), "Execution needs a task object", "input")
+            task = inputs.get("task")
+            gitweave = node["executor"]["type"] == "gitweave"
+            if "task" in inputs or gitweave:
+                require(isinstance(task, dict), "Execution needs a task object", "input")
             allocation = node.get("requires", {})
-            if node["executor"]["type"] == "gitweave":
+            if gitweave:
                 require(all(self.resources.state.get(k, {}).get("accounting", "reservation") == "reservation"
                             for k in allocation), "GitWeave requires reservation accounting", "accounting")
             if not self.resources.reserve(allocation):
                 return result("Required resources unavailable; executor was not launched",
                               {"status": "resource_exhausted", "required": allocation})
-            task = inputs["task"]
             request = {"task": task, "context": inputs.get("context", {}),
                        "resources": deepcopy(self.resources.state), "allocation": allocation,
                        "instruction": node.get("instruction"), "run_id": self.context["run_id"]}
-            gitweave = node["executor"]["type"] == "gitweave"
             if gitweave:
                 require(self.workspace is not None, "Execution needs a Project workspace", "checkout")
                 require(valid_repository(task.get("repository")) and type(task.get("number")) is int
                         and task["number"] > 0, "GitWeave execution needs the Task repository and Issue number", "input")
-            else:
+            elif task is not None:
                 require(self.checkout is not None, "Execution needs a Project workspace", "checkout")
+            else:
+                require(self.workspace is not None, "Execution needs a Project workspace", "checkout")
+                request.update(project=deepcopy(self.context["project"]), input=deepcopy(self.context["input"]))
             output = None
             config = select_executor(node["executor"], self.context["project"], task, self.workspace)
             execution = {"execution_id": f"{self.active}-{self.steps}", "config": deepcopy(config)}
             self.executions.append(execution)
             self.notify({"type": "executor_started", **deepcopy(execution)})
             try:
-                if gitweave:
+                if gitweave or task is None:
                     output = check_result(self.executor(config, deepcopy(request), self.workspace))
                 else:
                     # One isolated worktree per invocation; it is removed when the executor exits.

@@ -2,8 +2,8 @@
 
 Python 3.11+ and the standard library; no task database. GitHub Projects v2 is
 canonical. JSON Run output is an execution receipt, not a second project state
-store. The graph runtime below executes one Project graph for one claimed Task
-(`run-task`); Project lifecycle (`claim`, `complete`) and the multi-Project
+store. The graph runtime below executes one Project graph for a claimed Task
+(`run-task`) or independently of Tasks (`run-graph`); Project lifecycle (`claim`, `complete`) and the multi-Project
 coordinator with shared resource admission are described after it.
 
 ## Graph and results
@@ -40,8 +40,9 @@ Only two node kinds exist. `agent` delegates an instruction to an executor;
 `status`, `complete`, `writeback`, or `result`. Agent roles belong in instructions. `execute` delegates
 work without adding an instruction. Both use the same executor boundary.
 Node `inputs` maps names to RFC 6901 pointers into
-`{project, task, resources, results, last, run_id}`; `task` is the claimed Task
-passed to `run-task`. The runtime performs no implicit selection, Status change or
+`{project, task, resources, results, last, run_id, input}`; `task` is the claimed Task
+passed to `run-task`, or null for `run-graph`. `input` is optional operator text
+from `run-graph --input`, or null. The runtime performs no implicit selection, Status change or
 completion: only the nodes a graph lists run. Each node returns
 `{message, data, references, usage}`; data is a JSON object, references are strings,
 usage maps resource names to nonnegative numbers. Results are retained by node ID;
@@ -53,6 +54,24 @@ fallback or automatic retry. Executor failures never trigger automatic GitHub
 writeback. The receipt retains failure details, completed results, and resources;
 a valid executor Result is included in failure details if accounting fails.
 Failure routing is not supported; subsequent graph operations are not executed.
+
+`run-graph PROJECT --graph PATH` loads and validates `projects/PROJECT/project.json`
+and the selected Project graph before executing it once using this interpreter.
+The path must be relative to that Project workspace and stay inside it after
+symlink resolution; absolute paths, Windows drive paths and backslashes are
+rejected. It does not load the fixed `graph.json`, require root coordinator
+configuration, admit or claim a Task, or change Status implicitly. Repetition
+remains graph-defined through `loop` and bounded by `max_steps`.
+
+Command agent/execute nodes may omit `inputs.task`. These Taskless invocations
+run with the Project workspace as their working directory and receive `task: null`,
+`project`, and `input` in the executor request, with the normal context/resources/
+allocation/instruction/Run ID fields and no `checkout`. There is no implicit
+repository selection or temporary repository worktree; Project files persist.
+An explicit `inputs.task` still requires a Task object and retains the existing
+isolated worktree behavior. GitWeave Issue-mode nodes still require a Task input
+with a valid repository and positive Issue number. Status, complete and writeback
+still require a selected Task belonging to the configured GitHub Project.
 
 ## GitWeave graph routes
 
@@ -115,7 +134,7 @@ then stops safely as unknown.
 Metered entries are `{unit, available, accounting}`. `accounting` is `reservation`
 or `reported`. Units are operator-defined (invocations, tokens, USD, etc.). They
 remain in the graph runtime for programmatic use with an explicit envelope;
-`run-task` supplies none and init emits none. An agent/execute node may declare a nonempty `requires` map of
+`run-task` and `run-graph` supply none and init emits none. An agent/execute node may declare a nonempty `requires` map of
 positive amounts, or omit it when no metered reservation is needed. All
 amounts are checked atomically and reserved before launch. Insufficient or absent
 resources produce an ordinary `resource_exhausted` result without launching.
@@ -180,7 +199,7 @@ A Project spans any repositories whose Issues are in the GitHub Project; each
 Task's `repository` is its execution location. A Project's `projects/NAME/`
 directory is its Project workspace. GitWeave executors run from the
 workspace in GitWeave's Issue mode (below), which fetches the repository itself.
-Command executors are repository-aware, and **each invocation runs in its own
+Command executors with a Task are repository-aware, and **each invocation runs in its own
 isolated worktree** (an invariant: concurrent Tasks never share a mutable working
 tree). After admission and before launch, the runtime prepares the shared Git
 source `<workspace>/repos/OWNER/REPO` for `task.repository`: it clones with `gh repo clone` when the path is

@@ -172,7 +172,7 @@ def invoke(config, request, workspace=None, on_event=None):
     timeout = config.get("timeout", 3600)
     options = {"on_output": output_observer(on_event, config["type"] == "gitweave")} if on_event else {}
     if config["type"] == "command":
-        raw = process(config["argv"], json.dumps(request, allow_nan=False), timeout, **options)
+        raw = process(config["argv"], json.dumps(request, allow_nan=False), timeout, cwd=workspace, **options)
         return check_result(decode(raw))
     # Issue mode: GitWeave fetches the repository's default branch itself and exposes run_input to nodes.
     task = request["task"]
