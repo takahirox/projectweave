@@ -174,14 +174,23 @@ def invoke(config, request, workspace=None, on_event=None):
     if config["type"] == "command":
         raw = process(config["argv"], json.dumps(request, allow_nan=False), timeout, cwd=workspace, **options)
         return check_result(decode(raw))
-    # Issue mode: GitWeave fetches the repository's default branch itself and exposes run_input to nodes.
+    # Issue mode: GitWeave validates/fetches the selected branch before launching any nodes.
     task = request["task"]
     argv = ["gitweave", "run", "--graph", config["graph"], "--repo", task["repository"],
             "--issue", str(task["number"])]
+    if "base_branch" in config:
+        argv += ["--base-branch", config["base_branch"]]
     if "provenance_remote" in config:
         argv += ["--provenance-remote", config["provenance_remote"]]
     argv += ["ProjectWeave request for the selected Task (data):\n" + json.dumps(request)]
-    record = decode(process(argv, None, timeout, workspace, **options))
+    try:
+        raw = process(argv, None, timeout, workspace, **options)
+    except Failure as exc:
+        if "base_branch" in config:
+            raise Failure(exc.kind, f"GitWeave Issue Run on base branch {config['base_branch']!r} failed: {exc}",
+                          exc.details) from exc
+        raise
+    record = decode(raw)
     require(isinstance(record, dict) and record.get("status") == "completed"
             and isinstance(record.get("outputs"), list) and record["outputs"],
             "GitWeave did not return a completed Run with outputs", "executor")

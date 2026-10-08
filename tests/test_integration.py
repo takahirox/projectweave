@@ -228,12 +228,47 @@ class CLITests(unittest.TestCase):
         self.assertEqual(code, 0, outcome)
         launch = next(c for c in calls if c["command"] == "gitweave" and c["argv"][0] == "run")
         self.assertEqual(launch["argv"][2], "routed graph.json")
+        self.assertNotIn("--base-branch", launch["argv"])
         self.assertEqual(outcome["record"]["executions"][0]["config"]["graph"], "routed graph.json")
         claim_index = next(i for i, c in enumerate(calls) if c["request"] and "mutation" in c["request"]["query"])
         before_claim = {Path(c["argv"][2]).name for c in calls[:claim_index]
                         if c["command"] == "gitweave" and c["argv"][0] == "validate"}
         self.assertEqual(before_claim, {"routed graph.json", "other.json", "gitweave.json"})
         self.assertFalse(any(c["command"] in ("codex", "claude") for c in calls))
+
+    def test_label_route_passes_branch_and_preserves_it_in_receipt(self):
+        self.configure_graph_routes()
+        path = self.project_dir / "project.json"
+        project = json.loads(path.read_text())
+        project["graph_routes"][0]["base_branch"] = "experiment/foo"
+        path.write_text(json.dumps(project))
+        code, outcome, calls = self.cli("run", "p")
+        self.assertEqual(code, 0, outcome)
+        launches = [c for c in calls if c["command"] == "gitweave" and c["argv"][0] == "run"]
+        self.assertEqual(len(launches), 1)
+        argv = launches[0]["argv"]
+        self.assertEqual(argv[argv.index("--base-branch") + 1], "experiment/foo")
+        self.assertEqual(argv[argv.index("--issue") + 1], "7")
+        self.assertEqual(outcome["record"]["executions"][0]["config"]["base_branch"], "experiment/foo")
+
+    def test_missing_explicit_branch_fails_without_default_branch_retry_or_writeback(self):
+        self.configure_graph_routes()
+        path = self.project_dir / "project.json"
+        project = json.loads(path.read_text())
+        project["graph_routes"][0]["base_branch"] = "missing"
+        path.write_text(json.dumps(project))
+        self.add_writeback("Done")
+        code, outcome, calls = self.cli("run", "p", mode="invalid_base_branch")
+        self.assertEqual(code, 1, outcome)
+        record = outcome["record"]
+        self.assertEqual(record["status"], "failed")
+        self.assertIn("base branch 'missing'", record["failure"]["message"])
+        self.assertIn("couldn't find remote ref refs/heads/missing", record["failure"]["details"]["stderr"])
+        launches = [c for c in calls if c["command"] == "gitweave" and c["argv"][0] == "run"]
+        self.assertEqual(len(launches), 1)
+        self.assertIn("--base-branch", launches[0]["argv"])
+        self.assertEqual(self.mutation_options(calls), ["PROGRESS"])
+        self.assertNotIn("writeback", record["results"])
 
     def test_broken_unmatched_route_never_claims_or_launches_from_any_entry_point(self):
         self.configure_graph_routes()
@@ -591,6 +626,22 @@ class BoundaryTests(unittest.TestCase):
                         patch("projectweave.executors.process", return_value=raw) as boundary:
                     invoke(dict(config, **extra), {"task": {"repository": "o/r", "number": 71}}, "workspace")
                     self.assertEqual(boundary.call_args.args[2], expected)
+
+    def test_gitweave_branch_argument_is_optional_and_passed_as_one_literal_argument(self):
+        record = {"status": "completed", "outputs": [{"commit": "sha", "message": "Done", "data": {}}],
+                  "run_id": "run", "repository": "repo", "run_ref": "ref", "notes_ref": "notes"}
+        request = {"task": {"repository": "o/r", "number": 71}}
+        for branch in (None, "experiment/foo", "literal;$(command)"):
+            config = {"type": "gitweave", "graph": "graph with spaces.json", "provenance_remote": "origin"}
+            if branch is not None:
+                config["base_branch"] = branch
+            with self.subTest(branch=branch), patch("projectweave.executors.process", return_value=json.dumps(record)) as boundary:
+                invoke(config, request, "workspace")
+                expected = ["gitweave", "run", "--graph", config["graph"], "--repo", "o/r", "--issue", "71"]
+                if branch is not None:
+                    expected += ["--base-branch", branch]
+                expected += ["--provenance-remote", "origin", "ProjectWeave request for the selected Task (data):\n" + json.dumps(request)]
+                boundary.assert_called_once_with(expected, None, 3600, "workspace")
 
     def test_pagination_repeated_cursor_fails(self):
         backend = GitHub({"owner": "o", "owner_type": "user", "number": 1})

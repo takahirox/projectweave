@@ -21,7 +21,7 @@ TASK = {"number": 1, "repository": "o/r", "labels": []}
 
 class RouteConfigTests(unittest.TestCase):
     def test_routes_are_optional_and_project_specific(self):
-        for routes in ([], ROUTES):
+        for routes in ([], ROUTES, [dict(ROUTES[0], base_branch="experiment/foo")]):
             project = dict(PROJECT, graph_routes=copy.deepcopy(routes))
             self.assertIs(validate_project(project), project)
         self.assertEqual(validate_project(PROJECT), PROJECT)
@@ -34,11 +34,17 @@ class RouteConfigTests(unittest.TestCase):
         # Exercise each bad value individually, not as a multi-entry route list.
         invalid.extend([{"label": label, "graph": "a.json"}] for label in (None, 1, "", " "))
         invalid.extend([{"label": "a", "graph": graph}] for graph in (None, 1, "", " "))
+        invalid.extend([{"label": "a", "graph": "a.json", "base_branch": branch}]
+                       for branch in (None, True, 1, [], {}, "", " \t\n", "bad\0branch"))
         invalid.extend([{"label": "a", "graph": graph}] for graph in
                        ("/tmp/a.json", "../a.json", "graphs/../../a.json", "C:/a.json", "\\\\host\\a.json", "a\0.json"))
         for routes in invalid:
             with self.subTest(routes=routes), self.assertRaises(Failure):
                 validate_project(dict(PROJECT, graph_routes=routes))
+
+    def test_invalid_branch_error_names_route_field(self):
+        with self.assertRaisesRegex(Failure, "graph_routes base_branch must be a nonblank string"):
+            validate_project(dict(PROJECT, graph_routes=[dict(ROUTES[0], base_branch=" ")]))
 
 
 class GraphRouteTests(unittest.TestCase):
@@ -83,6 +89,27 @@ class GraphRouteTests(unittest.TestCase):
                                 (self.project, {"type": "command", "argv": ["worker"]})):
             self.assertIs(select_executor(config, project, TASK, self.directory), config)
         self.validator.assert_not_called()
+
+    def test_branch_is_selected_with_first_matching_graph_and_does_not_leak(self):
+        self.project["graph_routes"][0]["base_branch"] = "experiment/foo"
+        original_config, original_project = copy.deepcopy(self.config), copy.deepcopy(self.project)
+        cases = [(["second", "ARBITRARY / LABEL"], "graphs/first.json", "experiment/foo"),
+                 (["second"], "second.json", None), ([], "custom-default.json", None),
+                 (["unrelated"], "custom-default.json", None)]
+        for labels, graph, branch in cases:
+            with self.subTest(labels=labels):
+                selected = select_executor(self.config, self.project, dict(TASK, labels=labels), self.directory)
+                expected = dict(original_config, graph=graph)
+                if branch is not None:
+                    expected["base_branch"] = branch
+                self.assertEqual(selected, expected)
+        self.assertEqual(self.config, original_config)
+        self.assertEqual(self.project, original_project)
+        self.project["graph_routes"].reverse()
+        selected = select_executor(self.config, self.project,
+                                   dict(TASK, labels=["arbitrary / label", "second"]), self.directory)
+        self.assertEqual(selected["graph"], "second.json")
+        self.assertNotIn("base_branch", selected)
 
     def test_all_routes_and_fallback_are_statically_validated_in_workspace(self):
         check_project(self.directory)
@@ -135,6 +162,8 @@ class GraphRouteTests(unittest.TestCase):
             check_project(self.directory)
 
     def test_runtime_receipt_and_dashboard_use_selected_config_and_graph(self):
+        self.project["graph_routes"][0]["base_branch"] = "experiment/foo"
+        (self.directory / "project.json").write_text(json.dumps(self.project))
         registry = ExecutionRegistry()
         identity = registry.start("p", TASK, self.directory)
         executor = Mock(return_value=result("finished", {}))
@@ -144,6 +173,7 @@ class GraphRouteTests(unittest.TestCase):
         self.assertEqual(record["status"], "completed", record)
         selected = executor.call_args.args[0]
         self.assertEqual(selected["graph"], "graphs/first.json")
+        self.assertEqual(selected["base_branch"], "experiment/foo")
         self.assertEqual(record["executions"][0]["config"], selected)
         execution = registry.snapshot()["runs"][0]["executions"][0]
         self.assertEqual(execution["config"], selected)
@@ -155,6 +185,7 @@ class GraphRouteTests(unittest.TestCase):
         record = Runtime(self.graph, PROJECT, task=task, workspace=str(self.directory), executor=executor).run()
         self.assertEqual(record["status"], "completed")
         self.assertEqual(executor.call_args.args[0]["graph"], "custom-default.json")
+        self.assertNotIn("base_branch", executor.call_args.args[0])
 
     def test_static_failure_prevents_runtime_launch_and_executor_event(self):
         self.validator.side_effect = Failure("transport", "graph rejected")
