@@ -76,10 +76,11 @@ still require a selected Task belonging to the configured GitHub Project.
 ## GitWeave graph routes
 
 `project.json` may contain an ordered `graph_routes` array of objects with
-exactly `label` and `graph` nonblank strings. Labels are unique and compared
-case-insensitively. For every GitWeave invocation, the first configured label
-in the Task's existing `labels` chooses its graph; unmatched Tasks retain that
-node's configured default. Command executors are unaffected. Routing policies
+required `label` and `graph` nonblank strings and an optional nonblank
+`base_branch` string. Labels are unique and compared case-insensitively. For
+every GitWeave invocation, the first configured label in the Task's existing
+`labels` chooses its graph and optional base branch; unmatched Tasks retain
+that node's configured default. Command executors are unaffected. Routing policies
 are independent per Project and have no built-in label/provider/model meanings.
 
 Route paths are Project-workspace-relative and may not escape the directory,
@@ -89,10 +90,19 @@ before claiming work. The selected graph is checked again before launch.
 Static failures do not claim Tasks or launch agents. `init-project` preserves
 and validates human-edited routes when reusing a workspace.
 
+For example, `{"label": "experiment/foo", "graph": "gitweave.experiment.json",
+"base_branch": "foo"}` routes matching Tasks to branch `foo` with
+`--base-branch foo`. When omitted, GitWeave uses the repository default branch.
+GitWeave validates and fetches an explicit branch before executing any nodes.
+Missing or invalid branches propagate a Runtime Failure with the selected
+branch and GitWeave's stderr, without retrying on the default branch. This
+branch check occurs after claiming; a failed Task stays In Progress.
+
 Run receipts include `executions` with each invocation's `execution_id` and
-selected `config`. Observers receive the same configuration in
-`executor_started`; dashboard execution state retains `config`, `graph_path`
-and the selected graph's progress view. No routes (or an empty array) keeps
+selected `config`, including `base_branch` when configured. Observers receive
+the same configuration in `executor_started`; dashboard execution state retains `config`, `graph_path`
+and the selected graph's progress view, with the base branch shown in workflow
+details when present. No routes (or an empty array) keeps
 existing executor selection and setup behavior.
 
 ## Resources
@@ -247,9 +257,11 @@ the environment; this is not an OS sandbox.
 
 The GitWeave adapter invokes the public `gitweave run --graph ... --repo OWNER/REPO
 --issue N REQUEST` CLI from the workspace directory, with optional
-`--provenance-remote`. The Task must carry a valid `repository` and a positive Issue
-`number`; otherwise it is an `input` Runtime Failure before launch. GitWeave fetches
-the default branch itself and gives nodes `run_input`/`github_repository`; REQUEST
+`--provenance-remote` and the selected route's `--base-branch`. The Task must
+carry a valid `repository` and a positive Issue `number`; otherwise it is an
+`input` Runtime Failure before launch. GitWeave fetches
+the selected branch (the default when no branch is configured) itself and gives
+nodes `run_input`/`github_repository`; REQUEST
 embeds the ProjectWeave request JSON (without `checkout`) as optional guidance. It translates the CLI's completed record and terminal
 outputs into a Result; terminal commit strings become references and original
 outputs remain in data. It does not import GitWeave. The optional dashboard can

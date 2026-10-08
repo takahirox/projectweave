@@ -18,7 +18,7 @@ function fixture() {
     id: 'run-live', project: 'Operations', task, status: 'running', long_running: true,
     started_at: started, ended_at: null, elapsed_seconds: 4200, run_id: 'pw-live',
     executor_type: 'gitweave', failure: null,
-    executions: [{id: 'execute-1', executor_type: 'gitweave', graph_path: 'gitweave.frontend.json', run_id: 'gw-live', current_nodes: ['implement'], recent_node: 'implement', graph}],
+    executions: [{id: 'execute-1', executor_type: 'gitweave', graph_path: 'gitweave.frontend.json', config: {base_branch: 'experiment/foo'}, run_id: 'gw-live', current_nodes: ['implement'], recent_node: 'implement', graph}],
     logs: [
       {at: started, type: 'node_started', node_id: 'implement', instance_id: 'implement-1', execution_id: 'execute-1', text: 'implement'},
       {at: started, type: 'agent_output', node_id: 'implement', execution_id: 'execute-1', text: 'Updating dashboard styles'},
@@ -47,6 +47,15 @@ async function noOverflow(page) {
   const width = await page.evaluate(() => ({page: document.documentElement.scrollWidth, viewport: window.innerWidth}));
   expect(width.page, `Page width ${width.page} exceeds viewport ${width.viewport}`).toBeLessThanOrEqual(width.viewport);
 }
+
+test('Workflow details expose the selected base branch when configured', async ({page}) => {
+  const snapshot = fixture();
+  await setup(page, snapshot, '#run/run-live');
+  await expect(page.getByText('Base branch · experiment/foo', {exact: true})).toBeVisible();
+  delete snapshot.runs[0].executions[0].config.base_branch;
+  await setup(page, snapshot, '#run/run-live');
+  await expect(page.getByText('Base branch · experiment/foo', {exact: true})).toHaveCount(0);
+});
 
 test('Subscription usage is hidden by default and for an empty provider list', async ({page}) => {
   const snapshot = fixture();

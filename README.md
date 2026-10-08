@@ -274,6 +274,7 @@ To choose different GitWeave workflows by Issue label, edit a Project's
   "number": 7,
   "owner_type": "organization",
   "graph_routes": [
+    {"label": "experiment/foo", "graph": "gitweave.experiment.json", "base_branch": "foo"},
     {"label": "security", "graph": "gitweave.security.json"},
     {"label": "backend", "graph": "gitweave.backend.json"},
     {"label": "frontend", "graph": "gitweave.frontend.json"},
@@ -290,16 +291,23 @@ executors only; each Project owns its policy and each selected graph owns its
 provider/model/node configuration. These labels have no built-in meaning and
 selection makes no AI call.
 
-Each route must contain exactly nonblank `label` and `graph` strings; labels
-must be unique ignoring case. Graph paths are relative to that Project's
+Each route must contain nonblank `label` and `graph` strings and may include a
+nonblank `base_branch` string; labels must be unique ignoring case. A matching
+`experiment/foo` label in this example selects `gitweave.experiment.json` and
+invokes `gitweave run ... --issue N --base-branch foo`. Omit `base_branch` to
+let GitWeave use the repository default branch. GitWeave validates and fetches
+an explicit branch before running any nodes; a missing or invalid branch fails
+the Run with its error retained in the receipt, without retrying on the default
+branch. This check happens after claiming the Task, so the Task remains In
+Progress on failure. Graph paths are relative to that Project's
 workspace and cannot escape it, including through symlinks. Place the graph
 files there before running: `init-project` reuse, `claim`, `run`, `coordinate`
 and `run-task` validate every configured route with `gitweave validate`; runtime
 setup checks also validate all GitWeave executor defaults before claiming.
 Missing or invalid graphs fail setup without changing Task Status. The selected
-config is recorded in the Run receipt's `executions`, the `executor_started`
-event, and dashboard workflow details. Projects without routes keep their
-existing behavior.
+config, including `base_branch` when present, is recorded in the Run receipt's
+`executions`, the `executor_started` event, and dashboard workflow details.
+Projects without routes keep their existing behavior.
 
 After onboarding and verification, run either:
 

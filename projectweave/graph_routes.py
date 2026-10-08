@@ -9,9 +9,12 @@ def validate_routes(routes):
     require(isinstance(routes, list), "graph_routes must be an array")
     labels = set()
     for route in routes:
-        keys(route, {"label", "graph"}, {"label", "graph"})
+        keys(route, {"label", "graph", "base_branch"}, {"label", "graph"})
         require(text(route["label"]) and text(route["graph"]),
                 "graph_routes label and graph must be nonblank strings")
+        if "base_branch" in route:
+            require(text(route["base_branch"]), "graph_routes base_branch must be a nonblank string")
+            require("\0" not in route["base_branch"], "graph_routes base_branch must not contain NUL")
         label = route["label"].casefold()
         require(label not in labels, f"Duplicate graph_routes label: {route['label']}")
         labels.add(label)
@@ -70,6 +73,8 @@ def select_executor(config, project, task, directory):
         if route["label"].casefold() in labels:
             route_path(directory, route["graph"])
             config = dict(config, graph=route["graph"])
+            if "base_branch" in route:
+                config["base_branch"] = route["base_branch"]
             break
     validate_worker(directory, config["graph"])
     return config
