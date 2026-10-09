@@ -1,5 +1,6 @@
 """Static validation of sequence, conditional, and structured loop flow."""
 from .contracts import keys, require, number, text, valid_pointer, check_result
+from . import usage
 
 
 def executor(config):
@@ -38,7 +39,7 @@ def validate(graph):
             require(text(node.get("instruction")) and "action" not in node,
                     "Agents require instruction and no action")
         else:
-            require(node.get("action") in ("load", "select", "resources", "execute", "status", "complete", "writeback", "result"),
+            require(node.get("action") in ("load", "select", "resources", "usage", "execute", "status", "complete", "writeback", "result"),
                     "Unknown action")
             require("instruction" not in node, "instruction is only valid for agents")
         cfg = node.get("config", {})
@@ -74,6 +75,19 @@ def validate(graph):
                 cost = cfg.get("requires", {})
                 require(isinstance(cost, dict) and all(text(k) and number(v, True)
                         for k, v in cost.items()), "Invalid resource inspection allocation")
+            elif action == "usage":
+                keys(cfg, {"providers", "min_remaining_percent"}, {"providers"})
+                providers = cfg["providers"]
+                require(isinstance(providers, list) and providers,
+                        "usage.providers must be a nonempty list")
+                for provider in providers:
+                    require(isinstance(provider, str) and provider in usage.OBSERVERS,
+                            f"Unsupported usage provider: {provider!r}; supported: {', '.join(sorted(usage.OBSERVERS))}")
+                require(len(set(providers)) == len(providers), "usage.providers must be unique")
+                if "min_remaining_percent" in cfg:
+                    minimum = cfg["min_remaining_percent"]
+                    require(number(minimum) and minimum <= 100,
+                            "usage.min_remaining_percent must be 0-100")
             else:
                 keys(cfg, set())
                 if action == "select":

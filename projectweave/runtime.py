@@ -9,6 +9,7 @@ from .github import GitHub
 from .checkout import valid_repository
 from .executors import invoke
 from .graph_routes import select_executor
+from . import usage
 
 
 class Runtime:
@@ -94,6 +95,19 @@ class Runtime:
         if action == "resources":
             available = self.resources.admits(node.get("config", {}).get("requires", {}))
             return result("Resource state", {"resources": deepcopy(self.resources.state), "available": available})
+        if action == "usage":
+            config = node["config"]
+            try:
+                observations = usage.observe(config["providers"])
+            except Exception as exc:
+                raise Failure("usage", f"Usage observation failed: {exc}") from exc
+            ok = all("error" not in value for value in observations.values())
+            data = {"status": "ok" if ok else "error", "usage": observations}
+            if "min_remaining_percent" in config:
+                data["available"] = ok and all(
+                    remaining >= config["min_remaining_percent"]
+                    for value in observations.values() for remaining in value["windows"].values())
+            return result("Provider usage observed" if ok else "Provider usage observation failed", data)
         if action == "status":
             return self.backend.set_status(inputs["task"], node["config"]["status"])
         if action == "complete":

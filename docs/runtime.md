@@ -36,7 +36,7 @@ Combined `if`/`loop` nesting is limited to 32 levels. No expressions, arbitrary
 graph cycles, concurrency, map/fan-out, or retries are supported.
 
 Only two node kinds exist. `agent` delegates an instruction to an executor;
-`action` invokes a runtime operation: `load`, `select`, `resources`, `execute`,
+`action` invokes a runtime operation: `load`, `select`, `resources`, `usage`, `execute`,
 `status`, `complete`, `writeback`, or `result`. Agent roles belong in instructions. `execute` delegates
 work without adding an instruction. Both use the same executor boundary.
 Node `inputs` maps names to RFC 6901 pointers into
@@ -62,6 +62,27 @@ symlink resolution; absolute paths, Windows drive paths and backslashes are
 rejected. It does not load the fixed `graph.json`, require root coordinator
 configuration, admit or claim a Task, or change Status implicitly. Repetition
 remains graph-defined through `loop` and bounded by `max_steps`.
+
+`usage` requires an explicit nonempty, unique `config.providers` list validated
+against `usage.OBSERVERS` (currently `claude` and `codex`). Each activation calls
+the existing read-only observers afresh, without an executor/model invocation,
+provider discovery, cache, reservation or admission-policy change. Its Result
+data contains `status: "ok"` when every observer succeeds, otherwise `"error"`,
+and `usage: {provider: {windows: {name: remaining_percent}} | {error: reason}}`.
+Failed observations have no windows; previous readings are never substituted.
+An unexpected observer exception becomes a `usage` Runtime Failure.
+
+Optional `config.min_remaining_percent` is a finite number from 0 to 100.
+When supplied, `data.available` is true only if all observed windows for all
+requested providers are at least that threshold; observation errors make it
+false. When omitted, `available` is absent and no threshold is chosen. These
+fields are available to existing equality conditions, for example
+`/results/usage/data/available` or `/results/usage/data/usage/codex/windows/primary`.
+Subscription observations belong in Result `data.usage`; top-level `usage`
+remains the metered executor accounting map and is empty for this action.
+The action works in both Taskless and Task-backed graphs. See the
+[usage loop example](../examples/usage-loop.json) and
+[usage guide](usage.md#observing-provider-usage-in-a-graph).
 
 Command agent/execute nodes may omit `inputs.task`. These Taskless invocations
 run with the Project workspace as their working directory and receive `task: null`,

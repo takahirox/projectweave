@@ -159,6 +159,60 @@ class CLITests(unittest.TestCase):
         self.assertIsNone(record["last"]["data"]["input"])
         self.assertEqual(calls, [])
 
+    def test_run_graph_usage_observes_both_providers_without_model_or_task_setup(self):
+        selected = self.project_dir / "usage.json"
+        selected.write_text(json.dumps({"version": 1, "nodes": {
+            "usage": {"kind": "action", "action": "usage", "config": {"providers": ["claude", "codex"]}}},
+            "flow": ["usage"]}))
+        (self.project_dir / "graph.json").unlink()
+        self.config = {"invalid": True}
+        code, record, calls = self.cli("run-graph", "p", "--graph", "usage.json",
+                                       FAKE_CLAUDE_USED="28,52,15", FAKE_CODEX_USED="37")
+        self.assertEqual((code, record["status"]), (0, "completed"), record)
+        self.assertEqual(record["last"]["data"], {"status": "ok", "usage": {
+            "claude": {"windows": {"session": 72, "week": 48, "fable": 85}},
+            "codex": {"windows": {"primary": 63}}}})
+        self.assertEqual(record["last"]["usage"], {})
+        self.assertEqual(record["executions"], [])
+        self.assertEqual([(c["command"], c["argv"]) for c in calls], [
+            ("claude", ["-p", "--output-format", "json", "/usage"]), ("codex", ["app-server"])])
+        self.assertFalse((self.project_dir / ".projectweave.lock").exists())
+        self.assertFalse((self.project_dir / "worktrees").exists())
+
+    def test_run_graph_usage_loop_skips_work_on_low_or_unknown_allowance(self):
+        (self.project_dir / "usage-loop.json").write_text((ROOT / "examples/usage-loop.json").read_text())
+        for env, status in (({"FAKE_CODEX_USED": "81"}, "ok"),
+                            ({"FAKE_CLAUDE_USED": "10,20,81"}, "ok"),
+                            ({"FAKE_USAGE": "claude_failure"}, "error"),
+                            ({"FAKE_USAGE": "codex_error"}, "error")):
+            with self.subTest(env=env):
+                code, record, calls = self.cli("run-graph", "p", "--graph", "usage-loop.json", **env)
+                self.assertEqual((code, record["status"]), (0, "completed"), record)
+                self.assertEqual(record["last"]["data"]["status"], status)
+                self.assertIs(record["last"]["data"]["available"], False)
+                self.assertEqual([c["command"] for c in calls], ["claude", "codex"])
+                self.assertEqual(record["executions"], [])
+                self.assertEqual(list(record["results"]), ["usage"])
+
+    def test_run_graph_usage_rejects_unsupported_provider_before_external_calls(self):
+        (self.project_dir / "usage.json").write_text(json.dumps({"version": 1, "nodes": {
+            "usage": {"kind": "action", "action": "usage", "config": {"providers": ["claude", "gemini"]}}},
+            "flow": ["usage"]}))
+        code, record, calls = self.cli("run-graph", "p", "--graph", "usage.json")
+        self.assertEqual((code, record["status"]), (2, "failed"))
+        self.assertEqual(record["failure"]["kind"], "validation")
+        self.assertIn("Unsupported usage provider: 'gemini'", record["failure"]["message"])
+        self.assertEqual(calls, [])
+
+    def test_run_task_usage_uses_the_same_observers_without_admission_or_execution(self):
+        (self.project_dir / "graph.json").write_text(json.dumps({"version": 1, "nodes": {
+            "usage": {"kind": "action", "action": "usage", "config": {"providers": ["codex"]}}},
+            "flow": ["usage"]}))
+        code, record, calls = self.cli("run-task", "p", "--task", "-", stdin=json.dumps({"id": "I"}))
+        self.assertEqual((code, record["status"]), (0, "completed"), record)
+        self.assertEqual(record["last"]["data"], {"status": "ok", "usage": {"codex": {"windows": {"primary": 50}}}})
+        self.assertEqual([c["command"] for c in calls], ["codex"])
+
     def test_run_graph_validation_precedes_execution(self):
         valid = {"version": 1, "nodes": {"work": {"kind": "action", "action": "execute",
                  "executor": {"type": "command", "argv": ["worker"]}}}, "flow": ["work"]}
