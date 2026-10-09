@@ -539,6 +539,10 @@ operational follow-up.
 [examples/](examples/) holds specialized feature examples such as the
 [review/fix loop](examples/review-fix.json) and a manual
 [project.json](examples/project.json); they are not alternative defaults.
+The [provider usage loop](examples/usage-loop.json) reads explicitly selected
+Claude/Codex subscription usage before each work step and stops below a
+graph-configured threshold. It also works with Taskless `run-graph`; see the
+[usage action guide](docs/usage.md#observing-provider-usage-in-a-graph).
 The runtime never changes provider in response to an executor failure.
 
 See the [minimal runtime design](docs/runtime.md) and

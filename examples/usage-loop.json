@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "max_steps": 100,
+  "nodes": {
+    "usage": {
+      "kind": "action",
+      "action": "usage",
+      "config": {
+        "providers": ["claude", "codex"],
+        "min_remaining_percent": 20
+      }
+    },
+    "work": {
+      "kind": "agent",
+      "instruction": "Perform one bounded unit of Project work and return a Result",
+      "executor": {"type": "command", "argv": ["./work-once"]},
+      "inputs": {"context": "/results/usage/data"}
+    }
+  },
+  "flow": [
+    {
+      "loop": {
+        "flow": [
+          "usage",
+          {
+            "if": {
+              "path": "/results/usage/data/available",
+              "equals": true,
+              "then": ["work"],
+              "else": []
+            }
+          }
+        ],
+        "while": {"path": "/results/usage/data/available", "equals": true}
+      }
+    }
+  ]
+}

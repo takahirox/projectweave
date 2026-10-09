@@ -620,6 +620,7 @@ evaluation occurs. A graph runs only what it lists; the canonical graph is just
 | `action: load` | none | `items`: nonarchived open Issues and their metadata (custom graphs; `claim` does selection by default) |
 | `action: select` | `inputs.items` | `task`: highest ranked eligible Issue or null |
 | `action: resources` | optional `config.requires` allocation | `resources` snapshot and `available` admission boolean |
+| `action: usage` | `config.providers`: nonempty unique list of supported providers; optional `config.min_remaining_percent` (0–100) | `status`, per-provider `usage` windows/errors, and `available` when a threshold is supplied |
 | `action: execute` | `executor`; `inputs.task` required for GitWeave, optional for commands; optional nonempty `requires`, `inputs.context` | executor's Result data |
 | `kind: agent` | same as execute plus `instruction`; omit action | executor's Result data |
 | `action: status` | `inputs.task`, `config.status` (an existing Status option) | the Status name set; no comment |
@@ -662,6 +663,92 @@ the terminal output's data carries `pr` (number, URL, head), `merged`,
 `merge_commit` when merged, and `closed`. Writeback posts the full JSON Result,
 which can include local paths such as GitWeave's store, so consider that before
 using it on public Issues.
+
+## Observing provider usage in a graph
+
+Use `action: usage` to read current subscription allowance for explicitly named
+providers (`claude`, `codex`). Each invocation reuses the existing read-only
+observers: Claude's `/usage` and Codex's `account/rateLimits/read` app-server
+request. No AI model is called to inspect usage. The corresponding provider CLI
+must be installed and authenticated. Unsupported provider names fail graph
+validation before any observation or work starts.
+
+The ordinary Result contains, for example:
+
+```json
+{
+  "message": "Provider usage observed",
+  "data": {
+    "status": "ok",
+    "usage": {
+      "claude": {"windows": {"session": 72, "week": 48, "fable": 85}},
+      "codex": {"windows": {"primary": 63}}
+    },
+    "available": true
+  },
+  "references": [],
+  "usage": {}
+}
+```
+
+Window values are **remaining percentages**, from 0 to 100. `data.usage` is
+subscription observation data; the top-level `usage` field is reserved for
+metered executor accounting. Read an individual window with a pointer such as
+`/results/usage/data/usage/codex/windows/primary`. Provider failures appear as
+`{"error":"reason"}` instead of `windows`, with `data.status: "error"`; other
+providers' successful observations remain in the result. Failed observations do
+not reuse old readings. Unexpected observer exceptions stop the Run with a
+`usage` Runtime Failure.
+
+Because `if` and `loop` compare equality, you may explicitly configure
+`min_remaining_percent` to obtain `data.available`: true only when **every
+reported window of every requested provider** meets or exceeds that threshold.
+Any observation error makes it false. Without this option, `available` is absent;
+the action chooses no threshold. Claude's optional `fable` window participates
+when reported. This action accepts no executor or resource allocation.
+
+A minimal loop observes before each work step and stops below 20% remaining:
+
+```json
+{
+  "version": 1,
+  "max_steps": 100,
+  "nodes": {
+    "usage": {
+      "kind": "action", "action": "usage",
+      "config": {"providers": ["claude", "codex"], "min_remaining_percent": 20}
+    },
+    "work": {
+      "kind": "agent",
+      "instruction": "Perform one bounded unit of Project work and return a Result",
+      "executor": {"type": "command", "argv": ["./work-once"]},
+      "inputs": {"context": "/results/usage/data"}
+    }
+  },
+  "flow": [{"loop": {
+    "flow": ["usage", {"if": {
+      "path": "/results/usage/data/available", "equals": true,
+      "then": ["work"], "else": []
+    }}],
+    "while": {"path": "/results/usage/data/available", "equals": true}
+  }}]
+}
+```
+
+Copy [examples/usage-loop.json](../examples/usage-loop.json) to
+`projects/app/usage-loop.json`, supply an executable `projects/app/work-once`
+wrapper following the command Result contract, and run
+`projectweave run-graph app --graph usage-loop.json`. Choose the providers and
+threshold for your graph explicitly. The loop checks the named observation
+result even after `work` replaces `/last`. Although loops run their body at
+least once, the `if` skips the first work step when allowance is already low or
+unknown. Each new iteration observes again before launching more AI work.
+Continued sufficient allowance is bounded by `max_steps`.
+
+This works with Taskless `run-graph` and Task-backed graphs. It observes a current
+snapshot and does not reserve allowance or interrupt work already running.
+Coordinator Task admission and metered resource accounting remain unchanged.
+No monitoring, provider switching, purchases or allowance resets are added.
 
 ## Review/fix loop
 
