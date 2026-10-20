@@ -124,10 +124,16 @@ function sortedProjects() {
     const field = {updated: 'updated_at', requested: 'requested_at'}[projectSort];
     if (field) {
       const time = project => {
-        const parsed = Date.parse(project[field]);
-        return Number.isFinite(parsed) ? parsed : -Infinity;
+        const value = project[field];
+        const parsed = Date.parse(value);
+        if (!Number.isFinite(parsed)) return [-Infinity, ''];
+        // Date.parse keeps only milliseconds; retain the registry's finer precision.
+        // Trimming trailing zeroes makes equivalent fractional representations tie.
+        const fraction = value.match(/\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/)?.[1] || '';
+        return [parsed, fraction.slice(3).replace(/0+$/, '')];
       };
-      const order = compare(time(b), time(a));
+      const [aMillis, aFraction] = time(a), [bMillis, bFraction] = time(b);
+      const order = compare(bMillis, aMillis) || compare(bFraction, aFraction);
       if (order) return order;
     }
     // Fixed string comparisons avoid locale-dependent ties; names are unique.

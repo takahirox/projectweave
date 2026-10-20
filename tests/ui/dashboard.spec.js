@@ -83,6 +83,29 @@ test('Project timestamp sorts are newest first, break ties alphabetically and pu
   await noOverflow(page);
 });
 
+test('Project timestamp sorts preserve sub-millisecond precision before breaking ties', async ({page}) => {
+  const snapshot = {projects: [
+    {name: 'alpha', updated_at: '2026-10-20T08:41:05.014037+00:00', requested_at: '2026-10-20T08:41:05.014321+00:00'},
+    {name: 'Zoo', updated_at: '2026-10-20T08:41:05.014321+00:00', requested_at: '2026-10-20T08:41:05.014037+00:00'},
+    {name: 'Beta', updated_at: '2026-10-20T10:41:05.014321+02:00', requested_at: '2026-10-20T08:41:05.014037Z'},
+    {name: 'gamma', updated_at: '2026-10-20T08:41:05.014Z', requested_at: '2026-10-20T08:41:05.014000+00:00'},
+    {name: 'ALPHA', updated_at: '2026-10-20T08:41:05.014000+00:00', requested_at: '2026-10-20T08:41:05.014Z'},
+    {name: 'Idle'},
+  ], runs: []};
+  await setup(page, snapshot);
+  const sort = page.getByRole('combobox', {name: 'Sort:'}), projects = page.locator('.project-identity > a');
+  await sort.selectOption({label: 'Recently updated'});
+  await expect(projects).toHaveText(['Beta', 'Zoo', 'alpha', 'ALPHA', 'gamma', 'Idle']);
+  snapshot.projects[0].updated_at = '2026-10-20T08:41:05.014322+00:00';
+  await expect(projects).toHaveText(['alpha', 'Beta', 'Zoo', 'ALPHA', 'gamma', 'Idle']);
+  await expect(sort).toHaveValue('updated');
+  await sort.selectOption({label: 'Request time'});
+  await expect(projects).toHaveText(['alpha', 'Beta', 'Zoo', 'ALPHA', 'gamma', 'Idle']);
+  snapshot.projects[1].requested_at = '2026-10-20T08:41:05.014322+00:00';
+  await expect(projects).toHaveText(['Zoo', 'alpha', 'Beta', 'ALPHA', 'gamma', 'Idle']);
+  await expect(sort).toHaveValue('requested');
+});
+
 test('Project sorting follows live activity and requests while preserving selection and focus', async ({page}) => {
   const snapshot = fixture();
   snapshot.projects[0].updated_at = snapshot.projects[0].requested_at = '2026-10-01T08:00:00Z';
