@@ -4,6 +4,7 @@ const connection = document.getElementById('connection');
 let state;
 let displayedRun = null;
 let traceFilter = 'all';
+let projectSort = 'alphabetical';
 const selectedNodes = new Map();
 const lifecycleTypes = new Set(['node_started', 'node_completed', 'node_failed']);
 const statusNames = {running: 'Running', active: 'Active', completed: 'Completed', failed: 'Failed',
@@ -117,15 +118,42 @@ function subscriptionUsage() {
   section.append(providers);
   view.append(section);
 }
+function sortedProjects() {
+  const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+  return state.projects.slice().sort((a, b) => {
+    const field = {updated: 'updated_at', requested: 'requested_at'}[projectSort];
+    if (field) {
+      const time = project => {
+        const parsed = Date.parse(project[field]);
+        return Number.isFinite(parsed) ? parsed : -Infinity;
+      };
+      const order = compare(time(b), time(a));
+      if (order) return order;
+    }
+    // Fixed string comparisons avoid locale-dependent ties; names are unique.
+    return compare(a.name.toLowerCase(), b.name.toLowerCase()) || compare(a.name, b.name);
+  });
+}
 function projects() {
-  view.append(pageHeader('Projects', 'An overview of work in this coordinator.', element('span', `${state.projects.length} managed`, 'muted')));
+  const controls = element('div', null, 'project-controls');
+  const label = element('label', 'Sort: ');
+  const sort = element('select');
+  sort.dataset.focus = 'project-sort';
+  for (const [value, text] of [['alphabetical', 'Alphabetical'], ['updated', 'Recently updated'], ['requested', 'Request time']]) {
+    const option = element('option', text); option.value = value; sort.append(option);
+  }
+  sort.value = projectSort;
+  sort.addEventListener('change', () => { projectSort = sort.value; render(); });
+  label.append(sort);
+  controls.append(element('span', `${state.projects.length} managed`, 'muted'), label);
+  view.append(pageHeader('Projects', 'An overview of work in this coordinator.', controls));
   subscriptionUsage();
   const list = element('section', null, 'project-list');
   list.setAttribute('aria-label', 'Project operations overview');
   const labels = element('div', null, 'project-row project-columns');
   for (const label of ['Project', 'Execution status', 'Relevant task / run', 'Elapsed']) labels.append(element('span', label));
   list.append(labels);
-  for (const project of state.projects) {
+  for (const project of sortedProjects()) {
     const row = element('article', null, 'project-row');
     const identity = element('div', null, 'project-identity');
     identity.append(link(project.name, `#project/${encodeURIComponent(project.name)}`));

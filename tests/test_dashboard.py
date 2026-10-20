@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
 import sys
@@ -90,6 +91,75 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual([log["text"] for log in snapshot["runs"][0]["logs"]], ['2' * 10, '3' * 10, '4' * 10])
         snapshot["runs"][0]["logs"][0]["text"] = "mutated"
         self.assertEqual(self.registry.snapshot()["runs"][0]["logs"][0]["text"], '2' * 10)
+
+    def test_project_timestamps_follow_requests_and_observed_activity(self):
+        registry = ExecutionRegistry(log_lines=1)
+        for name in ("p", "other", "idle"):
+            registry.add_project(name)
+        base = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        with patch("projectweave.execution.datetime") as wall:
+            def tick(minute):
+                wall.now.return_value = base + timedelta(minutes=minute)
+                return wall.now.return_value.isoformat()
+
+            first = tick(0)
+            older = registry.start("p", TASK, self.directory)
+            other_time = tick(1)
+            other = registry.start("other", TASK, self.directory)
+            latest = tick(2)
+            newer = registry.start("p", TASK, self.directory)
+            projects = registry.snapshot()["projects"]
+            self.assertEqual([p["requested_at"] for p in projects], [latest, other_time, None])
+            self.assertEqual([p["updated_at"] for p in projects], [latest, other_time, None])
+            self.assertEqual(registry.snapshot()["runs"][0]["started_at"], first)
+
+            # An older concurrent run can have the newest activity without changing request time.
+            for minute, event in enumerate([
+                {"type": "run_started", "run_id": "pw"},
+                {"type": "executor_started", "execution_id": "e", "config": {"type": "gitweave", "graph": "gitweave.json"}},
+                {"type": "node_started", "node_id": "first"},
+                {"type": "agent_output", "text": "progress"},
+                {"type": "node_completed", "node_id": "first"},
+                {"type": "node_started", "node_id": "last"},
+                {"type": "executor_finished"},
+            ], start=3):
+                with self.subTest(event=event):
+                    observed = tick(minute)
+                    registry.event(older, event)
+                    project = registry.snapshot()["projects"][0]
+                    self.assertEqual((project["requested_at"], project["updated_at"]), (latest, observed))
+                    self.assertEqual(registry.snapshot()["runs"][0]["updated_at"], observed)
+
+            # Polls, ignored events and repeated identity notifications are not activity.
+            tick(10)
+            for event in (None, {}, {"type": "unrecognized"}, {"type": "run_started", "run_id": "pw"}):
+                registry.event(older, event)
+            self.assertEqual(registry.snapshot()["projects"][0]["updated_at"], observed)
+            registry.add_project("p")
+            self.assertEqual(registry.snapshot()["projects"][0]["updated_at"], observed)
+
+            for minute, identity, status in ((11, older, "failed"), (12, newer, "completed"), (13, other, "completed")):
+                ended = tick(minute)
+                registry.finish(identity, {"status": status})
+                run = next(run for run in registry.snapshot()["runs"] if run["id"] == identity)
+                self.assertEqual(run["updated_at"], ended)
+                self.assertEqual(run["ended_at"], ended)
+            projects = registry.snapshot()["projects"]
+            self.assertEqual(projects[0]["requested_at"], latest)
+            self.assertGreater(projects[1]["updated_at"], projects[0]["updated_at"])
+
+        restarted = ExecutionRegistry()
+        restarted.add_project("p")
+        self.assertIsNone(restarted.snapshot()["projects"][0]["updated_at"])
+        self.assertIsNone(restarted.snapshot()["projects"][0]["requested_at"])
+
+    def test_elapsed_time_and_long_running_threshold_do_not_count_as_activity(self):
+        before = self.registry.snapshot()["projects"][0]
+        self.now = 100
+        after = self.registry.snapshot()["projects"][0]
+        self.assertEqual(after["long_running"], 1)
+        self.assertEqual(after["updated_at"], before["updated_at"])
+        self.assertEqual(after["requested_at"], before["requested_at"])
 
     def test_logs_preserve_explicit_node_and_execution_attribution(self):
         self.execution()
