@@ -208,6 +208,13 @@ pan/zoom, live refresh/focus behavior, trace filtering, reconnects, and safe
 rendering of external content. `npm run test:layout` runs directed layout tests
 without a browser.
 
+The dashboard's Projects overview sorts by Project name (case-insensitive A–Z)
+by default. Click the Project, Updated, or Requested column header to sort;
+click it again to reverse direction. Updated shows the last observed activity,
+and Requested shows the last Task request, with newest first on initial selection.
+Missing timestamps stay last in either direction. Sort preferences and header
+focus survive live refreshes; this display order does not affect scheduling.
+
 The GitWeave workflow canvas automatically arranges execution from top to
 bottom, with branches side by side and loop edges returning around the nodes.
 Drag a node to reposition it, drag the background to pan, or scroll to zoom.

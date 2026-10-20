@@ -4,7 +4,7 @@ const connection = document.getElementById('connection');
 let state;
 let displayedRun = null;
 let traceFilter = 'all';
-let projectSort = 'alphabetical';
+let projectSort = {key: 'alphabetical', direction: 'ascending'};
 const selectedNodes = new Map();
 const lifecycleTypes = new Set(['node_started', 'node_completed', 'node_failed']);
 const statusNames = {running: 'Running', active: 'Active', completed: 'Completed', failed: 'Failed',
@@ -84,7 +84,7 @@ function pageHeader(title, description, right) {
   if (right) header.append(right);
   return header;
 }
-function subscriptionUsage() {
+function subscriptionUsage(container) {
   if (!state.subscription_usage?.length) return;
   const section = element('section', null, 'subscription-usage');
   section.setAttribute('aria-label', 'Subscription usage');
@@ -116,12 +116,13 @@ function subscriptionUsage() {
     providers.append(provider);
   }
   section.append(providers);
-  view.append(section);
+  container.append(section);
 }
 function sortedProjects() {
   const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
   return state.projects.slice().sort((a, b) => {
-    const field = {updated: 'updated_at', requested: 'requested_at'}[projectSort];
+    const direction = projectSort.direction === 'ascending' ? 1 : -1;
+    const field = {updated: 'updated_at', requested: 'requested_at'}[projectSort.key];
     if (field) {
       const time = project => {
         const value = project[field];
@@ -133,34 +134,69 @@ function sortedProjects() {
         return [parsed, fraction.slice(3).replace(/0+$/, '')];
       };
       const [aMillis, aFraction] = time(a), [bMillis, bFraction] = time(b);
-      const order = compare(bMillis, aMillis) || compare(bFraction, aFraction);
-      if (order) return order;
+      // Missing timestamps remain last even when the direction is reversed.
+      if (aMillis === -Infinity && bMillis !== -Infinity) return 1;
+      if (bMillis === -Infinity && aMillis !== -Infinity) return -1;
+      const order = compare(aMillis, bMillis) || compare(aFraction, bFraction);
+      if (order) return order * direction;
     }
     // Fixed string comparisons avoid locale-dependent ties; names are unique.
-    return compare(a.name.toLowerCase(), b.name.toLowerCase()) || compare(a.name, b.name);
+    const nameOrder = compare(a.name.toLowerCase(), b.name.toLowerCase()) || compare(a.name, b.name);
+    return nameOrder * (field ? 1 : direction);
   });
 }
 function projects() {
-  const controls = element('div', null, 'project-controls');
-  const label = element('label', 'Sort: ');
-  const sort = element('select');
-  sort.dataset.focus = 'project-sort';
-  for (const [value, text] of [['alphabetical', 'Alphabetical'], ['updated', 'Recently updated'], ['requested', 'Request time']]) {
-    const option = element('option', text); option.value = value; sort.append(option);
+  let overview = view.querySelector('.projects-overview');
+  if (!overview) {
+    overview = element('div', null, 'projects-overview');
+    overview.append(pageHeader('Projects', 'An overview of work in this coordinator.', element('span', '', 'project-managed muted')),
+      element('div', null, 'project-usage'));
+    const list = element('section', null, 'project-list');
+    list.setAttribute('role', 'table');
+    list.setAttribute('aria-label', 'Project operations overview');
+    const labels = element('div', null, 'project-row project-columns');
+    labels.setAttribute('role', 'row');
+    for (const [label, key] of [['Project', 'alphabetical'], ['Execution status'], ['Relevant task / run'],
+      ['Elapsed'], ['Updated', 'updated'], ['Requested', 'requested']]) {
+      const header = element('div');
+      header.setAttribute('role', 'columnheader');
+      if (key) {
+        header.dataset.sort = key;
+        const sort = button(label, () => {
+          projectSort = {key, direction: projectSort.key === key
+            ? (projectSort.direction === 'ascending' ? 'descending' : 'ascending')
+            : (key === 'alphabetical' ? 'ascending' : 'descending')};
+          projects();
+        }, 'project-sort');
+        const indicator = element('span', '', 'sort-indicator');
+        indicator.setAttribute('aria-hidden', 'true');
+        sort.append(indicator);
+        header.append(sort);
+      } else header.textContent = label;
+      labels.append(header);
+    }
+    const rows = element('div', null, 'project-rows');
+    rows.setAttribute('role', 'rowgroup');
+    list.append(labels, rows);
+    overview.append(list);
+    view.append(overview);
   }
-  sort.value = projectSort;
-  sort.addEventListener('change', () => { projectSort = sort.value; render(); });
-  label.append(sort);
-  controls.append(element('span', `${state.projects.length} managed`, 'muted'), label);
-  view.append(pageHeader('Projects', 'An overview of work in this coordinator.', controls));
-  subscriptionUsage();
-  const list = element('section', null, 'project-list');
-  list.setAttribute('aria-label', 'Project operations overview');
-  const labels = element('div', null, 'project-row project-columns');
-  for (const label of ['Project', 'Execution status', 'Relevant task / run', 'Elapsed']) labels.append(element('span', label));
-  list.append(labels);
+  overview.querySelector('.project-managed').textContent = `${state.projects.length} managed`;
+  const usage = overview.querySelector('.project-usage');
+  usage.replaceChildren();
+  subscriptionUsage(usage);
+  for (const header of overview.querySelectorAll('[data-sort]')) {
+    const active = header.dataset.sort === projectSort.key;
+    header.setAttribute('aria-sort', active ? projectSort.direction : 'none');
+    header.querySelector('.sort-indicator').textContent = active
+      ? (projectSort.direction === 'ascending' ? ' ↑' : ' ↓') : ' ↕';
+  }
+  const rows = overview.querySelector('.project-rows');
+  const focusedLink = rows.contains(document.activeElement) ? document.activeElement.getAttribute('href') : null;
+  rows.replaceChildren();
   for (const project of sortedProjects()) {
     const row = element('article', null, 'project-row');
+    row.setAttribute('role', 'row');
     const identity = element('div', null, 'project-identity');
     identity.append(link(project.name, `#project/${encodeURIComponent(project.name)}`));
     const members = state.runs.filter(run => run.project === project.name);
@@ -172,10 +208,28 @@ function projects() {
         element('small', `${relevant.task.repository || 'Repository unavailable'} · ${executionPosition(relevant)}`, 'muted'));
     } else task.append(element('span', 'No tasks launched', 'muted'));
     row.append(identity, counts(project), task, element('span', relevant ? duration(relevant.elapsed_seconds) : '—', 'elapsed'));
-    list.append(row);
+    for (const [label, field] of [['Updated', 'updated_at'], ['Requested', 'requested_at']]) {
+      const cell = element('div', null, 'project-time');
+      const caption = element('small', label, 'project-time-label muted');
+      caption.setAttribute('aria-hidden', 'true');
+      const time = element('time', timestamp(project[field]));
+      if (project[field]) time.dateTime = project[field];
+      cell.append(caption, time);
+      row.append(cell);
+    }
+    for (const cell of row.children) cell.setAttribute('role', 'cell');
+    rows.append(row);
   }
-  if (!state.projects.length) list.append(element('p', 'No managed Projects in this workspace.', 'empty'));
-  view.append(list);
+  if (!state.projects.length) {
+    const row = element('div');
+    row.setAttribute('role', 'row');
+    const empty = element('p', 'No managed Projects in this workspace.', 'empty');
+    empty.setAttribute('role', 'cell');
+    empty.setAttribute('aria-colspan', '6');
+    row.append(empty);
+    rows.append(row);
+  }
+  if (focusedLink) Array.from(rows.querySelectorAll('a')).find(node => node.getAttribute('href') === focusedLink)?.focus({preventScroll: true});
 }
 function projectDetail(name, runId) {
   const project = state.projects.find(project => project.name === name);
@@ -322,13 +376,18 @@ function runDetail(run, container) {
 function render() {
   // Keep pointer capture intact while dragging; the next poll applies live state.
   if (WorkflowGraph.interacting) return;
+  const [kind, ...parts] = location.hash.slice(1).split('/');
+  // Keep overview headers mounted: polls must not interrupt pointer or key presses.
+  if (kind !== 'project' && kind !== 'run' && view.querySelector('.projects-overview')) {
+    projects();
+    return;
+  }
   // Polling must preserve list/log scroll, trace follow state, and keyboard focus.
   const scroll = new Map(Array.from(view.querySelectorAll('[data-scroll]'), node => [node.dataset.scroll,
     {top: node.scrollTop, left: node.scrollLeft,
       bottom: node.scrollTop + node.clientHeight >= node.scrollHeight - 10}]));
   const focusKey = document.activeElement?.dataset.focus;
   view.replaceChildren();
-  const [kind, ...parts] = location.hash.slice(1).split('/');
   let id;
   try { id = decodeURIComponent(parts.join('/')); } catch { id = ''; }
   if (kind === 'project') projectDetail(id);

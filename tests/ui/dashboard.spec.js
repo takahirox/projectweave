@@ -47,23 +47,36 @@ async function noOverflow(page) {
   const width = await page.evaluate(() => ({page: document.documentElement.scrollWidth, viewport: window.innerWidth}));
   expect(width.page, `Page width ${width.page} exceeds viewport ${width.viewport}`).toBeLessThanOrEqual(width.viewport);
 }
+function sortHeader(page, name) { return page.getByRole('columnheader', {name, exact: true}); }
+function sortButton(page, name) { return sortHeader(page, name).getByRole('button', {name, exact: true}); }
 
 test('Projects default to case-insensitive alphabetical order with deterministic case ties', async ({page}) => {
   const names = ['Zoo', 'gamma', 'alpha', 'Beta', 'beta', 'ALPHA'];
   const snapshot = {projects: names.map(name => ({name})), runs: []};
   await setup(page, snapshot);
   const projects = page.locator('.project-identity > a');
-  const sort = page.getByRole('combobox', {name: 'Sort:'});
-  await expect(sort).toHaveValue('alphabetical');
+  await expect(page.getByRole('combobox')).toHaveCount(0);
+  await expect(page.getByRole('table', {name: 'Project operations overview'})).toBeVisible();
+  await expect(page.getByRole('columnheader')).toHaveCount(6);
+  await expect(page.getByRole('columnheader').getByRole('button')).toHaveCount(3);
+  await expect(sortHeader(page, 'Project')).toHaveAttribute('aria-sort', 'ascending');
+  await expect(sortHeader(page, 'Updated')).toHaveAttribute('aria-sort', 'none');
   await expect(projects).toHaveText(['ALPHA', 'alpha', 'Beta', 'beta', 'gamma', 'Zoo']);
   expect(await page.evaluate(() => state.projects.map(project => project.name))).toEqual(names);
   snapshot.projects.reverse();
   await page.waitForResponse('**/api/state');
   await expect(projects).toHaveText(['ALPHA', 'alpha', 'Beta', 'beta', 'gamma', 'Zoo']);
+  await sortButton(page, 'Project').click();
+  await expect(projects).toHaveText(['Zoo', 'gamma', 'beta', 'Beta', 'alpha', 'ALPHA']);
+  await expect(sortHeader(page, 'Project')).toHaveAttribute('aria-sort', 'descending');
+  snapshot.projects.reverse();
+  await page.waitForResponse('**/api/state');
+  await expect(projects).toHaveText(['Zoo', 'gamma', 'beta', 'Beta', 'alpha', 'ALPHA']);
+  await expect(sortHeader(page, 'Project')).toHaveAttribute('aria-sort', 'descending');
   await noOverflow(page);
 });
 
-test('Project timestamp sorts are newest first, break ties alphabetically and put missing times last', async ({page}) => {
+test('Project timestamp headers toggle direction with alphabetical ties and missing times always last', async ({page}) => {
   const snapshot = {projects: [
     {name: 'Zoo', updated_at: null, requested_at: null},
     {name: 'gamma', updated_at: '2026-10-01T08:00:00Z', requested_at: '2026-10-01T10:00:00Z'},
@@ -73,13 +86,32 @@ test('Project timestamp sorts are newest first, break ties alphabetically and pu
     {name: 'beta'},
   ], runs: []};
   await setup(page, snapshot);
-  const sort = page.getByRole('combobox', {name: 'Sort:'}), projects = page.locator('.project-identity > a');
-  await sort.selectOption({label: 'Recently updated'});
+  const projects = page.locator('.project-identity > a');
+  await sortButton(page, 'Updated').click();
+  await expect(sortHeader(page, 'Updated')).toHaveAttribute('aria-sort', 'descending');
+  await expect(sortHeader(page, 'Project')).toHaveAttribute('aria-sort', 'none');
   await expect(projects).toHaveText(['ALPHA', 'alpha', 'Beta', 'gamma', 'beta', 'Zoo']);
-  await sort.selectOption({label: 'Request time'});
+  await sortButton(page, 'Updated').click();
+  await expect(sortHeader(page, 'Updated')).toHaveAttribute('aria-sort', 'ascending');
   await expect(projects).toHaveText(['gamma', 'ALPHA', 'alpha', 'Beta', 'beta', 'Zoo']);
-  await sort.selectOption({label: 'Alphabetical'});
+  await sortButton(page, 'Requested').click();
+  await expect(sortHeader(page, 'Requested')).toHaveAttribute('aria-sort', 'descending');
+  await expect(projects).toHaveText(['gamma', 'ALPHA', 'alpha', 'Beta', 'beta', 'Zoo']);
+  await sortButton(page, 'Requested').click();
+  await expect(sortHeader(page, 'Requested')).toHaveAttribute('aria-sort', 'ascending');
+  await expect(projects).toHaveText(['ALPHA', 'alpha', 'Beta', 'gamma', 'beta', 'Zoo']);
+  await sortButton(page, 'Updated').click();
+  await expect(sortHeader(page, 'Updated')).toHaveAttribute('aria-sort', 'descending');
+  await sortButton(page, 'Project').click();
+  await expect(sortHeader(page, 'Project')).toHaveAttribute('aria-sort', 'ascending');
   await expect(projects).toHaveText(['ALPHA', 'alpha', 'Beta', 'beta', 'gamma', 'Zoo']);
+  const alpha = page.getByRole('row').filter({has: page.getByRole('link', {name: 'alpha', exact: true})});
+  await expect(alpha.locator('time').first()).toHaveAttribute('datetime', snapshot.projects[2].updated_at);
+  await expect(alpha.locator('time').last()).toHaveAttribute('datetime', snapshot.projects[2].requested_at);
+  await expect(alpha.locator('time').first()).not.toBeEmpty();
+  await expect(alpha.locator('time').last()).not.toBeEmpty();
+  const idle = page.getByRole('row').filter({has: page.getByRole('link', {name: 'beta', exact: true})});
+  await expect(idle.locator('time')).toHaveText(['—', '—']);
   await noOverflow(page);
 });
 
@@ -93,43 +125,93 @@ test('Project timestamp sorts preserve sub-millisecond precision before breaking
     {name: 'Idle'},
   ], runs: []};
   await setup(page, snapshot);
-  const sort = page.getByRole('combobox', {name: 'Sort:'}), projects = page.locator('.project-identity > a');
-  await sort.selectOption({label: 'Recently updated'});
+  const projects = page.locator('.project-identity > a');
+  await sortButton(page, 'Updated').click();
   await expect(projects).toHaveText(['Beta', 'Zoo', 'alpha', 'ALPHA', 'gamma', 'Idle']);
+  await sortButton(page, 'Updated').click();
+  await expect(projects).toHaveText(['ALPHA', 'gamma', 'alpha', 'Beta', 'Zoo', 'Idle']);
+  await sortButton(page, 'Updated').click();
   snapshot.projects[0].updated_at = '2026-10-20T08:41:05.014322+00:00';
   await expect(projects).toHaveText(['alpha', 'Beta', 'Zoo', 'ALPHA', 'gamma', 'Idle']);
-  await expect(sort).toHaveValue('updated');
-  await sort.selectOption({label: 'Request time'});
+  await expect(sortHeader(page, 'Updated')).toHaveAttribute('aria-sort', 'descending');
+  await sortButton(page, 'Requested').click();
   await expect(projects).toHaveText(['alpha', 'Beta', 'Zoo', 'ALPHA', 'gamma', 'Idle']);
+  await sortButton(page, 'Requested').click();
+  await expect(projects).toHaveText(['ALPHA', 'gamma', 'Beta', 'Zoo', 'alpha', 'Idle']);
+  await sortButton(page, 'Requested').click();
   snapshot.projects[1].requested_at = '2026-10-20T08:41:05.014322+00:00';
   await expect(projects).toHaveText(['Zoo', 'alpha', 'Beta', 'ALPHA', 'gamma', 'Idle']);
-  await expect(sort).toHaveValue('requested');
+  await expect(sortHeader(page, 'Requested')).toHaveAttribute('aria-sort', 'descending');
 });
 
 test('Project sorting follows live activity and requests while preserving selection and focus', async ({page}) => {
   const snapshot = fixture();
   snapshot.projects[0].updated_at = snapshot.projects[0].requested_at = '2026-10-01T08:00:00Z';
   await setup(page, snapshot);
-  const sort = page.getByRole('combobox', {name: 'Sort:'}), projects = page.locator('.project-identity > a');
-  await sort.selectOption({label: 'Recently updated'});
-  await sort.focus();
+  const projects = page.locator('.project-identity > a');
+  await sortButton(page, 'Updated').click();
+  const originalHeader = await sortButton(page, 'Updated').elementHandle();
   await expect(projects).toHaveText(['Operations', 'Idle']);
   snapshot.projects[1].updated_at = snapshot.projects[1].requested_at = '2026-10-01T09:00:00Z';
   await expect(projects).toHaveText(['Idle', 'Operations']);
-  await expect(sort).toHaveValue('updated');
-  await expect(sort).toBeFocused();
+  await expect(sortHeader(page, 'Updated')).toHaveAttribute('aria-sort', 'descending');
+  await expect(sortButton(page, 'Updated')).toBeFocused();
+  expect(await originalHeader.evaluate(node => node === document.activeElement && node.isConnected)).toBe(true);
   snapshot.projects[0].updated_at = '2026-10-01T10:00:00Z';
   await expect(projects).toHaveText(['Operations', 'Idle']);
-  await sort.selectOption({label: 'Request time'});
+  await sortButton(page, 'Requested').click();
   await expect(projects).toHaveText(['Idle', 'Operations']);
   snapshot.projects[0].requested_at = snapshot.projects[0].updated_at = '2026-10-01T11:00:00Z';
   await expect(projects).toHaveText(['Operations', 'Idle']);
-  await expect(sort).toHaveValue('requested');
-  await page.getByRole('link', {name: 'Operations', exact: true}).click();
+  await sortButton(page, 'Requested').click();
+  await expect(projects).toHaveText(['Idle', 'Operations']);
+  await expect(sortHeader(page, 'Requested')).toHaveAttribute('aria-sort', 'ascending');
+  snapshot.projects[1].requested_at = '2026-10-01T12:00:00Z';
+  await expect(projects).toHaveText(['Operations', 'Idle']);
+  await expect(sortHeader(page, 'Requested')).toHaveAttribute('aria-sort', 'ascending');
+  await expect(sortButton(page, 'Requested')).toBeFocused();
+  const projectLink = page.getByRole('link', {name: 'Operations', exact: true});
+  await projectLink.focus();
+  snapshot.projects[0].completed = 2;
+  await expect(page.locator('.counts')).toContainText(['2 Completed', '0 Completed']);
+  await expect(projectLink).toBeFocused();
+  await projectLink.press('Enter');
   await expect(page.getByRole('heading', {name: 'Operations', exact: true})).toBeVisible();
   await page.getByRole('link', {name: 'Projects', exact: true}).click();
-  await expect(sort).toHaveValue('requested');
+  await expect(sortHeader(page, 'Requested')).toHaveAttribute('aria-sort', 'ascending');
   await expect(projects).toHaveText(['Operations', 'Idle']);
+  await noOverflow(page);
+});
+
+test('Sortable headers retain pointer and keyboard interactions across repeated polls', async ({page}) => {
+  const snapshot = fixture();
+  await setup(page, snapshot);
+  const updated = sortButton(page, 'Updated');
+  const original = await updated.elementHandle();
+  const box = await updated.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  // A full refresh between press and release used to destroy the control.
+  for (let i = 0; i < 2; i++) await page.waitForResponse('**/api/state');
+  expect(await original.evaluate(node => node.isConnected && node === document.activeElement)).toBe(true);
+  await page.mouse.up();
+  await expect(sortHeader(page, 'Updated')).toHaveAttribute('aria-sort', 'descending');
+  await expect(updated).toBeFocused();
+  await page.keyboard.down('Space');
+  for (let i = 0; i < 2; i++) await page.waitForResponse('**/api/state');
+  expect(await original.evaluate(node => node.isConnected && node === document.activeElement)).toBe(true);
+  await page.keyboard.up('Space');
+  await expect(sortHeader(page, 'Updated')).toHaveAttribute('aria-sort', 'ascending');
+  await updated.press('Enter');
+  await expect(sortHeader(page, 'Updated')).toHaveAttribute('aria-sort', 'descending');
+  await page.keyboard.press('Tab');
+  await expect(sortButton(page, 'Requested')).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(sortHeader(page, 'Requested')).toHaveAttribute('aria-sort', 'descending');
+  await expect(sortHeader(page, 'Updated')).toHaveAttribute('aria-sort', 'none');
+  for (const label of ['Project', 'Updated', 'Requested']) await expect(sortButton(page, label)).toBeVisible();
+  await page.setViewportSize({width: 320, height: 740});
+  for (const label of ['Project', 'Updated', 'Requested']) await expect(sortButton(page, label)).toBeVisible();
   await noOverflow(page);
 });
 
