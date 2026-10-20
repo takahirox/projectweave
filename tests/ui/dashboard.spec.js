@@ -48,6 +48,91 @@ async function noOverflow(page) {
   expect(width.page, `Page width ${width.page} exceeds viewport ${width.viewport}`).toBeLessThanOrEqual(width.viewport);
 }
 
+test('Projects default to case-insensitive alphabetical order with deterministic case ties', async ({page}) => {
+  const names = ['Zoo', 'gamma', 'alpha', 'Beta', 'beta', 'ALPHA'];
+  const snapshot = {projects: names.map(name => ({name})), runs: []};
+  await setup(page, snapshot);
+  const projects = page.locator('.project-identity > a');
+  const sort = page.getByRole('combobox', {name: 'Sort:'});
+  await expect(sort).toHaveValue('alphabetical');
+  await expect(projects).toHaveText(['ALPHA', 'alpha', 'Beta', 'beta', 'gamma', 'Zoo']);
+  expect(await page.evaluate(() => state.projects.map(project => project.name))).toEqual(names);
+  snapshot.projects.reverse();
+  await page.waitForResponse('**/api/state');
+  await expect(projects).toHaveText(['ALPHA', 'alpha', 'Beta', 'beta', 'gamma', 'Zoo']);
+  await noOverflow(page);
+});
+
+test('Project timestamp sorts are newest first, break ties alphabetically and put missing times last', async ({page}) => {
+  const snapshot = {projects: [
+    {name: 'Zoo', updated_at: null, requested_at: null},
+    {name: 'gamma', updated_at: '2026-10-01T08:00:00Z', requested_at: '2026-10-01T10:00:00Z'},
+    {name: 'alpha', updated_at: '2026-10-01T09:00:00Z', requested_at: '2026-10-01T08:00:00Z'},
+    {name: 'Beta', updated_at: '2026-10-01T11:00:00+02:00', requested_at: '2026-10-01T08:00:00Z'},
+    {name: 'ALPHA', updated_at: '2026-10-01T09:00:00Z', requested_at: '2026-10-01T08:00:00Z'},
+    {name: 'beta'},
+  ], runs: []};
+  await setup(page, snapshot);
+  const sort = page.getByRole('combobox', {name: 'Sort:'}), projects = page.locator('.project-identity > a');
+  await sort.selectOption({label: 'Recently updated'});
+  await expect(projects).toHaveText(['ALPHA', 'alpha', 'Beta', 'gamma', 'beta', 'Zoo']);
+  await sort.selectOption({label: 'Request time'});
+  await expect(projects).toHaveText(['gamma', 'ALPHA', 'alpha', 'Beta', 'beta', 'Zoo']);
+  await sort.selectOption({label: 'Alphabetical'});
+  await expect(projects).toHaveText(['ALPHA', 'alpha', 'Beta', 'beta', 'gamma', 'Zoo']);
+  await noOverflow(page);
+});
+
+test('Project timestamp sorts preserve sub-millisecond precision before breaking ties', async ({page}) => {
+  const snapshot = {projects: [
+    {name: 'alpha', updated_at: '2026-10-20T08:41:05.014037+00:00', requested_at: '2026-10-20T08:41:05.014321+00:00'},
+    {name: 'Zoo', updated_at: '2026-10-20T08:41:05.014321+00:00', requested_at: '2026-10-20T08:41:05.014037+00:00'},
+    {name: 'Beta', updated_at: '2026-10-20T10:41:05.014321+02:00', requested_at: '2026-10-20T08:41:05.014037Z'},
+    {name: 'gamma', updated_at: '2026-10-20T08:41:05.014Z', requested_at: '2026-10-20T08:41:05.014000+00:00'},
+    {name: 'ALPHA', updated_at: '2026-10-20T08:41:05.014000+00:00', requested_at: '2026-10-20T08:41:05.014Z'},
+    {name: 'Idle'},
+  ], runs: []};
+  await setup(page, snapshot);
+  const sort = page.getByRole('combobox', {name: 'Sort:'}), projects = page.locator('.project-identity > a');
+  await sort.selectOption({label: 'Recently updated'});
+  await expect(projects).toHaveText(['Beta', 'Zoo', 'alpha', 'ALPHA', 'gamma', 'Idle']);
+  snapshot.projects[0].updated_at = '2026-10-20T08:41:05.014322+00:00';
+  await expect(projects).toHaveText(['alpha', 'Beta', 'Zoo', 'ALPHA', 'gamma', 'Idle']);
+  await expect(sort).toHaveValue('updated');
+  await sort.selectOption({label: 'Request time'});
+  await expect(projects).toHaveText(['alpha', 'Beta', 'Zoo', 'ALPHA', 'gamma', 'Idle']);
+  snapshot.projects[1].requested_at = '2026-10-20T08:41:05.014322+00:00';
+  await expect(projects).toHaveText(['Zoo', 'alpha', 'Beta', 'ALPHA', 'gamma', 'Idle']);
+  await expect(sort).toHaveValue('requested');
+});
+
+test('Project sorting follows live activity and requests while preserving selection and focus', async ({page}) => {
+  const snapshot = fixture();
+  snapshot.projects[0].updated_at = snapshot.projects[0].requested_at = '2026-10-01T08:00:00Z';
+  await setup(page, snapshot);
+  const sort = page.getByRole('combobox', {name: 'Sort:'}), projects = page.locator('.project-identity > a');
+  await sort.selectOption({label: 'Recently updated'});
+  await sort.focus();
+  await expect(projects).toHaveText(['Operations', 'Idle']);
+  snapshot.projects[1].updated_at = snapshot.projects[1].requested_at = '2026-10-01T09:00:00Z';
+  await expect(projects).toHaveText(['Idle', 'Operations']);
+  await expect(sort).toHaveValue('updated');
+  await expect(sort).toBeFocused();
+  snapshot.projects[0].updated_at = '2026-10-01T10:00:00Z';
+  await expect(projects).toHaveText(['Operations', 'Idle']);
+  await sort.selectOption({label: 'Request time'});
+  await expect(projects).toHaveText(['Idle', 'Operations']);
+  snapshot.projects[0].requested_at = snapshot.projects[0].updated_at = '2026-10-01T11:00:00Z';
+  await expect(projects).toHaveText(['Operations', 'Idle']);
+  await expect(sort).toHaveValue('requested');
+  await page.getByRole('link', {name: 'Operations', exact: true}).click();
+  await expect(page.getByRole('heading', {name: 'Operations', exact: true})).toBeVisible();
+  await page.getByRole('link', {name: 'Projects', exact: true}).click();
+  await expect(sort).toHaveValue('requested');
+  await expect(projects).toHaveText(['Operations', 'Idle']);
+  await noOverflow(page);
+});
+
 test('Workflow details expose the selected base branch when configured', async ({page}) => {
   const snapshot = fixture();
   await setup(page, snapshot, '#run/run-live');

@@ -415,6 +415,22 @@ it remains available while already launched Tasks finish.
 The top page lists every managed Project, including idle or misconfigured
 Projects, with compact Running, Long running, Failed, and Completed execution
 counts and the most relevant Task's elapsed time and observed position.
+The Sort control defaults to case-insensitive Alphabetical order, with exact
+Project names breaking ties deterministically. Recently updated sorts newest
+observed execution activity first; Request time sorts by the newest run's existing
+`started_at`. Timestamp ties use the same alphabetical order, and Projects without
+activity or requests follow those with timestamps. The selection survives live
+refreshes and navigation within this dashboard session and only changes presentation.
+
+The registry exposes each Project's `requested_at` (the maximum run `started_at`)
+and `updated_at` (the maximum run `updated_at`), or null when no run exists.
+Run activity is timestamped in UTC when registered, when observed run/executor
+identity or state changes, when node progress or captured output arrives, and on
+completion/failure. These are local observation times, not executor-provided times.
+Polling, elapsed-time changes, and the derived Long running threshold do not count
+as new activity; ignored events do not advance the timestamp. All activity history
+is process-local and resets with the execution registry.
+
 Long-running and running Tasks appear ahead of failed and completed executions. Project links
 open a split task/run explorer; Task links select a run while keeping the Project
 and task list in view. Run details include identity, status, times, failure

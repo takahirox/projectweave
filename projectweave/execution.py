@@ -62,10 +62,11 @@ class ExecutionRegistry:
     def start(self, project, task, directory):
         identity = uuid.uuid4().hex
         with self.lock:
+            started_at = datetime.now(timezone.utc).isoformat()
             self.runs[identity] = {
                 "id": identity, "project": project,
                 "task": {key: deepcopy(task.get(key)) for key in ("number", "title", "repository", "url")},
-                "status": "running", "started_at": datetime.now(timezone.utc).isoformat(), "ended_at": None,
+                "status": "running", "started_at": started_at, "updated_at": started_at, "ended_at": None,
                 "run_id": None, "failure": None, "executor_type": None, "executions": [],
                 "logs": deque(maxlen=self.log_lines), "_started": self.clock(), "_ended": None,
                 "_directory": str(directory),
@@ -81,7 +82,9 @@ class ExecutionRegistry:
             kind = event.get("type") or event.get("event")
             if not isinstance(kind, str):
                 return
+            changed = False
             if kind == "run_started":
+                changed = run["run_id"] != event.get("run_id")
                 run["run_id"] = event.get("run_id")
             elif kind == "executor_started":
                 config = event["config"]
@@ -98,16 +101,20 @@ class ExecutionRegistry:
                         execution["graph_error"] = str(exc)
                 run["executions"].append(execution)
                 run["executor_type"] = config["type"]
+                changed = True
             else:
                 execution = run["executions"][-1] if run["executions"] else None
                 if execution and kind == "executor_finished":
+                    changed = bool(execution["current_nodes"] or execution.get("active_instances"))
                     execution["current_nodes"] = []
                     execution.pop("active_instances", None)
                     for node in (execution.get("graph") or {}).get("nodes", []):
                         if node["status"] == "active":
                             node["status"] = "unknown"
+                            changed = True
                 if execution and execution["executor_type"] == "gitweave":
                     if isinstance(event.get("run_id"), str):
+                        changed |= execution["run_id"] != event["run_id"]
                         execution["run_id"] = event["run_id"]
                     node_id = event.get("node_id")
                     state = {"node_started": "active", "node_completed": "completed", "node_failed": "failed"}.get(kind)
@@ -143,6 +150,9 @@ class ExecutionRegistry:
                     for line in output.splitlines() or [""]:
                         run["logs"].append({"type": kind, "text": line[:self.log_chars],
                                             "at": datetime.now(timezone.utc).isoformat(), **attribution})
+                    changed = True
+            if changed:
+                run["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     def finish(self, identity, record):
         with self.lock:
@@ -152,6 +162,7 @@ class ExecutionRegistry:
             run["run_id"] = record.get("run_id") or run["run_id"]
             run["_ended"] = self.clock()
             run["ended_at"] = datetime.now(timezone.utc).isoformat()
+            run["updated_at"] = run["ended_at"]
             for execution in run["executions"]:
                 execution["current_nodes"] = []
                 execution.pop("active_instances", None)
@@ -175,6 +186,8 @@ class ExecutionRegistry:
                 projects.append(dict(project, running=sum(run["status"] == "running" for run in members),
                                      long_running=sum(run["long_running"] for run in members),
                                      failed=sum(run["status"] == "failed" for run in members),
-                                     completed=sum(run["status"] == "completed" for run in members)))
+                                     completed=sum(run["status"] == "completed" for run in members),
+                                     requested_at=max((run["started_at"] for run in members), default=None),
+                                     updated_at=max((run["updated_at"] for run in members), default=None)))
             return {"projects": projects, "runs": runs, "long_running_seconds": self.threshold,
                     "subscription_usage": self.usage.snapshot()}
