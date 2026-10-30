@@ -155,6 +155,18 @@ With appropriate intelligence and policy layered on top, ProjectWeave should mak
 
 See [Issue #1](https://github.com/takahirox/projectweave/issues/1) for the full vision and design discussion.
 
+## UI/UX
+
+Apply these principles to ProjectWeave's CLI commands, messages, examples, local
+dashboard, and any future graphical interface:
+
+1. **Keep it simple.** Show only necessary information and actions; avoid unnecessary UI elements.
+2. **Show, don't tell.** Prefer layout, spacing and visual hierarchy over explanatory labels or prose to communicate structure.
+3. **Intuitive and predictable.** Keep appearance and behavior consistent with user expectations; don't interrupt the user's work.
+
+Preserve necessary control labels, accessible names, error messages, and information
+needed to use the interface. Simplification must preserve meaningful consent,
+destructive-action safeguards, and necessary warnings.
 
 ## Run the first runtime
 
