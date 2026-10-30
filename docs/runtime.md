@@ -138,10 +138,12 @@ Project directory name and provider, `min_remaining_percent` and
 providers are not limited (and not observed).
 
 1. The listed providers are observed read-only without a model call
-   (`projectweave/usage.py`): **Claude** via `claude -p --output-format json /usage`,
-   giving `100 − N` for each window it reports (`Current session`,
-   `Current week (all models)`, and a model-specific weekly window such as
-   `Current week (Fable)` when present; session and all-models are required);
+   (`projectweave/usage.py`): **Claude** via the experimental stream-json
+   `initialize` → `get_usage` control API, giving `100 − utilization` for session,
+   all-models weekly and reported model-specific windows. Session and all-models
+   weekly percentages are required; cost/token statistics never count as limits.
+   See [Claude subscription observation](usage.md#claude-subscription-observation)
+   for version/authentication requirements and limitations;
    **Codex** via `codex app-server` (experimental) `initialize` → `initialized` →
    `account/rateLimits/read`, giving `primary = 100 − rateLimits.primary.usedPercent`.
 2. A Task of Project P is admitted only if for every provider listed for P and
@@ -152,12 +154,12 @@ providers are not limited (and not observed).
    failed or crashed) they are released and the providers are observed again.
 
 Any observation failure (launch failure, nonzero exit, timeout, unexpected
-output, a missing required line or value, an unknown provider) makes that
+output, a missing required limit value, an unknown provider) makes that
 provider unknown, which admits nothing for Projects that list it. Estimates are
 safety margins adjusted by operators, not accounting: ProjectWeave never
 attributes usage to Tasks, estimates from tokens, monitors usage during a Task,
-or redeems reset credits. The Claude observer parses human-readable output and
-the Codex API is experimental; either may break with a new CLI version, which
+or redeems reset credits. Both provider control APIs are experimental;
+either may break with a new CLI version, which
 then stops safely as unknown.
 
 ### Metered resources

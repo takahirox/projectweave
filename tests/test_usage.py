@@ -1,4 +1,7 @@
+import copy
+import json
 import os
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
@@ -8,6 +11,7 @@ from unittest.mock import patch
 
 from projectweave import usage
 from projectweave.contracts import Failure
+from projectweave.coordinator import Admission
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,11 +42,120 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(usage.claude(), {"session": 90, "week": 80, "fable": 10})
 
     def test_claude_failures_are_unknown(self):
-        for mode in ("claude_failure", "claude_no_week"):
+        for mode in ("claude_failure", "claude_no_week", "claude_unsupported", "claude_fetch_failure",
+                     "claude_exit", "claude_hang", "claude_init_error", "claude_unsupported_request", "claude_malformed"):
             with self.subTest(mode=mode):
                 self.env(FAKE_USAGE=mode)
-                with self.assertRaises(Failure):
-                    usage.claude()
+                with self.assertRaisesRegex(Failure, "Claude subscription limits unavailable") as caught:
+                    usage.claude(timeout=0.2)
+                self.assertIn("claude auth status", str(caught.exception))
+                self.assertIn("2.1.312", str(caught.exception))
+
+    def test_claude_process_and_pipes_are_closed_on_success_and_failure(self):
+        launch = subprocess.Popen
+        for mode in ("", "claude_hang", "claude_malformed"):
+            with self.subTest(mode=mode):
+                children = []
+
+                def spawn(*args, **kwargs):
+                    child = launch(*args, **kwargs)
+                    children.append(child)
+                    return child
+
+                self.env(FAKE_USAGE=mode)
+                with patch("projectweave.usage.subprocess.Popen", side_effect=spawn):
+                    if mode:
+                        with self.assertRaises(Failure):
+                            usage.claude(timeout=0.2)
+                    else:
+                        usage.claude()
+                self.assertEqual(len(children), 1)
+                self.assertIsNotNone(children[0].poll())
+                self.assertTrue(children[0].stdin.closed)
+                self.assertTrue(children[0].stdout.closed)
+
+    def test_claude_structured_limits_and_control_only_protocol(self):
+        self.env(FAKE_CLAUDE_DATA=(ROOT / "tests/fixtures/claude-usage.json").read_text())
+        self.assertEqual(usage.claude(), {"session": 90, "week": 80, "opus": 64.5, "fable": 10})
+        calls = [json.loads(line) for line in Path(os.environ["FAKE_LOG"]).read_text().splitlines()]
+        self.assertEqual(calls[0]["argv"], usage.CLAUDE_ARGV[1:])
+        self.assertEqual([c["request"] for c in calls[1:]], [
+            {"subtype": "initialize"}, {"subtype": "get_usage", "skip_behaviors": True}])
+
+    def test_successful_print_mode_cost_fixture_is_unknown_not_unused_allowance(self):
+        self.env(FAKE_USAGE="claude_cost_only",
+                 FAKE_CLAUDE_DATA=(ROOT / "tests/fixtures/claude-cost-only.json").read_text())
+        observed = usage.observe(["claude"])["claude"]
+        self.assertNotIn("windows", observed)
+        self.assertIn("session cost/token statistics, not plan limits", observed["error"])
+        self.assertIn("claude auth status", observed["error"])
+
+    def test_malformed_or_missing_plan_utilization_never_returns_partial_windows(self):
+        valid = json.loads((ROOT / "tests/fixtures/claude-usage.json").read_text())
+        invalid = [None, [], {}, {"rate_limits_available": False},
+                   {"rate_limits_available": "true", "rate_limits": valid["rate_limits"]},
+                   {"rate_limits_available": True, "rate_limits": None}]
+        for key in ("five_hour", "seven_day", "seven_day_opus"):
+            for value in ({}, [], "25", {"utilization": None}, {"utilization": True},
+                          {"utilization": "0"}, {"utilization": -1}, {"utilization": 101}):
+                record = copy.deepcopy(valid)
+                record["rate_limits"][key] = value
+                invalid.append(record)
+        for value in (None, {}, [None], [{}], [{"display_name": "Fable"}],
+                      [{"display_name": "", "utilization": 0}],
+                      [{"display_name": "week", "utilization": 0}],
+                      [{"display_name": "Fable", "utilization": 0}] * 2):
+            record = copy.deepcopy(valid)
+            record["rate_limits"]["model_scoped"] = value
+            invalid.append(record)
+        for record in invalid:
+            with self.subTest(record=record):
+                self.env(FAKE_CLAUDE_DATA=json.dumps(record))
+                observed = usage.observe(["claude"])["claude"]
+                self.assertIn("unavailable", observed["error"])
+                self.assertNotIn("windows", observed)
+        # Zero is a real quota measurement only when reported as plan utilization.
+        self.env(FAKE_CLAUDE_DATA=json.dumps({"rate_limits_available": True, "rate_limits": {
+            "five_hour": {"utilization": 0}, "seven_day": {"utilization": 100}}}))
+        self.assertEqual(usage.claude(), {"session": 100, "week": 0})
+
+    def test_invalid_numbers_and_missing_cli_are_actionable(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                self.env(FAKE_CLAUDE_DATA=json.dumps({"rate_limits_available": True, "rate_limits": {
+                    "five_hour": {"utilization": value}, "seven_day": {"utilization": 0}}}))
+                self.assertIn("unavailable", usage.observe(["claude"])["claude"]["error"])
+        with patch("projectweave.usage.subprocess.Popen", side_effect=FileNotFoundError("claude")):
+            self.assertIn("claude auth status", usage.observe(["claude"])["claude"]["error"])
+
+    def test_failed_claude_observation_keeps_dashboard_success_but_blocks_admission(self):
+        cache = usage.UsageCache()
+        cache.configure(["claude"])
+        admission = Admission({"app": {"claude": {
+            "min_remaining_percent": 0, "estimated_usage_percent_per_task": 0}}},
+            observe=lambda providers: cache.collect(providers, usage.observe))
+        admission.refresh(["app"])
+        self.assertTrue(admission.admits("app")[0])
+        first = cache.snapshot()[0]
+        self.assertEqual(first["status"], "current")
+        for mode in ("claude_failure", "claude_fetch_failure", "claude_cost_only"):
+            with self.subTest(mode=mode):
+                self.env(FAKE_USAGE=mode, FAKE_CLAUDE_DATA=(
+                    (ROOT / "tests/fixtures/claude-cost-only.json").read_text() if mode == "claude_cost_only" else ""))
+                admission.refresh(["app"])
+                admitted, reason = admission.admits("app")
+                self.assertFalse(admitted)
+                self.assertIn("usage unknown", reason)
+                stale = cache.snapshot()[0]
+                self.assertEqual(stale["windows"], first["windows"])
+                self.assertEqual(stale["updated_at"], first["updated_at"])
+                self.assertEqual(stale["status"], "stale")
+                self.assertIn("unavailable", stale["error"])
+                unavailable = usage.UsageCache()
+                unavailable.configure(["claude"])
+                unavailable.record(admission.observations)
+                self.assertEqual(unavailable.snapshot()[0]["status"], "unavailable")
+                self.assertIsNone(unavailable.snapshot()[0]["updated_at"])
 
     def test_codex_primary_window(self):
         self.env(FAKE_CODEX_USED="95")
