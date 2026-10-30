@@ -174,8 +174,9 @@ class CLITests(unittest.TestCase):
             "codex": {"windows": {"primary": 63}}}})
         self.assertEqual(record["last"]["usage"], {})
         self.assertEqual(record["executions"], [])
-        self.assertEqual([(c["command"], c["argv"]) for c in calls], [
-            ("claude", ["-p", "--output-format", "json", "/usage"]), ("codex", ["app-server"])])
+        self.assertEqual([(c["command"], c["argv"]) for c in calls if c["command"] != "claude_control"], [
+            ("claude", ["-p", "--safe-mode", "--no-session-persistence", "--input-format", "stream-json",
+                        "--output-format", "stream-json", "--verbose"]), ("codex", ["app-server"])])
         self.assertFalse((self.project_dir / ".projectweave.lock").exists())
         self.assertFalse((self.project_dir / "worktrees").exists())
 
@@ -190,7 +191,7 @@ class CLITests(unittest.TestCase):
                 self.assertEqual((code, record["status"]), (0, "completed"), record)
                 self.assertEqual(record["last"]["data"]["status"], status)
                 self.assertIs(record["last"]["data"]["available"], False)
-                self.assertEqual([c["command"] for c in calls], ["claude", "codex"])
+                self.assertEqual([c["command"] for c in calls if c["command"] != "claude_control"], ["claude", "codex"])
                 self.assertEqual(record["executions"], [])
                 self.assertEqual(list(record["results"]), ["usage"])
 

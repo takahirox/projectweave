@@ -16,20 +16,56 @@ with open(os.environ["FAKE_LOG"], "a") as log:
     log.write(json.dumps(entry) + "\n")
 usage = os.environ.get("FAKE_USAGE", "")
 if name == "claude":
-    # claude -p --output-format json /usage: the plan limits as text, no model call.
-    assert args == ["-p", "--output-format", "json", "/usage"], args
-    if usage == "claude_failure":
-        print("not logged in", file=sys.stderr)
+    # Only control requests, never a user prompt or a model turn.
+    assert args == ["-p", "--safe-mode", "--no-session-persistence", "--input-format", "stream-json",
+                    "--output-format", "stream-json", "--verbose"], args
+    if usage == "claude_exit":
         sys.exit(1)
-    session, week, fable = os.environ.get("FAKE_CLAUDE_USED", "10,20,30").split(",")
-    lines = ["You are currently using your subscription to power your Claude Code usage", "",
-             f"Current session: {session}% used · resets Sep 25 at 4:40pm (Asia/Tokyo)",
-             f"Current week (all models): {week}% used · resets Sep 29 at 12pm (Asia/Tokyo)",
-             f"Current week (Fable): {fable}% used · resets Sep 29 at 12pm (Asia/Tokyo)", "",
-             "What's contributing to your limits usage?", "  94% of your usage came from long sessions"]
-    if usage == "claude_no_week":
-        lines = [line for line in lines if "all models" not in line]
-    print(json.dumps({"type": "result", "is_error": False, "num_turns": 0, "result": "\n".join(lines)}))
+    for line in sys.stdin:
+        message = json.loads(line)
+        assert message["type"] == "control_request", message
+        request = message["request"]
+        with open(os.environ["FAKE_LOG"], "a") as log:
+            log.write(json.dumps({"command": "claude_control", "request": request}) + "\n")
+        if usage == "claude_hang":
+            continue
+        if request["subtype"] == "initialize":
+            assert request == {"subtype": "initialize"}, request
+            reply = {"subtype": "success", "request_id": message["request_id"], "response": {}}
+            if usage == "claude_init_error":
+                reply.update(subtype="error", error="unsupported initialize")
+        else:
+            assert request == {"subtype": "get_usage", "skip_behaviors": True}, request
+            session, week, fable = (float(v) if "." in v else int(v) for v in os.environ.get("FAKE_CLAUDE_USED", "10,20,30").split(","))
+            data = {"rate_limits_available": True, "rate_limits": {
+                "five_hour": {"utilization": session}, "seven_day": {"utilization": week},
+                "model_scoped": [{"display_name": "Fable", "utilization": fable}]}}
+            if usage == "claude_no_week":
+                del data["rate_limits"]["seven_day"]
+            if usage == "claude_unsupported":
+                data.update(rate_limits_available=False, rate_limits=None)
+            if usage == "claude_fetch_failure":
+                data["rate_limits"] = None
+            if os.environ.get("FAKE_CLAUDE_DATA"):
+                data = json.loads(os.environ["FAKE_CLAUDE_DATA"])
+            reply = {"subtype": "success", "request_id": message["request_id"], "response": data}
+            if usage == "claude_failure":
+                reply.update(subtype="error", error="authentication or usage transport failed")
+            if usage == "claude_unsupported_request":
+                reply.update(subtype="error", error="unknown control request: get_usage")
+            if usage == "claude_cost_only":
+                print(json.dumps(data), flush=True)
+                continue
+            if usage == "claude_malformed":
+                print("{invalid json", flush=True)
+                continue
+            # Noise and a server request using our id must not be mistaken for a response.
+            print(json.dumps({"type": "system", "subtype": "init"}), flush=True)
+            print(json.dumps({"type": "control_request", "request_id": message["request_id"],
+                              "request": {"subtype": "can_use_tool"}}), flush=True)
+            print(json.dumps({"type": "control_response", "response": {
+                "subtype": "success", "request_id": "unrelated", "response": {}}}), flush=True)
+        print(json.dumps({"type": "control_response", "response": reply}), flush=True)
     sys.exit(0)
 if name == "codex":
     # codex app-server: newline-delimited JSON-RPC; it only answers while stdin stays open.

@@ -15,12 +15,13 @@ import subprocess
 import threading
 import time
 from .contracts import Failure, decode, number, require
-from .executors import process
 
 TIMEOUT = 60
-# "Current session: 11% used · resets …"
-LINE = r"^{}: (\d+(?:\.\d+)?)% used\b"
-CLAUDE_LIMITS = {"session": "Current session", "week": r"Current week \(all models\)", "fable": r"Current week \(Fable\)"}
+CLAUDE_ARGV = ["claude", "-p", "--safe-mode", "--no-session-persistence",
+               "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
+CLAUDE_ADVICE = ("Use Claude Code 2.1.312 or a compatible version and check `claude auth status` for a "
+                 "signed-in Claude.ai subscription with profile scope. Check network access and whether "
+                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC prevents usage retrieval.")
 
 
 def remaining(used):
@@ -29,18 +30,96 @@ def remaining(used):
 
 
 def claude(timeout=TIMEOUT):
-    """Remaining percentage of every Claude plan window /usage reports (session and weekly limits)."""
-    record = decode(process(["claude", "-p", "--output-format", "json", "/usage"], None, timeout))
-    require(isinstance(record, dict) and record.get("is_error") is False and isinstance(record.get("result"), str),
-            "Unexpected claude /usage output", "usage")
+    """Read the experimental get_usage control API; never send a prompt or start a model turn."""
+    child, messages = None, None
+    deadline = time.monotonic() + timeout
+    try:
+        child = subprocess.Popen(CLAUDE_ARGV, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+        messages = claude_messages(child.stdout, deadline)
+        for identity, request in (("initialize", {"subtype": "initialize"}),
+                                  ("usage", {"subtype": "get_usage", "skip_behaviors": True})):
+            child.stdin.write((json.dumps({"type": "control_request", "request_id": identity,
+                                          "request": request}) + "\n").encode())
+            child.stdin.flush()
+            for message in messages:
+                require(message.get("type") != "result", "CLI returned session cost/token statistics, not plan limits", "usage")
+                reply = message.get("response")
+                if (message.get("type") == "control_response" and isinstance(reply, dict)
+                        and reply.get("request_id") == identity):
+                    require(reply.get("subtype") == "success",
+                            f"{request['subtype']} control request failed: {str(reply.get('error', 'unsupported response'))[:300]}", "usage")
+                    record = reply.get("response")
+                    break
+        return claude_windows(record)
+    except (Failure, OSError) as exc:
+        raise Failure("usage", f"Claude subscription limits unavailable: {exc}. {CLAUDE_ADVICE}") from exc
+    finally:
+        if messages is not None:
+            messages.close()
+        if child is not None:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            for stream in (child.stdin, child.stdout):
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+            child.wait()
+
+
+def claude_messages(stream, deadline):
+    """Keep one buffer across initialization and usage replies, with a single bounded deadline."""
+    with selectors.DefaultSelector() as selector:
+        selector.register(stream, selectors.EVENT_READ)
+        buffer = b""
+        while True:
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                try:
+                    message = decode(line)
+                except (Failure, UnicodeError) as exc:
+                    raise Failure("usage", "Malformed Claude control JSON") from exc
+                require(isinstance(message, dict), "Malformed Claude control message", "usage")
+                yield message
+            wait = deadline - time.monotonic()
+            require(wait > 0 and selector.select(wait), "Claude usage control request timed out", "usage")
+            chunk = os.read(stream.fileno(), 65536)
+            require(bool(chunk), "Claude CLI exited before returning plan limits (unsupported CLI, authentication, or transport failure)", "usage")
+            buffer += chunk
+
+
+def claude_windows(record):
+    """Only server plan utilization is quota data; session costs and extra-usage spend are not."""
+    require(isinstance(record, dict) and record.get("rate_limits_available") is True,
+            "Plan limits are not available for this authentication (API keys, third-party providers and tokens without profile scope are unsupported)", "usage")
+    limits = record.get("rate_limits")
+    require(isinstance(limits, dict), "Plan limit retrieval failed; Claude returned no rate_limits", "usage")
     windows = {}
-    for name, label in CLAUDE_LIMITS.items():
-        match = re.search(LINE.format(label), record["result"], re.MULTILINE)
-        if match is not None:
-            windows[name] = remaining(float(match[1]) if "." in match[1] else int(match[1]))
-    # The session and all-models weekly windows must be present; a model-specific window is optional.
-    for name in ("session", "week"):
-        require(name in windows, f"claude /usage has no '{CLAUDE_LIMITS[name]}' line", "usage")
+
+    def add(name, window):
+        require(name not in windows, "Duplicate Claude plan window", "usage")
+        require(isinstance(window, dict) and number(window.get("utilization")) and window["utilization"] <= 100,
+                f"Invalid or missing Claude {name} utilization; expected a percentage from 0 to 100", "usage")
+        windows[name] = remaining(window["utilization"])
+
+    for key, name in (("five_hour", "session"), ("seven_day", "week")):
+        add(name, limits.get(key))
+    # The payload also carries metadata such as seven_day_breakdown, not a quota window.
+    for key in ("seven_day_oauth_apps", "seven_day_opus", "seven_day_sonnet"):
+        window = limits.get(key)
+        if window is not None:
+            add(key.removeprefix("seven_day_"), window)
+    scoped = limits.get("model_scoped", [])
+    require(isinstance(scoped, list), "Invalid Claude model_scoped plan windows", "usage")
+    for window in scoped:
+        label = window.get("display_name") if isinstance(window, dict) else None
+        require(isinstance(label, str) and bool(label.strip()), "Missing Claude model window display_name", "usage")
+        name = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+        require(bool(name), "Unsupported Claude model window display_name", "usage")
+        add(name, window)
     return windows
 
 

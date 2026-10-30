@@ -1,0 +1,17 @@
+{
+  "session": {"total_cost_usd": 0, "model_usage": {}},
+  "subscription_type": "max",
+  "rate_limits_available": true,
+  "rate_limits": {
+    "five_hour": {"utilization": 10, "resets_at": null},
+    "seven_day": {"utilization": 20, "resets_at": "2026-11-01T00:00:00Z"},
+    "seven_day_oauth_apps": null,
+    "seven_day_opus": {"utilization": 35.5},
+    "seven_day_sonnet": null,
+    "model_scoped": [{"display_name": "Fable", "utilization": 90, "resets_at": null}],
+    "seven_day_breakdown": {"as_of": "2026-10-30T00:00:00Z", "rows": []},
+    "extra_usage": {"is_enabled": false, "utilization": null},
+    "spend": {"enabled": false, "percent": 0}
+  },
+  "behaviors": null
+}

@@ -89,9 +89,9 @@ Resource constraints are **opt-in** per Project and provider, in the root
 - Only listed providers are observed and constrained. **A Project or provider
   that is not listed is not limited**: `coordinate` may start all of that
   Project's eligible Tasks at once. Omission does not forbid a provider.
-- Usage is observed read-only, without a model call: Claude via
-  `claude -p --output-format json /usage` (the session, weekly all-models and any
-  model-specific weekly window), Codex via `codex app-server`
+- Usage is observed read-only, without a model call: Claude via the experimental
+  `get_usage` stream-json control request (session, weekly all-models and reported
+  model-specific weekly windows; see [Claude prerequisites](#claude-subscription-observation)), Codex via `codex app-server`
   `account/rateLimits/read` (the `primary` window).
 - A candidate Task is admitted only if, for every listed provider and **every**
   observed window: `remaining − reservations of running Tasks −
@@ -104,6 +104,78 @@ Resource constraints are **opt-in** per Project and provider, in the root
   output) makes that provider unknown and blocks Projects that list it.
 - ProjectWeave never chooses a provider for a GitWeave node; the Task graph
   declares its own.
+
+## Claude subscription observation
+
+ProjectWeave uses Claude Code's experimental `get_usage` control request, the
+interface behind the Agent SDK's
+`usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()` method. This was
+introduced in [Agent SDK 0.3.169](https://github.com/anthropics/claude-agent-sdk-typescript/releases/tag/v0.3.169).
+The implementation and read-only smoke check were verified against Claude Code
+**2.1.312 on macOS** on 2026-10-30. Other versions must support this control
+request and the safety flags below; unsupported versions return unknown with an
+upgrade/check-authentication message. No JavaScript SDK dependency is required.
+
+The observer starts:
+
+```sh
+claude -p --safe-mode --no-session-persistence --input-format stream-json --output-format stream-json --verbose
+```
+
+It sends only `initialize`, waits for success, then sends `get_usage` with
+`skip_behaviors: true`. It never sends a user message, `/usage` prompt, or model
+request. Safe mode disables customizations including hooks and MCP servers;
+`--no-session-persistence` avoids saving a conversation. Skipping behaviors
+avoids scanning local transcripts. The subprocess and its process group are
+terminated after the response or a timeout (60 seconds by default).
+
+Use an existing Claude.ai subscription login that can retrieve plan usage
+(typically Pro, Max, Team or Enterprise, with OAuth `user:profile` scope).
+The installed CLI handles its own account, credential storage and configured
+profile; ProjectWeave never extracts bearer tokens or reads the Keychain.
+API keys, Bedrock/Vertex and other third-party providers do not supply these
+subscription windows. A `claude setup-token` token without profile scope also
+cannot supply them. A subscription plan alone does not guarantee that the
+account exposes both required windows. See the official
+[authentication guide](https://code.claude.com/docs/en/authentication).
+
+`rate_limits_available` must be `true`, and `rate_limits.five_hour.utilization`
+and `rate_limits.seven_day.utilization` must be finite numbers from 0 to 100.
+These become `session` and `week`, each with `100 - utilization` remaining.
+Non-null `seven_day_oauth_apps`, `seven_day_opus` and `seven_day_sonnet` windows
+become `oauth_apps`, `opus` and `sonnet`; `model_scoped` windows use their
+normalized display name (for example `Fable` becomes `fable`). Every included
+window must have valid utilization. Missing/null optional windows are omitted;
+missing required or malformed windows make the entire observation unknown.
+Duplicate normalized window names also fail rather than overwrite a constraint.
+Spending, extra-usage credits, activity breakdowns, and session costs/tokens are
+not subscription quota windows and are never used to infer allowance.
+
+The [interactive command reference](https://code.claude.com/docs/en/commands)
+describes `/usage`, but [programmatic mode](https://code.claude.com/docs/en/headless)
+has different command support. In 2.1.312, successful print-mode `/usage` can
+return only session costs and token counts. Even zero cost/tokens say nothing
+about subscription allowance. Interactive terminal scraping, status-line hooks
+that need an existing active session, and local transcript cost estimates are
+therefore not the observation source.
+
+This API is experimental: schema and account support can change. The CLI owns
+the upstream usage fetch/cache; this interface does not expose a source-age
+field, so the dashboard timestamp is the time ProjectWeave received the reading,
+not a guarantee of the upstream sample's age. A control error, unavailable flag,
+null limits (including a failed network fetch), invalid JSON, missing data,
+CLI exit or timeout is unknown. ProjectWeave does not retry within an observation
+or fall back to costs or a model call. If unavailable, check `claude --version`,
+`claude auth status`, network access and whether
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` disables the usage fetch. An operator
+must resolve authentication or access problems; observation never logs in,
+resets limits, buys credits, or changes providers/models.
+
+Failures keep configured admission constraints active, including a minimum of
+zero: Projects requiring Claude stay blocked until a successful observation.
+The dashboard keeps the last successful percentages and `updated_at` with
+`stale` status and the new error. Without a prior success it shows `unavailable`
+with no percentages/timestamp. Those retained display values never admit work.
 
 ## Coordinator
 
@@ -668,7 +740,7 @@ using it on public Issues.
 
 Use `action: usage` to read current subscription allowance for explicitly named
 providers (`claude`, `codex`). Each invocation reuses the existing read-only
-observers: Claude's `/usage` and Codex's `account/rateLimits/read` app-server
+observers: Claude's `get_usage` control request and Codex's `account/rateLimits/read` app-server
 request. No AI model is called to inspect usage. The corresponding provider CLI
 must be installed and authenticated. Unsupported provider names fail graph
 validation before any observation or work starts.

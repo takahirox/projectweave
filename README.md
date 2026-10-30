@@ -333,7 +333,7 @@ for GitWeave progress/event support and the read-only JSON API.
 ProjectWeave owns Project lifecycle: `claim` selects one runnable Task and sets it
 `In Progress` under a per-Project lock, `run-task` runs the Project graph for a
 claimed Task, and `complete` sets `Done` explicitly (by default GitHub does that
-when the Issue closes). Shared AI usage is observed directly (Claude `/usage`,
+when the Issue closes). Shared AI usage is observed directly (Claude `get_usage` control API,
 Codex app-server) and admitted per Project with **opt-in** limits in the root
 `projectweave.json` (`init-project --resource PROVIDER:MIN:ESTIMATE`); a Project
 without limits is not constrained. See [the CLI guide](docs/usage.md) for
