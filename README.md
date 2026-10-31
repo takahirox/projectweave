@@ -220,6 +220,10 @@ pan/zoom, live refresh/focus behavior, trace filtering, reconnects, and safe
 rendering of external content. `npm run test:layout` runs directed layout tests
 without a browser.
 
+For contributions, follow the [development flow](docs/development-flow.md),
+[test and CI principles](docs/development-flow.md#test-and-ci-principles), and
+[review guidelines](docs/review-guidelines.md).
+
 The dashboard's Projects overview sorts by Project name (case-insensitive A–Z)
 by default. Click the Project, Updated, or Requested column header to sort;
 click it again to reverse direction. Updated shows the last observed activity,
