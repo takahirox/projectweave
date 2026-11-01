@@ -90,6 +90,56 @@ class UsageTests(unittest.TestCase):
         self.assertIn("session cost/token statistics, not plan limits", observed["error"])
         self.assertIn("claude auth status", observed["error"])
 
+    def test_observed_null_session_reports_missing_measurement_not_a_format_change(self):
+        self.env(FAKE_CLAUDE_DATA=(ROOT / "tests/fixtures/claude-usage-null-session.json").read_text())
+        observed = usage.observe(["claude"])["claude"]
+        self.assertNotIn("windows", observed)
+        self.assertIn("Required Claude session window rate_limits.five_hour is null", observed["error"])
+        self.assertIn("despite rate_limits_available=true", observed["error"])
+        self.assertIn("interactive `/usage`", observed["error"])
+        self.assertIn("Partial plan data", observed["error"])
+
+    def test_required_plan_field_diagnostics_distinguish_missing_null_and_malformed(self):
+        valid = json.loads((ROOT / "tests/fixtures/claude-usage.json").read_text())
+        for key in ("five_hour", "seven_day"):
+            for state, value in (("missing", None), ("null", None), ("a string", "private-account-value"),
+                                 ("an array", []), ("a boolean", False)):
+                with self.subTest(key=key, state=state):
+                    record = copy.deepcopy(valid)
+                    if state == "missing":
+                        del record["rate_limits"][key]
+                    else:
+                        record["rate_limits"][key] = value
+                    with self.assertRaises(Failure) as caught:
+                        usage.claude_windows(record)
+                    self.assertIn(f"rate_limits.{key} is {state}", str(caught.exception))
+                    self.assertNotIn("private-account-value", str(caught.exception))
+            for state, value in (("missing", {}), ("null", {"utilization": None}),
+                                 ("a string", {"utilization": "private-account-value"}),
+                                 ("a boolean", {"utilization": True}), ("a number", {"utilization": 101})):
+                with self.subTest(key=key, utilization=state):
+                    record = copy.deepcopy(valid)
+                    record["rate_limits"][key] = value
+                    with self.assertRaises(Failure) as caught:
+                        usage.claude_windows(record)
+                    self.assertIn(f"rate_limits.{key}.utilization is {state}", str(caught.exception))
+                    self.assertIn("finite percentage from 0 to 100", str(caught.exception))
+                    self.assertNotIn("private-account-value", str(caught.exception))
+        for state, value in (("missing", None), ("null", None), ("an array", [])):
+            record = copy.deepcopy(valid)
+            if state == "missing":
+                del record["rate_limits"]
+            else:
+                record["rate_limits"] = value
+            with self.subTest(rate_limits=state), self.assertRaisesRegex(
+                    Failure, f"Plan limit retrieval failed: Claude rate_limits is {state}"):
+                usage.claude_windows(record)
+        for record, reason in (([], "expected an object"), ({}, "availability is unknown"),
+                               ({"rate_limits_available": None}, "availability is unknown"),
+                               ({"rate_limits_available": False}, "not available for this authentication")):
+            with self.subTest(record=record), self.assertRaisesRegex(Failure, reason):
+                usage.claude_windows(record)
+
     def test_malformed_or_missing_plan_utilization_never_returns_partial_windows(self):
         valid = json.loads((ROOT / "tests/fixtures/claude-usage.json").read_text())
         invalid = [None, [], {}, {"rate_limits_available": False},
@@ -138,10 +188,11 @@ class UsageTests(unittest.TestCase):
         self.assertTrue(admission.admits("app")[0])
         first = cache.snapshot()[0]
         self.assertEqual(first["status"], "current")
-        for mode in ("claude_failure", "claude_fetch_failure", "claude_cost_only"):
+        for mode in ("claude_failure", "claude_fetch_failure", "claude_cost_only", "null_session"):
             with self.subTest(mode=mode):
+                fixture = {"claude_cost_only": "claude-cost-only.json", "null_session": "claude-usage-null-session.json"}.get(mode)
                 self.env(FAKE_USAGE=mode, FAKE_CLAUDE_DATA=(
-                    (ROOT / "tests/fixtures/claude-cost-only.json").read_text() if mode == "claude_cost_only" else ""))
+                    (ROOT / "tests/fixtures" / fixture).read_text() if fixture else ""))
                 admission.refresh(["app"])
                 admitted, reason = admission.admits("app")
                 self.assertFalse(admitted)
@@ -156,6 +207,7 @@ class UsageTests(unittest.TestCase):
                 unavailable.record(admission.observations)
                 self.assertEqual(unavailable.snapshot()[0]["status"], "unavailable")
                 self.assertIsNone(unavailable.snapshot()[0]["updated_at"])
+                self.assertIsNone(unavailable.snapshot()[0]["windows"])
 
     def test_codex_primary_window(self):
         self.env(FAKE_CODEX_USED="95")
