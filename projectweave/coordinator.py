@@ -27,8 +27,9 @@ class Admission:
         """(admitted, reason); a Project without rules is unconstrained by design."""
         for provider, rule in sorted(self.rules.get(name, {}).items()):
             seen = self.observations.get(provider, {"error": "not observed"})
-            if "error" in seen:
-                return False, f"{provider}: usage unknown ({seen['error']})"
+            if not usage.complete(seen):
+                reason = seen.get("error") or "; ".join(seen.get("unknown", {}).values()) or "no usable plan measurements"
+                return False, f"{provider}: usage unknown ({reason})"
             for window, remaining in sorted(seen["windows"].items()):
                 projected = remaining - self.reserved.get(provider, 0) - rule["estimated_usage_percent_per_task"]
                 if projected < rule["min_remaining_percent"]:

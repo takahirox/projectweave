@@ -243,8 +243,8 @@ test('Subscription usage shows selected providers, all windows and successful up
   await setup(page, snapshot);
   const section = page.getByRole('region', {name: 'Subscription usage'});
   const claude = section.getByRole('article', {name: 'Claude'}), codex = section.getByRole('article', {name: 'Codex'});
-  await expect(claude).toContainText('Session72%');
-  await expect(claude).toContainText('Week48%');
+  await expect(claude).toContainText('Current session72%');
+  await expect(claude).toContainText('Current week (all models)48%');
   await expect(claude).toContainText('Fable85%');
   await expect(codex).toContainText('Primary63%');
   await expect(section.locator('time')).toHaveCount(2);
@@ -255,6 +255,42 @@ test('Subscription usage shows selected providers, all windows and successful up
   snapshot.subscription_usage = [snapshot.subscription_usage[1]];
   await expect(claude).toHaveCount(0);
   await expect(codex).toBeVisible();
+});
+
+test('Claude weekly-only and partial observations show applicability, resets and measurement freshness', async ({page}) => {
+  const snapshot = fixture(), updated = new Date(Date.now() - 60000).toISOString();
+  snapshot.subscription_usage = [{
+    provider: 'claude', windows: {week: 74, fable: 91}, updated_at: updated, last_success_at: updated,
+    status: 'current', error: null, unknown: {}, absent: ['session'],
+    window_details: {
+      week: {label: 'Current week (all models)', resets_at: '2030-02-03T04:05:06Z', is_active: true},
+      fable: {label: 'Current week (Fable)', resets_at: '2030-02-03T04:05:06Z', is_active: false},
+    },
+  }];
+  await setup(page, snapshot);
+  const claude = page.getByRole('article', {name: 'Claude'});
+  await expect(claude).toContainText('Current week (all models)74%');
+  await expect(claude).toContainText('Current week (Fable)91%');
+  await expect(claude.getByText(/^Resets /)).toHaveCount(2);
+  await expect(claude).toContainText('Not reported as applicable: Current session');
+  await expect(claude).not.toContainText('Partial');
+  await expect(claude).not.toContainText('Unavailable');
+  await expect(claude.locator('dt', {hasText: 'Current session'})).toHaveCount(0);
+  const entry = snapshot.subscription_usage[0];
+  Object.assign(entry, {status: 'partial', windows: {week: 73}, absent: [], last_success_at: null,
+    unknown: {session: 'Missing <script>session</script> measurement'}, updated_at: new Date().toISOString(),
+    attempted_at: new Date().toISOString()});
+  await expect(claude).toContainText('Partial');
+  await expect(claude).toContainText('Current sessionUnknown');
+  await expect(claude).toContainText('Current week (all models)73%');
+  await expect(claude).toContainText('Measurements updated just now');
+  await expect(claude).toContainText('No complete update yet');
+  await expect(claude).toContainText('Last attempted:');
+  await expect(claude).toContainText('Missing <script>session</script> measurement');
+  await expect(claude.locator('script')).toHaveCount(0);
+  await expect(claude).not.toContainText('Not reported as applicable');
+  await expect(claude).not.toContainText('Current week (Fable)');
+  await noOverflow(page);
 });
 
 test('Failed usage refresh retains values and timestamps, and unavailable usage can recover', async ({page}) => {
@@ -268,7 +304,7 @@ test('Failed usage refresh retains values and timestamps, and unavailable usage 
   const section = page.getByRole('region', {name: 'Subscription usage'});
   const claude = section.getByRole('article', {name: 'Claude'}), codex = section.getByRole('article', {name: 'Codex'});
   await expect(claude).toContainText('Stale');
-  await expect(claude).toContainText('Session72%');
+  await expect(claude).toContainText('Current session72%');
   await expect(claude.locator('time')).toHaveAttribute('datetime', updated);
   await expect(claude).toContainText('<script>usage failed</script>');
   await expect(section.locator('script')).toHaveCount(0);

@@ -169,9 +169,12 @@ class CLITests(unittest.TestCase):
         code, record, calls = self.cli("run-graph", "p", "--graph", "usage.json",
                                        FAKE_CLAUDE_USED="28,52,15", FAKE_CODEX_USED="37")
         self.assertEqual((code, record["status"]), (0, "completed"), record)
-        self.assertEqual(record["last"]["data"], {"status": "ok", "usage": {
-            "claude": {"windows": {"session": 72, "week": 48, "fable": 85}},
-            "codex": {"windows": {"primary": 63}}}})
+        data = record["last"]["data"]
+        self.assertEqual(data["status"], "ok")
+        self.assertEqual(data["usage"]["claude"]["windows"], {"session": 72, "week": 48, "fable": 85})
+        self.assertEqual(data["usage"]["claude"]["unknown"], {})
+        self.assertEqual(data["usage"]["claude"]["absent"], [])
+        self.assertEqual(data["usage"]["codex"], {"windows": {"primary": 63}})
         self.assertEqual(record["last"]["usage"], {})
         self.assertEqual(record["executions"], [])
         self.assertEqual([(c["command"], c["argv"]) for c in calls if c["command"] != "claude_control"], [

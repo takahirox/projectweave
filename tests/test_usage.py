@@ -39,10 +39,10 @@ class UsageTests(unittest.TestCase):
 
     def test_claude_reports_every_window(self):
         self.env(FAKE_CLAUDE_USED="10,20,90")
-        self.assertEqual(usage.claude(), {"session": 90, "week": 80, "fable": 10})
+        self.assertEqual(usage.claude()["windows"], {"session": 90, "week": 80, "fable": 10})
 
     def test_claude_failures_are_unknown(self):
-        for mode in ("claude_failure", "claude_no_week", "claude_unsupported", "claude_fetch_failure",
+        for mode in ("claude_failure", "claude_unsupported", "claude_fetch_failure",
                      "claude_exit", "claude_hang", "claude_init_error", "claude_unsupported_request", "claude_malformed"):
             with self.subTest(mode=mode):
                 self.env(FAKE_USAGE=mode)
@@ -76,7 +76,7 @@ class UsageTests(unittest.TestCase):
 
     def test_claude_structured_limits_and_control_only_protocol(self):
         self.env(FAKE_CLAUDE_DATA=(ROOT / "tests/fixtures/claude-usage.json").read_text())
-        self.assertEqual(usage.claude(), {"session": 90, "week": 80, "opus": 64.5, "fable": 10})
+        self.assertEqual(usage.claude()["windows"], {"session": 90, "week": 80, "opus": 64.5, "fable": 10})
         calls = [json.loads(line) for line in Path(os.environ["FAKE_LOG"]).read_text().splitlines()]
         self.assertEqual(calls[0]["argv"], usage.CLAUDE_ARGV[1:])
         self.assertEqual([c["request"] for c in calls[1:]], [
@@ -90,14 +90,17 @@ class UsageTests(unittest.TestCase):
         self.assertIn("session cost/token statistics, not plan limits", observed["error"])
         self.assertIn("claude auth status", observed["error"])
 
-    def test_observed_null_session_reports_missing_measurement_not_a_format_change(self):
+    def test_observed_weekly_only_response_and_control_only_protocol(self):
         self.env(FAKE_CLAUDE_DATA=(ROOT / "tests/fixtures/claude-usage-null-session.json").read_text())
         observed = usage.observe(["claude"])["claude"]
-        self.assertNotIn("windows", observed)
-        self.assertIn("Required Claude session window rate_limits.five_hour is null", observed["error"])
-        self.assertIn("despite rate_limits_available=true", observed["error"])
-        self.assertIn("interactive `/usage`", observed["error"])
-        self.assertIn("Partial plan data", observed["error"])
+        self.assertEqual(observed["windows"], {"week": 75, "fable": 100})
+        self.assertTrue(usage.complete(observed))
+        self.assertEqual(observed["absent"], ["session"])
+        self.assertFalse(observed["window_details"]["fable"]["is_active"])
+        self.assertEqual(observed["window_details"]["week"]["label"], "Current week (all models)")
+        controls = [json.loads(line) for line in Path(os.environ["FAKE_LOG"]).read_text().splitlines()]
+        self.assertEqual([c["request"] for c in controls[1:]], [
+            {"subtype": "initialize"}, {"subtype": "get_usage", "skip_behaviors": True}])
 
     def test_required_plan_field_diagnostics_distinguish_missing_null_and_malformed(self):
         valid = json.loads((ROOT / "tests/fixtures/claude-usage.json").read_text())
@@ -110,21 +113,23 @@ class UsageTests(unittest.TestCase):
                         del record["rate_limits"][key]
                     else:
                         record["rate_limits"][key] = value
-                    with self.assertRaises(Failure) as caught:
-                        usage.claude_windows(record)
-                    self.assertIn(f"rate_limits.{key} is {state}", str(caught.exception))
-                    self.assertNotIn("private-account-value", str(caught.exception))
+                    observed = usage.claude_windows(record)
+                    self.assertFalse(usage.complete(observed))
+                    name = {"five_hour": "session", "seven_day": "week"}[key]
+                    self.assertNotIn(name, observed["windows"])
+                    self.assertIn(f"rate_limits.{key} is {state}", observed["unknown"][name])
+                    self.assertNotIn("private-account-value", json.dumps(observed))
             for state, value in (("missing", {}), ("null", {"utilization": None}),
                                  ("a string", {"utilization": "private-account-value"}),
                                  ("a boolean", {"utilization": True}), ("a number", {"utilization": 101})):
                 with self.subTest(key=key, utilization=state):
                     record = copy.deepcopy(valid)
                     record["rate_limits"][key] = value
-                    with self.assertRaises(Failure) as caught:
-                        usage.claude_windows(record)
-                    self.assertIn(f"rate_limits.{key}.utilization is {state}", str(caught.exception))
-                    self.assertIn("finite percentage from 0 to 100", str(caught.exception))
-                    self.assertNotIn("private-account-value", str(caught.exception))
+                    observed = usage.claude_windows(record)
+                    reason = observed["unknown"][{"five_hour": "session", "seven_day": "week"}[key]]
+                    self.assertIn(f"rate_limits.{key}.utilization is {state}", reason)
+                    self.assertIn("finite percentage from 0 to 100", reason)
+                    self.assertNotIn("private-account-value", reason)
         for state, value in (("missing", None), ("null", None), ("an array", [])):
             record = copy.deepcopy(valid)
             if state == "missing":
@@ -140,7 +145,7 @@ class UsageTests(unittest.TestCase):
             with self.subTest(record=record), self.assertRaisesRegex(Failure, reason):
                 usage.claude_windows(record)
 
-    def test_malformed_or_missing_plan_utilization_never_returns_partial_windows(self):
+    def test_malformed_measurements_preserve_other_windows_but_never_admit(self):
         valid = json.loads((ROOT / "tests/fixtures/claude-usage.json").read_text())
         invalid = [None, [], {}, {"rate_limits_available": False},
                    {"rate_limits_available": "true", "rate_limits": valid["rate_limits"]},
@@ -153,8 +158,7 @@ class UsageTests(unittest.TestCase):
                 invalid.append(record)
         for value in (None, {}, [None], [{}], [{"display_name": "Fable"}],
                       [{"display_name": "", "utilization": 0}],
-                      [{"display_name": "week", "utilization": 0}],
-                      [{"display_name": "Fable", "utilization": 0}] * 2):
+                      [{"display_name": "Fable", "utilization": 0}, {"display_name": "Fable", "utilization": 1}]):
             record = copy.deepcopy(valid)
             record["rate_limits"]["model_scoped"] = value
             invalid.append(record)
@@ -162,19 +166,21 @@ class UsageTests(unittest.TestCase):
             with self.subTest(record=record):
                 self.env(FAKE_CLAUDE_DATA=json.dumps(record))
                 observed = usage.observe(["claude"])["claude"]
-                self.assertIn("unavailable", observed["error"])
-                self.assertNotIn("windows", observed)
+                self.assertFalse(usage.complete(observed))
+                self.assertTrue(observed.get("error") or observed.get("unknown"))
         # Zero is a real quota measurement only when reported as plan utilization.
         self.env(FAKE_CLAUDE_DATA=json.dumps({"rate_limits_available": True, "rate_limits": {
             "five_hour": {"utilization": 0}, "seven_day": {"utilization": 100}}}))
-        self.assertEqual(usage.claude(), {"session": 100, "week": 0})
+        self.assertEqual(usage.claude()["windows"], {"session": 100, "week": 0})
 
     def test_invalid_numbers_and_missing_cli_are_actionable(self):
         for value in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(value=value):
                 self.env(FAKE_CLAUDE_DATA=json.dumps({"rate_limits_available": True, "rate_limits": {
                     "five_hour": {"utilization": value}, "seven_day": {"utilization": 0}}}))
-                self.assertIn("unavailable", usage.observe(["claude"])["claude"]["error"])
+                observed = usage.observe(["claude"])["claude"]
+                self.assertFalse(usage.complete(observed))
+                self.assertTrue(observed.get("error") or observed.get("unknown"))
         with patch("projectweave.usage.subprocess.Popen", side_effect=FileNotFoundError("claude")):
             self.assertIn("claude auth status", usage.observe(["claude"])["claude"]["error"])
 
@@ -188,7 +194,7 @@ class UsageTests(unittest.TestCase):
         self.assertTrue(admission.admits("app")[0])
         first = cache.snapshot()[0]
         self.assertEqual(first["status"], "current")
-        for mode in ("claude_failure", "claude_fetch_failure", "claude_cost_only", "null_session"):
+        for mode in ("claude_failure", "claude_fetch_failure", "claude_cost_only"):
             with self.subTest(mode=mode):
                 fixture = {"claude_cost_only": "claude-cost-only.json", "null_session": "claude-usage-null-session.json"}.get(mode)
                 self.env(FAKE_USAGE=mode, FAKE_CLAUDE_DATA=(
@@ -224,8 +230,10 @@ class UsageTests(unittest.TestCase):
 
     def test_observe_named_providers(self):
         self.env(FAKE_CLAUDE_USED="10,20,90", FAKE_CODEX_USED="40")
-        self.assertEqual(usage.observe({"codex", "claude"}), {
-            "claude": {"windows": {"session": 90, "week": 80, "fable": 10}}, "codex": {"windows": {"primary": 60}}})
+        observed = usage.observe({"codex", "claude"})
+        self.assertEqual(observed["claude"]["windows"], {"session": 90, "week": 80, "fable": 10})
+        self.assertTrue(usage.complete(observed["claude"]))
+        self.assertEqual(observed["codex"], {"windows": {"primary": 60}})
         self.env(FAKE_USAGE="codex_exit")
         observed = usage.observe(["codex", "claude"])
         self.assertIn("exited without a rate limit response", observed["codex"]["error"])  # Real reason recorded.
@@ -233,6 +241,110 @@ class UsageTests(unittest.TestCase):
         self.assertIsInstance(observed["claude"]["windows"]["week"], int)
         self.assertIn("No usage observer", usage.observe(["gemini"])["gemini"]["error"])
         self.assertEqual(usage.observe([]), {})
+
+
+class ClaudeWindowTests(unittest.TestCase):
+    """Synthetic server rows exercise applicability independently of account access."""
+
+    def row(self, kind="weekly_all", percent=37, active=True, scope=None):
+        return {"kind": kind, "group": "session" if kind == "session" else "weekly",
+                "percent": percent, "is_active": active, "scope": scope,
+                "resets_at": "2030-02-03T04:05:06Z", "severity": "normal"}
+
+    def read(self, rows, **legacy):
+        return usage.claude_windows({"rate_limits_available": True,
+                                    "rate_limits": {"limits": rows, **legacy}})
+
+    def admits(self, seen, minimum=0, estimate=0):
+        admission = Admission({"app": {"claude": {"min_remaining_percent": minimum,
+                                                   "estimated_usage_percent_per_task": estimate}}},
+                              observe=lambda providers: {"claude": seen})
+        admission.refresh(["app"])
+        return admission.admits("app")[0]
+
+    def test_enumerated_week_only_and_legacy_fallback_have_different_applicability(self):
+        week = {"utilization": 30}
+        seen = self.read([self.row(percent=30)], five_hour=None, seven_day=week)
+        self.assertEqual(seen["windows"], {"week": 70})
+        self.assertEqual(seen["absent"], ["session"])
+        self.assertTrue(self.admits(seen, minimum=60, estimate=10))
+        self.assertFalse(self.admits(seen, minimum=60, estimate=11))
+        for rows in (None, "invalid"):
+            seen = self.read(rows, five_hour=None, seven_day=week)
+            self.assertEqual(seen["windows"], {"week": 70})
+            self.assertIn("session", seen["unknown"])
+            self.assertFalse(self.admits(seen))
+            self.assertEqual(seen["absent"], [])
+        for rows in ([], None):
+            seen = self.read(rows)
+            self.assertFalse(self.admits(seen))  # No vacuous success on an empty measurement set.
+
+    def test_session_and_scoped_rows_are_deduplicated_and_inactive_rows_constrain(self):
+        scoped = self.row("weekly_scoped", 83, False, {"model": {"display_name": "Fable"}})
+        seen = self.read([self.row("session", 12), self.row(), scoped],
+                         five_hour={"utilization": 12}, seven_day={"utilization": 37},
+                         model_scoped=[{"display_name": "Fable", "utilization": 83}])
+        self.assertEqual(seen["windows"], {"session": 88, "week": 63, "fable": 17})
+        self.assertTrue(usage.complete(seen))
+        self.assertFalse(seen["window_details"]["fable"]["is_active"])
+        self.assertFalse(self.admits(seen, minimum=18))
+        self.assertTrue(self.admits(seen, minimum=17))
+        # Equivalent timestamps and legacy/model aliases identify the same weekly bucket.
+        seen = self.read([self.row("weekly_scoped", 20, scope={"model": {"display_name": "Opus"}})],
+                         seven_day_opus={"utilization": 20, "resets_at": "2030-02-03T05:05:06+01:00"},
+                         model_scoped=[{"display_name": "opus", "utilization": 20}])
+        self.assertEqual(seen["windows"], {"opus": 80})
+        self.assertTrue(usage.complete(seen))
+
+    def test_surface_scopes_and_reserved_model_names_do_not_overwrite_base_windows(self):
+        rows = [self.row(), self.row("weekly_scoped", 25, scope={"surface": {"display_name": "Chat"}}),
+                self.row("weekly_scoped", 90, scope={"model": {"display_name": "week"}})]
+        seen = self.read(rows)
+        self.assertEqual(seen["windows"], {"week": 63, "surface_chat": 75, "model_week": 10})
+        self.assertFalse(self.admits(seen, minimum=11))
+
+    def test_conflicting_equivalents_never_hide_a_constraint(self):
+        for legacy in ({"seven_day": {"utilization": 38}},
+                       {"seven_day": {"utilization": 37, "resets_at": "2031-02-03T04:05:06Z"}},
+                       {"seven_day": {"utilization": None}}):
+            with self.subTest(legacy=legacy):
+                seen = self.read([self.row(), self.row("session", 10)], **legacy)
+                self.assertEqual(seen["windows"], {"session": 90})
+                self.assertIn("week", seen["unknown"])
+                self.assertFalse(self.admits(seen))
+        seen = self.read([self.row(), self.row(percent=38)])
+        self.assertIn("week", seen["unknown"])
+        self.assertEqual(seen["windows"], {})
+        self.assertTrue(usage.complete(self.read([self.row(), self.row()])))
+        self.assertTrue(usage.complete(self.read([self.row(scope={})])))
+        self.assertTrue(usage.complete(self.read([self.row(scope={"model": None, "surface": None})])))
+
+    def test_malformed_or_unsupported_rows_preserve_known_data_but_block_even_zero_minimum(self):
+        bad_rows = [None, {}, self.row("future_meter"), self.row(percent=None),
+                    self.row(percent=True), self.row(percent=-1), self.row(percent=101),
+                    self.row(percent="secret-value"), self.row(active=None),
+                    self.row("weekly_scoped", scope={}),
+                    self.row("weekly_scoped", scope={"model": {"display_name": ""}}),
+                    self.row("weekly_scoped", scope={"model": {}, "surface": {}})]
+        for value in (float("nan"), float("inf"), float("-inf")):
+            bad_rows.append(self.row(percent=value))
+        for reset in (10, False, "not-a-date", "2030-02-03T04:05:06"):
+            bad_rows.append(dict(self.row(), resets_at=reset))
+        for row in bad_rows:
+            with self.subTest(row=row):
+                seen = self.read([self.row("session", 11), row])
+                self.assertEqual(seen["windows"]["session"], 89)
+                self.assertTrue(seen["unknown"])
+                self.assertFalse(self.admits(seen))
+                self.assertNotIn("secret-value", json.dumps(seen))
+
+    def test_top_level_errors_do_not_echo_private_payload_or_publish_percentages(self):
+        for key in ("error", "errors", "rate_limits_error"):
+            with self.subTest(key=key), self.assertRaises(Failure) as caught:
+                usage.claude_windows({"rate_limits_available": True,
+                                      "rate_limits": {"limits": [self.row()]},
+                                      key: {"secret": "private-auth-payload"}})
+            self.assertNotIn("private-auth-payload", str(caught.exception))
 
 
 class UsageCacheTests(unittest.TestCase):
@@ -307,3 +419,35 @@ class UsageCacheTests(unittest.TestCase):
         self.cache.refresh(broken)
         self.assertEqual(len(calls), 1)
         self.assertEqual(self.cache.snapshot()[0]["error"], "unavailable")
+
+    def test_partial_reading_has_fresh_measurement_time_but_no_complete_success(self):
+        self.cache.configure(["claude"])
+        partial = {"windows": {"week": 62}, "unknown": {"session": "Missing session measurement"},
+                   "absent": [], "window_details": {"week": {"label": "Current week (all models)"}}}
+        self.cache.record({"claude": partial})
+        first = self.cache.snapshot()[0]
+        self.assertEqual(first["status"], "partial")
+        self.assertEqual(first["updated_at"], self.start.isoformat())
+        self.assertIsNone(first["last_success_at"])
+        self.assertNotIn("claude", self.cache.successes)
+        self.cache.refresh(lambda providers: self.fail("partial attempts must also be throttled"))
+        self.now = 10
+        self.cache.record({"claude": {"windows": {"session": 80, "week": 61}}})
+        complete = self.cache.snapshot()[0]
+        self.assertEqual(complete["status"], "current")
+        self.assertEqual(complete["updated_at"], complete["last_success_at"])
+        self.now = 20
+        self.cache.record({"claude": partial})
+        second = self.cache.snapshot()[0]
+        self.assertEqual(second["status"], "partial")
+        self.assertNotIn("session", second["windows"])
+        self.assertEqual(second["last_success_at"], complete["last_success_at"])
+        self.assertNotEqual(second["updated_at"], complete["updated_at"])
+        self.now = 320
+        self.assertEqual(self.cache.snapshot()[0]["status"], "stale")
+        self.cache.record({"claude": {"error": "fetch failed"}})
+        failed = self.cache.snapshot()[0]
+        self.assertEqual(failed["windows"], second["windows"])
+        self.assertEqual(failed["unknown"], second["unknown"])
+        self.assertEqual(failed["updated_at"], second["updated_at"])
+        self.assertNotEqual(failed["attempted_at"], second["attempted_at"])

@@ -67,16 +67,20 @@ remains graph-defined through `loop` and bounded by `max_steps`.
 against `usage.OBSERVERS` (currently `claude` and `codex`). Each activation calls
 the existing read-only observers afresh, without an executor/model invocation,
 provider discovery, cache, reservation or admission-policy change. Its Result
-data contains `status: "ok"` when every observer succeeds, otherwise `"error"`,
-and `usage: {provider: {windows: {name: remaining_percent}} | {error: reason}}`.
-Failed observations have no windows; previous readings are never substituted.
+data contains `status: "ok"` when every observation is complete, `"error"` when
+any retrieval fails or no measurements exist, and `"partial"` when a parse is
+incomplete but genuine measurements exist and no retrieval failed. `usage`
+maps providers to `{windows: {name: remaining_percent}}` with optional
+`unknown`, `absent` and `window_details` metadata, or `{error: reason}`.
+Retrieval failures have no windows; partial readings retain valid windows.
+Previous readings are never substituted.
 An unexpected observer exception becomes a `usage` Runtime Failure.
 
 Optional `config.min_remaining_percent` is a finite number from 0 to 100.
 When supplied, `data.available` is true only if all observed windows for all
-requested providers are at least that threshold; observation errors make it
-false. When omitted, `available` is absent and no threshold is chosen. These
-fields are available to existing equality conditions, for example
+requested providers are at least that threshold and observations are complete;
+retrieval errors or unknown applicable measurements make it false. When omitted,
+`available` is absent and no threshold is chosen. These fields are available to existing equality conditions, for example
 `/results/usage/data/available` or `/results/usage/data/usage/codex/windows/primary`.
 Subscription observations belong in Result `data.usage`; top-level `usage`
 remains the metered executor accounting map and is empty for this action.
@@ -508,7 +512,22 @@ The same registry is available through read-only JSON endpoints: `/api/state`,
 process-local execution ID supplied by the API). All responses disable caching.
 `/api/state` also includes `subscription_usage`, an empty list by default. When
 [dashboard usage providers are configured](usage.md#shared-ai-resources), each
-entry has `provider`, `windows` (remaining percentages, or null), `updated_at`
-(last successful UTC timestamp, or null), `error` (latest read failure, or null),
-and `status` (`current`, `stale`, or `unavailable`). These entries come from the
-shared usage cache; HTTP requests never run provider checks.
+entry has `provider`, `windows` (genuine remaining percentages, or null before
+any reading), `window_details` (labels, reset timestamps, and server headline
+`is_active` flags), `unknown` (unresolved window/reason map), and `absent`
+(base windows not reported as applicable by the current server enumeration).
+`is_active: false` is not a not-applicable marker. `updated_at` is the UTC
+receipt time of the displayed measurements, `last_success_at` is the last
+complete observation time, and `attempted_at` is the latest attempt time; each
+is null before the corresponding event. `error` is the latest retrieval failure
+or null. Status is `current` (fresh/complete), `partial` (fresh measurements plus
+unknown windows), `stale` (retained values after failure or age expiry), or
+`unavailable` (no usable measurements). A partial observation replaces displayed
+windows without advancing `last_success_at`; a retrieval failure retains the
+prior windows, details, unknown reasons and measurement timestamp. Admission
+uses fresh observations and blocks unknowns, never retained display values.
+The graph `usage` Result also carries this per-provider measurement/unknown
+metadata and uses `status: partial` when some measurements exist but observation
+is incomplete; a configured threshold then yields `available: false`.
+These entries come from the shared usage cache; HTTP requests never run provider
+checks.

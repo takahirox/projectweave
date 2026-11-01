@@ -1,8 +1,7 @@
 """Built-in, read-only observers of provider subscription usage (Claude, Codex).
 
-Each observer returns the remaining percentage (0-100) per usage window or raises
-Failure; callers treat any failure as unknown usage. Observers never invoke a model
-or change state.
+Observers return measurements and, for Claude, applicability/unknown metadata.
+Retrieval failures raise Failure. Observers never invoke a model or change state.
 """
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -51,7 +50,7 @@ def claude(timeout=TIMEOUT):
                 if (message.get("type") == "control_response" and isinstance(reply, dict)
                         and reply.get("request_id") == identity):
                     require(reply.get("subtype") == "success",
-                            f"{request['subtype']} control request failed: {str(reply.get('error', 'unsupported response'))[:300]}", "usage")
+                            f"{request['subtype']} control request failed (authentication, transport, or unsupported request)", "usage")
                     record = reply.get("response")
                     break
         return claude_windows(record)
@@ -95,8 +94,15 @@ def claude_messages(stream, deadline):
 
 
 def claude_windows(record):
-    """Only server plan utilization is quota data; session costs and extra-usage spend are not."""
+    """Normalize current server rows and legacy projections without guessing absent utilization.
+
+    A non-null limits array enumerates applicable meters. is_active selects the
+    headline meter, not applicability. Without rows, legacy base windows remain
+    required. Keep useful measurements when another required meter is unknown.
+    """
     require(isinstance(record, dict), "Malformed Claude get_usage response; expected an object", "usage")
+    require(not any(record.get(key) for key in ("error", "errors", "rate_limits_error")),
+            "Claude get_usage reported a usage retrieval error", "usage")
     require(record.get("rate_limits_available") is not False,
             "Plan limits are not available for this authentication (API keys, third-party providers and tokens without profile scope are unsupported)", "usage")
     require(record.get("rate_limits_available") is True,
@@ -105,36 +111,106 @@ def claude_windows(record):
     require(isinstance(limits, dict),
             f"Plan limit retrieval failed: Claude rate_limits is {claude_field_type(record, 'rate_limits')} "
             "despite rate_limits_available=true; expected an object", "usage")
-    windows = {}
+    windows, details, unknown = {}, {}, {}
+    rows = limits.get("limits")
+    enumerated = isinstance(rows, list)
 
-    def add(name, window, path):
-        require(name not in windows, "Duplicate Claude plan window", "usage")
-        require(isinstance(window, dict), f"Claude {path} is not a plan window object", "usage")
-        require(number(window.get("utilization")) and window["utilization"] <= 100,
-                f"Claude {path}.utilization is {claude_field_type(window, 'utilization')}; "
-                "expected a finite percentage from 0 to 100", "usage")
-        windows[name] = remaining(window["utilization"])
+    def scoped_name(label, surface=False):
+        require(isinstance(label, str) and 0 < len(label.strip()) <= 120,
+                "Invalid Claude scoped window display_name", "usage")
+        name = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+        require(bool(name), "Unsupported Claude scoped window display_name", "usage")
+        return ("surface_" if surface else "model_" if name in ("session", "week", "primary") else "") + name
 
-    for key, name in (("five_hour", "session"), ("seven_day", "week")):
-        window = limits.get(key)
-        require(isinstance(window, dict),
-                f"Required Claude {name} window rate_limits.{key} is {claude_field_type(limits, key)}; "
-                f"no usable {name} plan measurement was returned despite rate_limits_available=true", "usage")
-        add(name, window, f"rate_limits.{key}")
-    # The payload also carries metadata such as seven_day_breakdown, not a quota window.
-    for key in ("seven_day_oauth_apps", "seven_day_opus", "seven_day_sonnet"):
+    def add(name, window, path, *, field="utilization", label=None, active=None):
+        try:
+            require(isinstance(window, dict),
+                    f"Claude {path} is {claude_field_type({'value': window}, 'value')}; expected a plan window object", "usage")
+            require(number(window.get(field)) and window[field] <= 100,
+                    f"Claude {path}.{field} is {claude_field_type(window, field)}; "
+                    "expected a finite percentage from 0 to 100", "usage")
+            reset = window.get("resets_at")
+            if reset is not None:
+                try:
+                    require(isinstance(reset, str) and datetime.fromisoformat(reset.replace("Z", "+00:00")).tzinfo is not None,
+                            f"Invalid Claude {path}.resets_at timestamp", "usage")
+                    reset = datetime.fromisoformat(reset.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
+                except ValueError:
+                    raise Failure("usage", f"Invalid Claude {path}.resets_at timestamp") from None
+            value = remaining(window[field])
+            previous = details.get(name)
+            if previous:
+                require(windows[name] == value and previous["label"].casefold() == label.casefold()
+                        and (not reset or not previous["resets_at"] or reset == previous["resets_at"]),
+                        "Conflicting Claude equivalent plan windows", "usage")
+                previous["resets_at"] = previous["resets_at"] or reset
+            else:
+                windows[name] = value
+                details[name] = {"label": label, "resets_at": reset, "is_active": active}
+        except Failure as exc:
+            unknown[name] = str(exc)
+
+    if rows is not None and not enumerated:
+        unknown["limits"] = "Invalid Claude rate_limits.limits; expected an array or null"
+    if enumerated:
+        for index, row in enumerate(rows):
+            path, name = f"rate_limits.limits[{index}]", f"row_{index}"
+            try:
+                require(isinstance(row, dict), f"Invalid Claude {path}; expected an object", "usage")
+                kind, group, scope = row.get("kind"), row.get("group"), row.get("scope")
+                unscoped = scope is None or (isinstance(scope, dict) and
+                                             all(value is None for value in scope.values()))
+                require(type(row.get("is_active")) is bool, f"Invalid Claude {path}.is_active", "usage")
+                if kind == "session" and group == "session" and unscoped:
+                    name, label = "session", "Current session"
+                elif kind == "weekly_all" and group == "weekly" and unscoped:
+                    name, label = "week", "Current week (all models)"
+                elif kind == "weekly_scoped" and group == "weekly" and isinstance(scope, dict):
+                    targets = [key for key in ("model", "surface") if scope.get(key) is not None]
+                    require(len(targets) == 1 and isinstance(scope[targets[0]], dict),
+                            f"Invalid Claude {path}.scope", "usage")
+                    target = targets[0]
+                    display = scope[target].get("display_name")
+                    name = scoped_name(display, target == "surface")
+                    label = f"Current week ({display})"
+                else:
+                    raise Failure("usage", f"Unsupported Claude {path} kind/group/scope; applicability unknown")
+                add(name, row, path, field="percent", label=label, active=row["is_active"])
+            except Failure as exc:
+                unknown[name] = str(exc)
+
+    for key, name, label in (("five_hour", "session", "Current session"),
+                             ("seven_day", "week", "Current week (all models)"),
+                             ("seven_day_oauth_apps", "oauth_apps", "Current week (OAuth apps)"),
+                             ("seven_day_opus", "opus", "Current week (Opus)"),
+                             ("seven_day_sonnet", "sonnet", "Current week (Sonnet)")):
         window = limits.get(key)
         if window is not None:
-            add(key.removeprefix("seven_day_"), window, f"rate_limits.{key}")
+            add(name, window, f"rate_limits.{key}", label=label)
+        elif not enumerated and name in ("session", "week"):
+            unknown[name] = (f"Claude rate_limits.{key} is {claude_field_type(limits, key)}; "
+                             "applicability and measurement are unknown without server rows")
     scoped = limits.get("model_scoped", [])
-    require(isinstance(scoped, list), "Invalid Claude model_scoped plan windows", "usage")
-    for window in scoped:
-        label = window.get("display_name") if isinstance(window, dict) else None
-        require(isinstance(label, str) and bool(label.strip()), "Missing Claude model window display_name", "usage")
-        name = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
-        require(bool(name), "Unsupported Claude model window display_name", "usage")
-        add(name, window, "rate_limits.model_scoped[]")
-    return windows
+    if not isinstance(scoped, list):
+        unknown["model_scoped"] = "Invalid Claude model_scoped plan windows"
+    else:
+        for index, window in enumerate(scoped):
+            name, path = f"model_{index}", f"rate_limits.model_scoped[{index}]"
+            try:
+                display = window.get("display_name") if isinstance(window, dict) else None
+                name = scoped_name(display)
+                add(name, window, path, label=f"Current week ({display})")
+            except Failure as exc:
+                unknown[name] = str(exc)
+    # A bad/conflicting copy cannot be repaired by a later equivalent projection.
+    for name in unknown:
+        windows.pop(name, None)
+        details.pop(name, None)
+    if not windows and not unknown:
+        unknown["plan"] = "Claude returned no applicable plan measurements"
+    absent = [name for name in ("session", "week") if enumerated and
+              not any(key.startswith("row_") for key in unknown) and name not in windows and name not in unknown]
+    return {"windows": windows, "window_details": details, "unknown": unknown, "absent": absent}
 
 
 def claude_field_type(record, key):
@@ -209,13 +285,22 @@ OBSERVERS = {"claude": claude, "codex": codex}
 REFRESH_SECONDS = 300
 
 
+def complete(observation):
+    """Only fresh, nonempty measurements with no unresolved limits can admit work."""
+    windows = observation.get("windows")
+    return ("error" not in observation and not observation.get("unknown") and
+            isinstance(windows, dict) and bool(windows) and
+            all(number(value) and value <= 100 for value in windows.values()))
+
+
 def observe(providers):
-    """{provider: {"windows": {name: remaining_percent}} | {"error": reason}} for each named provider."""
+    """Readings may contain windows plus unknown/applicability metadata, or a retrieval error."""
     observations = {}
     for provider in sorted(providers):
         try:
             require(provider in OBSERVERS, f"No usage observer for provider {provider!r}", "usage")
-            observations[provider] = {"windows": OBSERVERS[provider]()}
+            reading = OBSERVERS[provider]()
+            observations[provider] = reading if "windows" in reading else {"windows": reading}
         except (Failure, OSError) as exc:
             observations[provider] = {"error": str(exc)}
     return observations
@@ -231,6 +316,12 @@ class UsageCache:
         self.lock = threading.RLock()
         self.providers = ()
         self.values, self.attempts, self.successes = {}, {}, {}
+        self.readings = {}
+
+    @staticmethod
+    def empty():
+        return {"windows": None, "updated_at": None, "last_success_at": None,
+                "attempted_at": None, "error": None, "unknown": {}, "absent": [], "window_details": {}}
 
     def configure(self, providers):
         with self.lock:
@@ -243,13 +334,20 @@ class UsageCache:
                 if provider not in observations:
                     continue
                 seen = observations[provider]
-                value = self.values.setdefault(provider, {"windows": None, "updated_at": None, "error": None})
+                value = self.values.setdefault(provider, self.empty())
                 self.attempts[provider] = now
+                timestamp = self.wall_clock().isoformat()
+                value["attempted_at"] = timestamp
                 if "error" in seen:
                     value["error"] = str(seen["error"])
                 else:
-                    value.update(windows=deepcopy(seen["windows"]), updated_at=self.wall_clock().isoformat(), error=None)
-                    self.successes[provider] = now
+                    value.update(windows=deepcopy(seen["windows"]), updated_at=timestamp if seen["windows"] else None, error=None,
+                                 unknown=deepcopy(seen.get("unknown", {})), absent=deepcopy(seen.get("absent", [])),
+                                 window_details=deepcopy(seen.get("window_details", {})))
+                    self.readings[provider] = now
+                    if complete(seen):
+                        value["last_success_at"] = timestamp
+                        self.successes[provider] = now
 
     def collect(self, providers, observer):
         """Publish policy observations too, preserving fresh failures for admission decisions."""
@@ -277,8 +375,9 @@ class UsageCache:
         with self.lock:
             entries = []
             for provider in self.providers:
-                value = deepcopy(self.values.get(provider, {"windows": None, "updated_at": None, "error": None}))
-                stale = value["error"] is not None or self.clock() - self.successes.get(provider, float("-inf")) >= self.interval
-                status = "unavailable" if value["windows"] is None else "stale" if stale else "current"
+                value = deepcopy(self.values.get(provider, self.empty()))
+                stale = value["error"] is not None or self.clock() - self.readings.get(provider, float("-inf")) >= self.interval
+                status = ("unavailable" if not value["windows"] else "stale" if stale else
+                          "partial" if value["unknown"] else "current")
                 entries.append(dict(value, provider=provider, status=status))
             return entries

@@ -101,8 +101,10 @@ class Runtime:
                 observations = usage.observe(config["providers"])
             except Exception as exc:
                 raise Failure("usage", f"Usage observation failed: {exc}") from exc
-            ok = all("error" not in value for value in observations.values())
-            data = {"status": "ok" if ok else "error", "usage": observations}
+            ok = all(usage.complete(value) for value in observations.values())
+            partial = (not ok and not any("error" in value for value in observations.values())
+                       and any(value.get("windows") for value in observations.values()))
+            data = {"status": "ok" if ok else "partial" if partial else "error", "usage": observations}
             if "min_remaining_percent" in config:
                 data["available"] = ok and all(
                     remaining >= config["min_remaining_percent"]
