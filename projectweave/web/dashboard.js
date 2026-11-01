@@ -92,27 +92,42 @@ function subscriptionUsage(container) {
   heading.append(element('h2', 'Subscription usage'), element('span', 'Remaining plan usage', 'muted'));
   section.append(heading);
   const providers = element('div', null, 'usage-providers');
-  const labels = {session: 'Session', week: 'Week', fable: 'Fable', primary: 'Primary'};
+  const labels = {session: 'Current session', week: 'Current week (all models)', fable: 'Fable', primary: 'Primary'};
   for (const entry of state.subscription_usage) {
     const provider = element('article', null, 'usage-provider');
     provider.setAttribute('aria-label', entry.provider === 'codex' ? 'Codex' : 'Claude');
     provider.append(element('h3', entry.provider === 'codex' ? 'Codex' : 'Claude'));
     const windows = element('dl', null, 'usage-windows');
     for (const [name, remaining] of Object.entries(entry.windows || {})) {
+      const detail = entry.window_details?.[name];
       const row = element('div');
-      row.append(element('dt', labels[name] || name), element('dd', `${remaining}%`));
+      row.append(element('dt', detail?.label || labels[name] || name), element('dd', `${remaining}%`));
+      if (detail?.resets_at) row.append(element('small', `Resets ${timestamp(detail.resets_at)}`, 'muted'));
       windows.append(row);
     }
+    for (const [name, reason] of Object.entries(entry.unknown || {})) {
+      const row = element('div');
+      row.append(element('dt', labels[name] || name), element('dd', 'Unknown'));
+      windows.append(row);
+      provider.append(element('p', reason, 'usage-error muted'));
+    }
     provider.append(windows);
-    if (entry.status !== 'current') provider.append(statusBadge('unknown', entry.status === 'stale' ? 'Stale' : 'Unavailable'));
+    if (entry.absent?.length) provider.append(element('p',
+      `Not reported as applicable: ${entry.absent.map(name => labels[name] || name).join(', ')}`, 'muted'));
+    if (entry.status !== 'current') provider.append(statusBadge('unknown',
+      {stale: 'Stale', partial: 'Partial', unavailable: 'Unavailable'}[entry.status] || 'Unknown'));
     if (entry.error) provider.append(element('p', entry.error, 'usage-error muted'));
     if (entry.updated_at) {
       const age = Math.max(0, Math.floor((Date.now() - new Date(entry.updated_at).getTime()) / 60000));
-      const updated = element('time', age < 1 ? 'Updated just now' : `Updated ${age} min ago`, 'muted');
+      const prefix = entry.status === 'partial' ? 'Measurements updated' : 'Updated';
+      const updated = element('time', age < 1 ? `${prefix} just now` : `${prefix} ${age} min ago`, 'muted');
       updated.dateTime = entry.updated_at;
       updated.title = timestamp(entry.updated_at);
       provider.append(updated);
     } else provider.append(element('p', 'No successful update yet', 'muted'));
+    if (entry.status === 'partial' || Object.keys(entry.unknown || {}).length) provider.append(element('p',
+      entry.last_success_at ? `Last complete update: ${timestamp(entry.last_success_at)}` : 'No complete update yet', 'muted'));
+    if (entry.attempted_at && entry.status !== 'current') provider.append(element('p', `Last attempted: ${timestamp(entry.attempted_at)}`, 'muted'));
     providers.append(provider);
   }
   section.append(providers);

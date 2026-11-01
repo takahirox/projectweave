@@ -77,6 +77,15 @@ class GraphUsageTests(unittest.TestCase):
                 self.assertEqual(record["last"]["data"]["status"], "ok")
                 self.assertIs(record["last"]["data"]["available"], available)
 
+    def test_partial_observation_exposes_week_but_blocks_threshold(self):
+        seen = {"windows": {"week": 71}, "unknown": {"session": "Not measured"}, "absent": []}
+        with patch.dict(usage.OBSERVERS, {"claude": Mock(return_value=seen)}):
+            record = Runtime(graph(providers=["claude"], min_remaining_percent=0), PROJECT).run()
+        data = record["last"]["data"]
+        self.assertEqual(data["status"], "partial")
+        self.assertEqual(data["usage"]["claude"], seen)
+        self.assertFalse(data["available"])
+
     def test_errors_are_structured_without_fabricated_or_previous_windows(self):
         for error in (Failure("usage", "not signed in"), OSError("missing CLI")):
             for threshold in ({}, {"min_remaining_percent": 0}):

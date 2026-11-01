@@ -55,7 +55,8 @@ footer { margin-top: 18px; padding: 8px 0; font-size: 11px; color: var(--muted);
 .usage-providers { display: flex; flex-wrap: wrap; gap: 16px 32px; padding: 14px 16px; }
 .usage-provider { flex: 1 1 200px; min-width: 0; max-width: 400px; }
 .usage-windows { margin: 8px 0; }
-.usage-windows > div { display: flex; justify-content: space-between; gap: 20px; }
+.usage-windows > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 20px; margin-bottom: 6px; }
+.usage-windows small { flex-basis: 100%; }
 .usage-windows dt { color: var(--muted); }
 .usage-windows dd { margin: 0; font-variant-numeric: tabular-nums; }
 .usage-provider time, .usage-provider > p { display: block; margin-top: 6px; font-size: 11px; }

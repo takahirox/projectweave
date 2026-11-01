@@ -136,20 +136,50 @@ profile; ProjectWeave never extracts bearer tokens or reads the Keychain.
 API keys, Bedrock/Vertex and other third-party providers do not supply these
 subscription windows. A `claude setup-token` token without profile scope also
 cannot supply them. A subscription plan alone does not guarantee that the
-account exposes both required windows. See the official
+account exposes both session and weekly windows. See the official
 [authentication guide](https://code.claude.com/docs/en/authentication).
 
-`rate_limits_available` must be `true`. This flag indicates eligibility for plan
-usage, not a guarantee that any particular window was returned. Both
-`rate_limits.five_hour.utilization`
-and `rate_limits.seven_day.utilization` must be finite numbers from 0 to 100.
-These become `session` and `week`, each with `100 - utilization` remaining.
-Non-null `seven_day_oauth_apps`, `seven_day_opus` and `seven_day_sonnet` windows
-become `oauth_apps`, `opus` and `sonnet`; `model_scoped` windows use their
-normalized display name (for example `Fable` becomes `fable`). Every included
-window must have valid utilization. Missing/null optional windows are omitted;
-missing required or malformed windows make the entire observation unknown.
-Duplicate normalized window names also fail rather than overwrite a constraint.
+`rate_limits_available` must be `true`, and `rate_limits` must be an object.
+Eligibility does not guarantee any particular window. The supported current
+schema is:
+
+| Source | Meaning and normalized key |
+| --- | --- |
+| `limits[]`: `kind=session`, `group=session`, no scope | Current session, `session` |
+| `limits[]`: `kind=weekly_all`, `group=weekly`, no scope | Current week (all models), `week` |
+| `limits[]`: `kind=weekly_scoped`, `group=weekly`, `scope.model.display_name` | Current week (model label), normalized model name |
+| `limits[]`: `kind=weekly_scoped`, `group=weekly`, `scope.surface.display_name` | Current week (surface label), `surface_` plus normalized name |
+| `five_hour`, `seven_day` | Legacy projections of `session`, `week` |
+| `seven_day_oauth_apps`, `seven_day_opus`, `seven_day_sonnet` | Optional weekly `oauth_apps`, `opus`, `sonnet` projections |
+| `model_scoped[]` with `display_name` | Optional per-model weekly projections; may be filtered by the CLI's allowlist |
+
+Structured rows use `percent`; legacy/model projections use `utilization`.
+Both mean **used** percentage, so remaining is `100 - value`. Only finite
+numbers in 0–100 count; booleans, nulls and numeric strings do not. A reset is
+optional/null, otherwise it must be an ISO timestamp with a timezone. Known
+equivalent rows/projections are deduplicated by window identity and must agree
+on percentage and any supplied reset time. Conflicts, malformed measurements,
+ambiguous scopes/names or unsupported kinds/groups remain unknown and block
+admission, while independent valid measurements remain visible. Scoped names
+cannot replace the reserved `session` or `week` base windows.
+
+A non-null `limits` array enumerates the server's applicable meters for that
+response. A session absent from this enumeration and its legacy projection is
+recorded as **not reported as applicable**, without a percentage. This says
+nothing about why it is absent, future plan rules, or unlimited allowance.
+`is_active` must be a boolean: it chooses the server's headline meter, **not**
+whether a row applies. An inactive scoped row still displays and constrains
+work, including a reported 0% used (100% remaining). ProjectWeave considers all
+supported model/surface rows, including rows a native display's model allowlist
+might hide; it cannot assume that a Task will avoid a particular model/surface.
+
+If `limits` is absent or null, applicability cannot be learned from an
+enumeration. Legacy `five_hour` and `seven_day` remain required: a missing/null
+base window is unknown, not inapplicable. Missing/null optional legacy windows
+are omitted; malformed non-null windows are unknown. A malformed `limits` field
+or row never proves absence. An empty enumeration without usable measurements
+also cannot admit work. No empty set is treated as unlimited capacity.
+
 Spending, extra-usage credits, activity breakdowns, and session costs/tokens are
 not subscription quota windows and are never used to infer allowance.
 
@@ -173,22 +203,15 @@ or fall back to costs or a model call. If unavailable, check `claude --version`,
 must resolve authentication or access problems; observation never logs in,
 resets limits, buys credits, or changes providers/models.
 
-Errors identify the known field path and distinguish an absent field, explicit
-`null`, and a malformed value's type without echoing account-provided values.
-An unavailable flag reports unsupported authentication; missing/invalid flags
-report unknown availability, and missing/null `rate_limits` reports retrieval
-failure. If a required window is absent despite available plan usage, compare
-that window with Claude Code's **interactive** `/usage`. Report a persistently
-missing window with the CLI version to Claude Code; a compatible CLI version or
-a successful login alone cannot supply the missing measurement. Do not use
-print-mode `/usage` as a fallback or interpret another window's utilization,
-spending, or an absent session window as unused session allowance.
-
-Failures keep configured admission constraints active, including a minimum of
-zero: Projects requiring Claude stay blocked until a successful observation.
-The dashboard keeps the last successful percentages and `updated_at` with
-`stale` status and the new error. Without a prior success it shows `unavailable`
-with no percentages/timestamp. Those retained display values never admit work.
+Errors identify known schema paths and types without echoing account values or
+raw control/authentication errors. Availability/fetch/control errors fail the
+retrieval; nonempty top-level `error`, `errors`, or `rate_limits_error` indicators
+also fail it. An incomplete parse returns its genuine measurements plus
+`unknown` reasons. Both retrieval errors and unknown applicable measurements
+block configured admission, even with a zero minimum; the graph `usage` action
+likewise reports `partial` and `available: false` for incomplete readings.
+No cached percentages are used for admission. Compare upstream omissions with
+interactive `/usage`; never send a model turn to populate a missing window.
 
 ### Issue #117 investigation (2026-11-01)
 
@@ -230,16 +253,57 @@ upstream format change, a weekly-only plan, or why the server omitted the
 session window. Alternate fields containing dollar amounts or spending are
 not a supported replacement for subscription windows.
 
-The fix reports `Required Claude session window rate_limits.five_hour is null`
-with recovery guidance, and keeps the entire observation unknown. It retains
-support for valid numeric session, weekly and optional model windows; it does
-not infer a session percentage from the available weekly data. The
+The historical #117 fix reported `Required Claude session window rate_limits.five_hour is null`
+with recovery guidance, and kept the entire observation unknown. It retained
+support for valid numeric session, weekly and optional model windows; it did
+not infer a session percentage from the available weekly data. #119 supersedes
+that all-or-nothing policy using the schema rules above. The
 [regression fixture](../tests/fixtures/claude-usage-null-session.json) preserves
 this relevant structure as a reduced reproduction: percentages, timestamps,
 model label and session statistics are synthetic, and unrelated fields are
 omitted. Tests cover the control-only protocol, missing/null/malformed fields,
 valid percentages including 0 and 100, errors, stale/unavailable dashboard
 states and admission blocking with a zero minimum.
+
+### Issue #119 schema and native-display comparison (2026-11-01)
+
+[#119](https://github.com/takahirox/projectweave/issues/119) supplied a successful,
+sanitized control-only response and native `claude --safe-mode --ax-screen-reader /usage`
+comparison on **2.1.314**: session null, weekly utilization 30, `weekly_all`
+active, `weekly_scoped` inactive, one `model_scoped` entry, and no top-level
+usage errors. Native `/usage` showed **Current week (all models)** and
+**Current week (Fable)** with reset times, and no **Current session**.
+A fresh control-only check during #119 implementation also returned **70%
+remaining weekly** and a reported **100% remaining Fable**, with no session
+measurement. It sent only initialize/get_usage, without a model turn. This
+matches the supplied native window set; it does not explain the upstream
+session omission. A separate bounded native launch during implementation did
+not reach a usage display, so the native comparison uses the Issue's confirmed
+read-only evidence, not a new successful screen capture. Regression fixtures
+retain the schema with synthetic percentages/timestamps (the reduced fixture uses 25% weekly utilization).
+
+Interpretation was checked read-only against the installed **2.1.314** package's
+embedded schema descriptions and render/projection code in
+`@anthropic-ai/claude-code/bin/claude.exe`. Its structured usage-row schema says
+that the server rows enumerate applicable meters, distinguishes empty arrays
+from absent/null rows, and describes `is_active` as a headline selection. Its
+native renderer skips null legacy session/week windows and projects model
+weekly rows without filtering on `is_active`; the model projection uses an
+allowlist. This directly rules out treating inactive scoped rows as
+not-applicable. These are version-specific implementation facts, not a stable
+public API guarantee. The
+[official usage documentation](https://code.claude.com/docs/en/costs#using-the-usage-command)
+distinguishes subscription plan bars from local session token/cost statistics;
+it does not promise that every subscription always exposes a session window.
+Neither that documentation nor the observed omission establishes a universal
+plan change. Unsupported future schema remains unknown rather than silently
+relaxing constraints.
+
+Required **post-merge verification remains pending**: when the managed instance
+can safely update, compare its deployed Dashboard with a fresh control-only
+reading and native interactive `/usage`. Record actual displayed windows,
+percentages, reset times and any unresolved upstream omission. Do not interrupt
+active Tasks. Local parser/browser checks do not establish deployed behavior.
 
 ## Coordinator
 
@@ -306,10 +370,17 @@ each Task finishes (including failed Tasks and Tasks awaited during shutdown),
 and every five minutes. Admission observations update the same process-local
 cache and replace any dashboard request for that provider at that refresh.
 Browser polling reads the cache only. The section shows each available window's
-remaining percentage and its provider's last successful update time. A failed
-read shows the error and marks retained values stale; a provider with no
-successful observation is unavailable. Failures do not stop coordination, and
-stale cached values are never substituted for current admission observations.
+remaining percentage, native-style window label, reset time when supplied,
+and measurement update time. `current` means a complete fresh reading; `partial`
+means fresh valid measurements plus unresolved windows shown as Unknown. Partial
+readings replace the displayed measurement set, so old values never masquerade
+as fresh values for missing windows. The last complete-success time is tracked
+separately and never advanced by a partial reading. A failed retrieval retains
+the last measurement set and its timestamp as `stale`, shows the failure and
+latest attempt time; expiration after five minutes also makes values stale.
+With no usable measurements the provider is `unavailable`. Failures do not stop
+coordination, and retained display values never substitute for current admission
+observations. See the [cache data contract](runtime.md#local-execution-dashboard).
 
 ## Default Project workflow
 
@@ -832,15 +903,18 @@ subscription observation data; the top-level `usage` field is reserved for
 metered executor accounting. Read an individual window with a pointer such as
 `/results/usage/data/usage/codex/windows/primary`. Provider failures appear as
 `{"error":"reason"}` instead of `windows`, with `data.status: "error"`; other
-providers' successful observations remain in the result. Failed observations do
-not reuse old readings. Unexpected observer exceptions stop the Run with a
-`usage` Runtime Failure.
+providers' successful observations remain in the result. Incomplete parsing
+retains genuine `windows` with `unknown` reasons and `data.status: "partial"`
+when no retrieval failed. Optional `window_details` carries labels/reset times,
+and `absent` records base windows omitted from an applicable-meter enumeration.
+Failed observations do not reuse old readings. Unexpected observer exceptions
+stop the Run with a `usage` Runtime Failure.
 
 Because `if` and `loop` compare equality, you may explicitly configure
 `min_remaining_percent` to obtain `data.available`: true only when **every
-reported window of every requested provider** meets or exceeds that threshold.
-Any observation error makes it false. Without this option, `available` is absent;
-the action chooses no threshold. Claude's optional `fable` window participates
+applicable window of every requested provider** is known and meets or exceeds
+that threshold. Any retrieval error or unknown measurement makes it false.
+Without this option, `available` is absent; the action chooses no threshold. Claude's optional `fable` window participates
 when reported. This action accepts no executor or resource allocation.
 
 A minimal loop observes before each work step and stops below 20% remaining:
