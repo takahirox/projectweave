@@ -21,7 +21,10 @@ CLAUDE_ARGV = ["claude", "-p", "--safe-mode", "--no-session-persistence",
                "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
 CLAUDE_ADVICE = ("Use Claude Code 2.1.312 or a compatible version and check `claude auth status` for a "
                  "signed-in Claude.ai subscription with profile scope. Check network access and whether "
-                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC prevents usage retrieval.")
+                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC prevents usage retrieval. "
+                 "Compare missing plan windows with Claude Code's interactive `/usage`; if they remain "
+                 "absent, report the missing window and CLI version to Claude Code. "
+                 "Partial plan data cannot establish all required limits.")
 
 
 def remaining(used):
@@ -93,25 +96,36 @@ def claude_messages(stream, deadline):
 
 def claude_windows(record):
     """Only server plan utilization is quota data; session costs and extra-usage spend are not."""
-    require(isinstance(record, dict) and record.get("rate_limits_available") is True,
+    require(isinstance(record, dict), "Malformed Claude get_usage response; expected an object", "usage")
+    require(record.get("rate_limits_available") is not False,
             "Plan limits are not available for this authentication (API keys, third-party providers and tokens without profile scope are unsupported)", "usage")
+    require(record.get("rate_limits_available") is True,
+            "Claude rate_limits_available is missing or invalid; plan usage availability is unknown", "usage")
     limits = record.get("rate_limits")
-    require(isinstance(limits, dict), "Plan limit retrieval failed; Claude returned no rate_limits", "usage")
+    require(isinstance(limits, dict),
+            f"Plan limit retrieval failed: Claude rate_limits is {claude_field_type(record, 'rate_limits')} "
+            "despite rate_limits_available=true; expected an object", "usage")
     windows = {}
 
-    def add(name, window):
+    def add(name, window, path):
         require(name not in windows, "Duplicate Claude plan window", "usage")
-        require(isinstance(window, dict) and number(window.get("utilization")) and window["utilization"] <= 100,
-                f"Invalid or missing Claude {name} utilization; expected a percentage from 0 to 100", "usage")
+        require(isinstance(window, dict), f"Claude {path} is not a plan window object", "usage")
+        require(number(window.get("utilization")) and window["utilization"] <= 100,
+                f"Claude {path}.utilization is {claude_field_type(window, 'utilization')}; "
+                "expected a finite percentage from 0 to 100", "usage")
         windows[name] = remaining(window["utilization"])
 
     for key, name in (("five_hour", "session"), ("seven_day", "week")):
-        add(name, limits.get(key))
+        window = limits.get(key)
+        require(isinstance(window, dict),
+                f"Required Claude {name} window rate_limits.{key} is {claude_field_type(limits, key)}; "
+                f"no usable {name} plan measurement was returned despite rate_limits_available=true", "usage")
+        add(name, window, f"rate_limits.{key}")
     # The payload also carries metadata such as seven_day_breakdown, not a quota window.
     for key in ("seven_day_oauth_apps", "seven_day_opus", "seven_day_sonnet"):
         window = limits.get(key)
         if window is not None:
-            add(key.removeprefix("seven_day_"), window)
+            add(key.removeprefix("seven_day_"), window, f"rate_limits.{key}")
     scoped = limits.get("model_scoped", [])
     require(isinstance(scoped, list), "Invalid Claude model_scoped plan windows", "usage")
     for window in scoped:
@@ -119,8 +133,19 @@ def claude_windows(record):
         require(isinstance(label, str) and bool(label.strip()), "Missing Claude model window display_name", "usage")
         name = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
         require(bool(name), "Unsupported Claude model window display_name", "usage")
-        add(name, window)
+        add(name, window, "rate_limits.model_scoped[]")
     return windows
+
+
+def claude_field_type(record, key):
+    """Describe only a known schema field's presence/type, never its account-provided value."""
+    if key not in record:
+        return "missing"
+    value = record[key]
+    if value is None:
+        return "null"
+    return {dict: "an object", list: "an array", bool: "a boolean", str: "a string",
+            int: "a number", float: "a number"}.get(type(value), "an unsupported type")
 
 
 def codex(timeout=TIMEOUT):

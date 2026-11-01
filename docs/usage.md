@@ -139,7 +139,9 @@ cannot supply them. A subscription plan alone does not guarantee that the
 account exposes both required windows. See the official
 [authentication guide](https://code.claude.com/docs/en/authentication).
 
-`rate_limits_available` must be `true`, and `rate_limits.five_hour.utilization`
+`rate_limits_available` must be `true`. This flag indicates eligibility for plan
+usage, not a guarantee that any particular window was returned. Both
+`rate_limits.five_hour.utilization`
 and `rate_limits.seven_day.utilization` must be finite numbers from 0 to 100.
 These become `session` and `week`, each with `100 - utilization` remaining.
 Non-null `seven_day_oauth_apps`, `seven_day_opus` and `seven_day_sonnet` windows
@@ -171,11 +173,73 @@ or fall back to costs or a model call. If unavailable, check `claude --version`,
 must resolve authentication or access problems; observation never logs in,
 resets limits, buys credits, or changes providers/models.
 
+Errors identify the known field path and distinguish an absent field, explicit
+`null`, and a malformed value's type without echoing account-provided values.
+An unavailable flag reports unsupported authentication; missing/invalid flags
+report unknown availability, and missing/null `rate_limits` reports retrieval
+failure. If a required window is absent despite available plan usage, compare
+that window with Claude Code's **interactive** `/usage`. Report a persistently
+missing window with the CLI version to Claude Code; a compatible CLI version or
+a successful login alone cannot supply the missing measurement. Do not use
+print-mode `/usage` as a fallback or interpret another window's utilization,
+spending, or an absent session window as unused session allowance.
+
 Failures keep configured admission constraints active, including a minimum of
 zero: Projects requiring Claude stay blocked until a successful observation.
 The dashboard keeps the last successful percentages and `updated_at` with
 `stale` status and the new error. Without a prior success it shows `unavailable`
 with no percentages/timestamp. Those retained display values never admit work.
+
+### Issue #117 investigation (2026-11-01)
+
+A read-only reproduction of [#117](https://github.com/takahirox/projectweave/issues/117)
+used the observer's exact safety flags and only `initialize` followed by
+`get_usage` with `skip_behaviors: true`. Both control requests succeeded on
+Claude Code **2.1.314 on macOS**. A filtered `claude auth status` check reported
+a logged-in, first-party Claude.ai Max subscription. Credentials, account
+identifiers, raw initialization/authentication output, and session statistics
+were not recorded. No user prompt or model turn was sent.
+
+The worktree checkpoint was `447fa023fc705ba53be5e9c02e098f3995655340`.
+The installed `projectweave` entrypoint, inspected with its own Python
+interpreter outside checkout import resolution, resolved to revision
+`f37df93a98b894f2764bf37a1b261d36424a1b7d`; its unmodified `usage.py` was
+byte-identical to the worktree observer. No active `projectweave coordinate`
+process was found, so this check establishes the installed source, not the
+revision of the earlier dashboard process.
+
+The relevant sanitized response schema and indicators were:
+
+| Field | Observed value or type |
+| --- | --- |
+| `rate_limits_available` | `true` |
+| `rate_limits` | object |
+| `rate_limits.five_hour` | explicit `null` |
+| `rate_limits.seven_day.utilization` | integer |
+| `rate_limits.limits[]` | two weekly entries: `weekly_all` (active), `weekly_scoped` (inactive) |
+| `rate_limits.limits[].percent` | integer; no session entry was present |
+| `rate_limits.model_scoped[]` | one entry with a string label and integer utilization |
+| `rate_limits.seven_day_opus`, `seven_day_sonnet`, `seven_day_oauth_apps` | `null` |
+| Top-level `error`, `errors`, `rate_limits_error` | absent |
+
+The immediate cause of the unavailable state was an explicitly null session
+window; the previous error described it only as invalid or missing utilization.
+The response had no session measurement to recover, even in the structured
+`limits` list. This evidence does **not** establish an
+upstream format change, a weekly-only plan, or why the server omitted the
+session window. Alternate fields containing dollar amounts or spending are
+not a supported replacement for subscription windows.
+
+The fix reports `Required Claude session window rate_limits.five_hour is null`
+with recovery guidance, and keeps the entire observation unknown. It retains
+support for valid numeric session, weekly and optional model windows; it does
+not infer a session percentage from the available weekly data. The
+[regression fixture](../tests/fixtures/claude-usage-null-session.json) preserves
+this relevant structure as a reduced reproduction: percentages, timestamps,
+model label and session statistics are synthetic, and unrelated fields are
+omitted. Tests cover the control-only protocol, missing/null/malformed fields,
+valid percentages including 0 and 100, errors, stale/unavailable dashboard
+states and admission blocking with a zero minimum.
 
 ## Coordinator
 
