@@ -20,7 +20,7 @@ Verify that the Pull Request addresses all parts of the Issue that it claims to 
 
 Do not approve a Pull Request as closing an Issue when important requirements remain unimplemented.
 
-If the change is intentionally partial, the Pull Request should say so and the Issue should remain open.
+If the change is intentionally partial, the Pull Request must state the remaining scope and use a non-closing Issue reference so the parent Issue remains open. Pending post-merge-only verification does not make an otherwise complete implementation partial.
 
 ## Check for Unnecessary Work
 
@@ -61,6 +61,10 @@ For example, if merge triggers deployment, review the code and configuration, lo
 
 Confirm that required post-merge verification is recorded separately in the Issue and PR validation report, and reported as pending until performed. Check that validation claims match the evidence: passing pre-merge checks does not establish successful publication. Follow the [development flow](development-flow.md#6-verify-after-merge) for reporting actual post-merge results.
 
+Preserve `Closes #N` for a fully implemented Issue whose applicable mandatory pre-merge checks are satisfied. Do not request its removal, keep the source Issue open, or withhold approval solely for pending post-merge-only checks. This avoids a Review → Fix → Publish → Review loop in which review undoes ProjectWeave publication's closing reference. The [merge and closure lifecycle](development-flow.md#5-merge-and-close-the-issue) closes the original Issue after successful merge, then records required verification evidence and tracks actual defects in new linked Issues (or existing equivalent Issues), without reopening the original solely for follow-up.
+
+Require post-merge verification only when the change needs it. Apply documentation checks to documentation-only work without adding routine manual approval, physical-device, heavyweight-model-download, or deployment gates. Missing implementation, mandatory pre-merge tests, required protections, and genuinely necessary pre-merge human acceptance remain blockers.
+
 ## Review Outcome
 
 A Pull Request is ready to merge when:
@@ -85,4 +89,4 @@ then reassess the human check against the updated PR head. Keep the
 Command-captured GitHub revision baseline across the request/wait handoff so
 concurrent replies are not missed; agents return assessment results without
 copying Issue content or authoritative revision metadata. Stop merging when the
-source Issue closes.
+source Issue closes before merge.
